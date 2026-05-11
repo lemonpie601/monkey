@@ -2,7 +2,7 @@
 // @name         유니챗 형광펜
 // @namespace    https://www.univers.chat/
 // @version      2.1.0
-// @description  유니챗 형광펜
+// @description  유니버스챗 형광펜 노트
 // @author       adapted from 레몬파이
 // @match        https://www.univers.chat/*
 // @grant        GM_addStyle
@@ -409,6 +409,41 @@
             30%,70% { box-shadow: 0 0 0 2px ${P1}; }
         }
 
+        /* ── 모바일: 팝업 → 바텀시트 ── */
+        #hlp-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); z-index: 2147483639 !important;
+            backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+        }
+        #hlp-overlay.show { display: block; }
+
+        @media (max-width: 640px) {
+            /* 툴바 버튼 아이콘만 */
+            #hlp-toolbar-btn .hlp-btn-label { display: none; }
+
+            /* 팝업 → 바텀시트 */
+            #hlp-popup {
+                position: fixed !important;
+                left: 0 !important; right: 0 !important;
+                bottom: 0 !important; top: auto !important;
+                width: 100% !important; max-width: 100% !important;
+                max-height: 85vh !important;
+                border-radius: 16px 16px 0 0 !important;
+                border-bottom: none !important;
+            }
+            #hlp-popup::before {
+                content: '';
+                display: block;
+                width: 36px; height: 4px;
+                background: rgba(0,0,0,0.15);
+                border-radius: 2px;
+                margin: 8px auto 0;
+                flex-shrink: 0;
+            }
+            .hlp-dark-mode#hlp-popup::before { background: rgba(255,255,255,0.2); }
+            .hlp-popup-header { cursor: default !important; }
+        }
+
         /* ── 스크롤 토스트 ── */
         #hlp-toast {
             position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
@@ -506,6 +541,34 @@
         resetOverlay.style.display='none';
     };
 
+    // 모바일 오버레이
+    const hlpOverlay = document.createElement('div');
+    hlpOverlay.id = 'hlp-overlay';
+    hlpOverlay.addEventListener('click', () => { popup.style.display = 'none'; hlpOverlay.classList.remove('show'); });
+    document.body.appendChild(hlpOverlay);
+
+    function hlpIsMobile() { return window.innerWidth <= 640; }
+
+    function hlpOpenPopup() {
+        if (hlpIsMobile()) {
+            hlpOverlay.classList.add('show');
+            // 바텀시트: 위치 초기화
+            popup.style.left = ''; popup.style.top = '';
+        } else {
+            hlpOverlay.classList.remove('show');
+            const sp = JSON.parse(localStorage.getItem(POPUP_POS_KEY));
+            if (sp) { popup.style.left=sp.left; popup.style.top=sp.top; }
+            else { popup.style.left='20px'; popup.style.top='100px'; }
+        }
+        popup.style.display = 'flex';
+        renderPopupList();
+    }
+
+    function hlpClosePopup() {
+        popup.style.display = 'none';
+        hlpOverlay.classList.remove('show');
+    }
+
     // ── 메인 팝업 ────────────────────────────────
     const popup = document.createElement('div');
     popup.id = 'hlp-popup';
@@ -581,7 +644,7 @@
         savePalette(); document.getElementById('hlp-color-picker-ui').style.display = 'none';
     };
 
-    popup.querySelector('#hlp-close-btn').onclick = () => popup.style.display = 'none';
+    popup.querySelector('#hlp-close-btn').onclick = hlpClosePopup;
     popup.querySelector('#hlp-reset-btn').onclick = () => resetOverlay.style.display = 'flex';
     popup.querySelector('#hlp-search').addEventListener('input', e => renderPopupList(e.target.value.trim().toLowerCase()));
 
@@ -600,12 +663,11 @@
     // 드래그
     const popupHeader = popup.querySelector('.hlp-popup-header');
     let isDragging=false, dragSX, dragSY, initL, initT;
-    const sp = JSON.parse(localStorage.getItem(POPUP_POS_KEY));
-    if (sp) { popup.style.left=sp.left; popup.style.top=sp.top; }
-    else     { popup.style.left='20px'; popup.style.top='100px'; }
+    // 초기 위치는 hlpOpenPopup()에서 설정
 
     const dStart = e => {
         if (e.target.closest('.hlp-header-actions')) return;
+        if (hlpIsMobile()) return; // 바텀시트는 드래그 없음
         isDragging=true;
         dragSX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
         dragSY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
@@ -658,8 +720,16 @@
     // ==========================================
     // 툴바 버튼 + Alt+H
     // ==========================================
+    let hlpLastIsMobile = null;
     function injectToolbarButton() {
+        const mobile = hlpIsMobile();
+        // 모바일↔PC 전환 시 재삽입
+        if (hlpLastIsMobile !== null && hlpLastIsMobile !== mobile) {
+            document.getElementById('hlp-toolbar-btn')?.remove();
+        }
+        hlpLastIsMobile = mobile;
         if (document.getElementById('hlp-toolbar-btn')) return;
+
         const actionBtn = document.querySelector('button[aria-label="행동 묘사 삽입"]');
         if (!actionBtn) return;
         const btnGroup = actionBtn.closest('div.rounded-full');
@@ -676,18 +746,24 @@
         hlBtn.addEventListener('mouseleave', () => hlBtn.style.color = 'rgba(0,0,0,0.4)');
         hlBtn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); togglePopup(); });
 
-        const lastBtn = btnGroup.querySelector('button:last-child');
-        if (lastBtn) lastBtn.classList.remove('rounded-r-full');
-        btnGroup.appendChild(hlBtn);
+        if (mobile) {
+            // 모바일: @ * " ✎ 그룹 오른쪽에 삽입
+            const lastBtn = btnGroup.querySelector('button:last-child');
+            if (lastBtn) lastBtn.classList.remove('rounded-r-full');
+            btnGroup.appendChild(hlBtn);
+        } else {
+            // PC: 그룹 맨 끝에 추가
+            const lastBtn = btnGroup.querySelector('button:last-child');
+            if (lastBtn) lastBtn.classList.remove('rounded-r-full');
+            btnGroup.appendChild(hlBtn);
+        }
     }
 
     const togglePopup = () => {
         if (popup.style.display === 'flex') {
-            popup.style.display = 'none';
+            hlpClosePopup();
         } else {
-            const r = popup.getBoundingClientRect();
-            if (r.bottom<0||r.right<0||r.left>window.innerWidth||r.top>window.innerHeight) { popup.style.left='20px'; popup.style.top='100px'; }
-            popup.style.display = 'flex'; renderPopupList();
+            hlpOpenPopup();
         }
     };
     document.addEventListener('keydown', e => { if(e.altKey&&e.key==='h'){e.preventDefault();togglePopup();} });
@@ -695,6 +771,19 @@
     // ==========================================
     // 테마
     // ==========================================
+    window.addEventListener('resize', () => {
+        if (popup.style.display === 'flex') {
+            if (hlpIsMobile()) {
+                popup.style.left = ''; popup.style.top = '';
+                hlpOverlay.classList.add('show');
+            } else {
+                hlpOverlay.classList.remove('show');
+                const sp = JSON.parse(localStorage.getItem(POPUP_POS_KEY));
+                if (sp) { popup.style.left=sp.left; popup.style.top=sp.top; }
+            }
+        }
+    });
+
     function syncTheme() {
         const isDark = document.body.getAttribute('data-theme')==='dark' || document.documentElement.classList.contains('dark') || document.body.classList.contains('dark');
         popup.classList.toggle('hlp-dark-mode', isDark);
