@@ -237,8 +237,8 @@
     ov.innerHTML = `
         <div id="els-pn">
             <div class="els-ph">
-                <div class="els-pt style="display: none;">📷 로그 카드 저장</div>
-                <button id="els-xbtn style="display: none;">✕</button>
+                <div class="els-pt">📷 로그 카드 저장</div>
+                <button id="els-xbtn">✕</button>
             </div>
 
             <div id="els-cvw"></div>
