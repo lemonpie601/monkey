@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 매크로
 // @namespace    https://www.univers.chat/
-// @version      3.0.9
+// @version      3.1.2
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
 // @author       레몬파이 = 시범단계
 // @match        https://www.univers.chat/*
@@ -172,49 +172,48 @@
     }
 
     function watchSendButton() {
-        let intendedSend = false; // 실제 전송 의도 플래그 (클릭 or Enter)
+        // 전송 직전 감지: 클릭 or Enter → onBeforeSend()
+        // 전송 완료 감지: msg-assistant-* div가 새로 추가될 때 → onAfterSend()
 
-        // textarea Enter 키 감지 (Shift+Enter 제외)
+        let lastMsgCount = 0;
+
+        function getMsgCount() {
+            return document.querySelectorAll('[id^="msg-assistant-"]').length;
+        }
+
+        // 전송 의도 감지 (클릭 or Enter)
+        function attachSendIntent(sendBtn) {
+            if (sendBtn._mcrWatched) return;
+            sendBtn._mcrWatched = true;
+            sendBtn.addEventListener('click', () => {
+                if (!sendBtn.disabled) onBeforeSend();
+            }, true);
+        }
+
         document.addEventListener('keydown', e => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 const ta = document.querySelector('textarea');
                 if (ta && document.activeElement === ta && ta.value.trim().length > 0) {
-                    intendedSend = true;
-                    onBeforeSend(); // 전송 직전 처리
+                    onBeforeSend();
                 }
             }
         }, true);
 
-        function observe() {
+        // 전송 완료 감지: msg-assistant-* div 새로 추가됨
+        new MutationObserver(() => {
+            // 전송 버튼에 인텐트 리스너 붙이기
             const sendBtn = document.querySelector('button[aria-label="메시지 전송"]');
-            if (!sendBtn || sendBtn._mcrWatched) return;
-            sendBtn._mcrWatched = true;
+            if (sendBtn) attachSendIntent(sendBtn);
 
-            // 버튼 클릭 시 플래그 세팅 + 전송 직전 처리
-            sendBtn.addEventListener('click', () => {
-                if (!sendBtn.disabled) {
-                    intendedSend = true;
-                    onBeforeSend(); // 전송 직전 처리
-                }
-            }, true);
+            // 새 assistant 메시지 등장 = 전송 완료
+            const cur = getMsgCount();
+            if (cur > lastMsgCount) {
+                lastMsgCount = cur;
+                onAfterSend();
+            }
+        }).observe(document.body, { childList: true, subtree: true });
 
-            // disabled: false → true = 전송 완료
-            // 클릭 or Enter로 인한 것일 때만 히스토리 기록
-            let lastDisabled = sendBtn.disabled;
-            new MutationObserver(() => {
-                const nowDisabled = sendBtn.disabled;
-                if (!lastDisabled && nowDisabled) {
-                    if (intendedSend) {
-                        onAfterSend();
-                    }
-                    intendedSend = false;
-                }
-                lastDisabled = nowDisabled;
-            }).observe(sendBtn, { attributes: true, attributeFilter: ['disabled'] });
-        }
-
-        observe();
-        new MutationObserver(observe).observe(document.body, { childList: true, subtree: true });
+        lastMsgCount = getMsgCount();
     }
 
     // ==========================================
@@ -686,11 +685,50 @@
     }
 
     // ==========================================
-    // 히스토리만 부분 업데이트 (전체 리빌드 없이)
+    // 히스토리 영역만 부분 업데이트 (탭 상태 유지)
     // ==========================================
     function renderPopupList() {
         if (popup.style.display !== 'flex') return;
-        buildPopup(); // 간단히 전체 리빌드 (팝업 고정이라 깜빡임 없음)
+
+        const cfg = loadRoomConfig();
+        const steps = cfg?.steps || [];
+        const history = loadHistory();
+        const active = isActive();
+        const turn = getTurn();
+        const nextModel = steps.length ? getModelForTurn(steps, getMacroTurn()) : null;
+
+        // 다음 예고 바 업데이트
+        const nextBar = popup.querySelector('.mcr-next-bar');
+        const historyScrollEl = popup.querySelector('[data-pane="history"] .mcr-scroll');
+        if (historyScrollEl) {
+            const nextBarHTML = (active && nextModel) ? `
+                <div class="mcr-next-bar">
+                    <span class="mcr-next-label">다음 →</span>
+                    <span class="mcr-next-model">${nextModel}</span>
+                    <span class="mcr-next-turn">턴 ${getMacroTurn()}</span>
+                </div>` : '';
+
+            const recentHistory = [...history].reverse().slice(0, 100);
+            const historyHTML = recentHistory.length
+                ? recentHistory.map((h, i) => {
+                    const isCurrent = i === 0;
+                    return `<div class="mcr-history-item ${isCurrent ? 'current' : ''}">
+                        <span class="mcr-h-turn">턴 ${h.turn}</span>
+                        <span class="mcr-h-arrow">›</span>
+                        <span class="mcr-h-model">${h.model || '알 수 없음'}</span>
+                        ${isCurrent ? `<span class="mcr-h-badge">직전</span>` : ''}
+                    </div>`;
+                }).join('')
+                : `<div class="mcr-empty">아직 기록이 없어요.<br>전송하면 여기에 쌓여요!</div>`;
+
+            historyScrollEl.innerHTML = `
+                ${nextBarHTML}
+                <div class="mcr-sec-label"><span>사용 기록</span></div>
+                <div class="mcr-history-list">${historyHTML}</div>`;
+        }
+
+        // 트리거 버튼도 업데이트
+        updateTriggerBtn();
     }
 
     // ==========================================
@@ -972,17 +1010,14 @@
 
 
     // ==========================================
-    // 이어서 생성하기 버튼 감지 → 턴 누적
+    // 이어서 생성하기 버튼 감지 → onBeforeSend만 호출
+    // (onAfterSend는 msg-assistant-* 추가로 자동 감지)
     // ==========================================
     function watchContinueButton() {
         document.addEventListener('click', e => {
             const btn = e.target.closest('button[aria-label="이어서 생성하기"]');
-            if (btn) {
-                const turn = getTurn();
-                const usedModel = getCurrentModelName();
-                addHistory(usedModel);
-                setTurn(); // 히스토리에 추가됐으므로 자동 반영
-                renderPopupList();
+            if (btn && !btn.disabled) {
+                onBeforeSend();
             }
         }, true);
     }
