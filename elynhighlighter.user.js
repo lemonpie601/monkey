@@ -3,7 +3,7 @@
 // @namespace    https://elyn.ai/
 // @version      2.4.0
 // @description  엘린에서 텍스트에 형광펜 표시 + 메모 기능
-// @author       adapted from 레몬파이
+// @author       레몬파이
 // @match        https://elyn.ai/*
 // @grant        GM_addStyle
 // @license      MIT
