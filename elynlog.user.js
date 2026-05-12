@@ -3,7 +3,7 @@
 // @namespace    https://elyn.ai/
 // @version      6.0.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
-// @author       custom
+// @author       레몬파이
 // @match        https://elyn.ai/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
