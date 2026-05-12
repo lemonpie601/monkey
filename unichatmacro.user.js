@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 매크로
 // @namespace    https://www.univers.chat/
-// @version      3.1.2
+// @version      3.1.4
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
 // @author       레몬파이 = 시범단계
 // @match        https://www.univers.chat/*
@@ -178,7 +178,8 @@
         let lastMsgCount = 0;
 
         function getMsgCount() {
-            return document.querySelectorAll('[id^="msg-assistant-"]').length;
+            // viewer-content = 어시스턴트 메시지만 해당
+            return document.querySelectorAll('.viewer-content').length;
         }
 
         // 전송 의도 감지 (클릭 or Enter)
@@ -205,11 +206,13 @@
             const sendBtn = document.querySelector('button[aria-label="메시지 전송"]');
             if (sendBtn) attachSendIntent(sendBtn);
 
-            // 새 assistant 메시지 등장 = 전송 완료
+            // 새 메시지 등장 = 전송 완료 (유저+어시스턴트 쌍으로 추가되므로 1 이상 증가 시 처리)
             const cur = getMsgCount();
             if (cur > lastMsgCount) {
                 lastMsgCount = cur;
-                onAfterSend();
+                // 중복 방지: 짧은 시간 내 여러번 호출 방어
+                clearTimeout(watchSendButton._afterSendTimer);
+                watchSendButton._afterSendTimer = setTimeout(() => onAfterSend(), 100);
             }
         }).observe(document.body, { childList: true, subtree: true });
 
