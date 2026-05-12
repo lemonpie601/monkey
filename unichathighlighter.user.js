@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 형광펜
 // @namespace    https://www.univers.chat/
-// @version      2.2.0
+// @version      2.2.1
 // @description  유니버스챗 형광펜 노트 (모바일 최적화)
 // @author       레몬파이
 // @match        https://www.univers.chat/*
