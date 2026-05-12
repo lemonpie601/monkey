@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         엘린 로그 저장
 // @namespace    https://elyn.ai/
-// @version      6.4.0
+// @version      6.6.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
 // @author       레몬파이
 // @match        https://elyn.ai/*
@@ -13,6 +13,9 @@
 
 (function () {
     'use strict';
+
+    // DPR: 캔버스 해상도 선명도용 (UI 크기와 무관)
+    const DPR = window.devicePixelRatio || 1;
 
     GM_addStyle(`
         #els-bar {
@@ -56,7 +59,7 @@
         }
         #els-ov.on { display: flex; }
 
-        /* 패널: 뷰포트 92% 높이 고정, flex column */
+        /* 패널: 뷰포트에 맞게 유동 */
         #els-pn {
             background: hsl(var(--popover));
             border: 1px solid hsl(var(--border) / 0.3);
@@ -71,10 +74,9 @@
             box-sizing: border-box;
         }
 
-        /* 미리보기: 남은 공간 전부 차지, 캔버스를 contain으로 */
         #els-cvw {
             flex: 1 1 0;
-            min-height: 0;          /* flex 자식 shrink 허용 */
+            min-height: 0;
             border-radius: 14px;
             overflow: hidden;
             display: flex;
@@ -82,8 +84,8 @@
             justify-content: center;
             background: transparent;
         }
+        /* 캔버스 CSS 크기: 컨테이너 안에서 비율 유지하며 최대한 크게 (contain) */
         #els-cvw canvas {
-            /* 영역 안에서 비율 유지하며 최대한 크게 */
             max-width: 100%;
             max-height: 100%;
             width: auto;
@@ -92,7 +94,6 @@
             border-radius: 14px;
         }
 
-        /* 옵션 영역: 고정 크기 */
         #els-opts {
             flex: 0 0 auto;
             display: flex; flex-direction: column; gap: 14px;
@@ -264,7 +265,6 @@
                     <div class="els-bg-g">${fnH}</div>
                 </div>
 
-
                 <div class="els-div"></div>
 
                 <div class="els-sec">
@@ -338,9 +338,9 @@
         let last = 0, m;
         while ((m = RE.exec(text)) !== null) {
             if (m.index > last) tokens.push({ type:'normal',   text: text.slice(last, m.index) });
-            if      (m[1] !== undefined) tokens.push({ type:'dialogue', text: '\u201c' + m[1] + '\u201d' });
+            if      (m[1] !== undefined) tokens.push({ type:'dialogue', text: '“' + m[1] + '”' });
             else if (m[2] !== undefined) tokens.push({ type:'thought',  text: "'"  + m[2] + "'"  });
-            else if (m[3] !== undefined) tokens.push({ type:'thought',  text: '\u2018' + m[3] + '\u2019' });
+            else if (m[3] !== undefined) tokens.push({ type:'thought',  text: '‘' + m[3] + '’' });
             else if (m[4] !== undefined) tokens.push({ type:'italic',   text: m[4] });
             last = m.index + m[0].length;
         }
@@ -388,6 +388,7 @@
 
     // ==========================================
     // 카드 렌더링
+    // DPR 반영: 캔버스 실제 픽셀을 DPR배로 키우고 ctx를 scale → 선명한 고해상도 PNG
     // ==========================================
     function makeCard() {
         const bg        = BGS[st.bg];
@@ -404,6 +405,7 @@
         const sepC        = dark ? `rgba(${acRgb},0.2)`  : `rgba(${acRgb},0.25)`;
         const italicAlpha = dark ? 0.45 : 0.40;
 
+        // 논리적 크기 (고정값 — 항상 동일)
         const W  = 920;
         const R  = 24;
         const PX = 52;
@@ -412,6 +414,7 @@
         const FS = 26;
         const LH = FS * 1.5;
 
+        // DPR 반영: 실제 캔버스 픽셀은 W*DPR, 그리기는 scale(DPR)로 논리 좌표 유지
         const tmp   = document.createElement('canvas');
         const tc    = tmp.getContext('2d');
         const textW = W - PX * 2;
@@ -430,16 +433,22 @@
         const FOOTER_H = 44;
         const textH    = Math.max(allLineTokens.length, 1) * LH;
         const H        = PT + textH + LH * 0.1 + 2 + FOOTER_H + PB;
+        const logicalH = Math.max(H, 280);
 
+        // 실제 캔버스 크기 = 논리 크기 × DPR (선명도)
         const cv  = document.createElement('canvas');
-        cv.width  = W;
-        cv.height = Math.max(H, 280);
+        cv.width  = W * DPR;
+        cv.height = logicalH * DPR;
+        // CSS 표시 크기는 지정하지 않음 → #els-cvw의 max-width/max-height: 100%가
+        // 컨테이너 안에서 비율 유지하며 최대한 크게 contain (원래 6.4.0 동작)
+
         const ctx = cv.getContext('2d');
+        ctx.scale(DPR, DPR);  // 이후 모든 좌표는 논리 픽셀 기준
 
         ctx.save();
-        ctx.beginPath(); rrPath(ctx, 0, 0, W, cv.height, R); ctx.clip();
+        ctx.beginPath(); rrPath(ctx, 0, 0, W, logicalH, R); ctx.clip();
         ctx.fillStyle = bg.a;
-        ctx.fillRect(0, 0, W, cv.height);
+        ctx.fillRect(0, 0, W, logicalH);
         ctx.fillStyle = ac;
         ctx.fillRect(0, 0, W, 3);
 
@@ -449,7 +458,6 @@
             const y          = PT + row * LH;
             const isLastLine = row === totalLines - 1;
 
-            // 줄 총 너비 계산
             let lineW = 0;
             lineTokens.forEach(tok => {
                 ctx.font = `${tok.type === 'italic' ? 'italic' : '400'} ${FS}px ${font}`;
@@ -493,12 +501,12 @@
         });
 
         // 하단 구분선
-        const sepY = cv.height - PB - FOOTER_H + 8;
+        const sepY = logicalH - PB - FOOTER_H + 8;
         ctx.strokeStyle = sepC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PX, sepY); ctx.lineTo(W - PX, sepY); ctx.stroke();
 
         // 하단 좌
-        const botY = cv.height - PB - 4;
+        const botY = logicalH - PB - 4;
         ctx.beginPath();
         ctx.arc(PX + 5, botY - 4, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = ac; ctx.globalAlpha = 1; ctx.fill();
@@ -521,7 +529,7 @@
         ctx.save();
         ctx.strokeStyle = dark ? `rgba(${acRgb},0.25)` : `rgba(${acRgb},0.3)`;
         ctx.lineWidth   = 1.5;
-        ctx.beginPath(); rrPath(ctx, 0, 0, W, cv.height, R); ctx.stroke();
+        ctx.beginPath(); rrPath(ctx, 0, 0, W, logicalH, R); ctx.stroke();
         ctx.restore();
 
         return cv;
@@ -551,14 +559,12 @@
     function pad(n) { return String(n).padStart(2,'0'); }
 
     // ==========================================
-    // 미리보기 — CSS max-width/max-height로 contain
+    // 미리보기
     // ==========================================
     function redraw() {
         const cvw = document.getElementById('els-cvw');
         cvw.innerHTML = '';
         const cv = makeCard();
-        // CSS가 max-width:100% / max-height:100% / width:auto / height:auto 로
-        // 컨테이너 안에서 비율 유지하며 최대한 크게 표시
         cvw.appendChild(cv);
     }
 
