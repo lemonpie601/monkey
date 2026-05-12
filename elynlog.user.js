@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         엘린 로그 저장 📷
 // @namespace    https://elyn.ai/
-// @version      6.0.0
+// @version      6.4.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
 // @author       레몬파이
 // @match        https://elyn.ai/*
@@ -56,39 +56,56 @@
         }
         #els-ov.on { display: flex; }
 
+        /* 패널: 뷰포트 92% 높이 고정, flex column */
         #els-pn {
             background: hsl(var(--popover));
             border: 1px solid hsl(var(--border) / 0.3);
-            border-radius: 24px; padding: 20px;
+            border-radius: 24px;
+            padding: 20px;
             width: min(600px, 94vw);
+            height: 80vh;
             box-shadow: 0 20px 60px rgba(0,0,0,0.35);
             display: flex; flex-direction: column; gap: 14px;
             font-family: Pretendard, sans-serif;
-            max-height: 92vh; overflow-y: auto;
+            overflow: hidden;
+            box-sizing: border-box;
         }
-        .els-ph { display: flex; align-items: center; justify-content: space-between; }
-        .els-pt { font-size: 14px; font-weight: 700; color: hsl(var(--foreground)); }
-        #els-xbtn {
-            background: hsl(var(--muted) / 0.4); border: none; cursor: pointer;
-            color: hsl(var(--muted-foreground)); width: 28px; height: 28px;
-            border-radius: 50%; font-size: 13px; display: flex;
-            align-items: center; justify-content: center; transition: 0.15s;
+
+        /* 미리보기: 남은 공간 전부 차지, 캔버스를 contain으로 */
+        #els-cvw {
+            flex: 1 1 0;
+            min-height: 0;          /* flex 자식 shrink 허용 */
+            border-radius: 14px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
         }
-        #els-xbtn:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+        #els-cvw canvas {
+            /* 영역 안에서 비율 유지하며 최대한 크게 */
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            display: block;
+            border-radius: 14px;
+        }
 
-        /* 카드 미리보기 */
-        #els-cvw { border-radius: 14px; overflow: hidden; }
-        #els-cvw canvas { width: 100%; height: auto; display: block; }
+        /* 옵션 영역: 고정 크기 */
+        #els-opts {
+            flex: 0 0 auto;
+            display: flex; flex-direction: column; gap: 14px;
+        }
 
-        /* 섹션 */
         .els-sec { display: flex; flex-direction: column; gap: 7px; }
         .els-sl {
             font-size: 10.5px; font-weight: 600; letter-spacing: 0.4px;
             color: hsl(var(--muted-foreground));
         }
 
-        /* 배경 버튼 그룹 */
         .els-bg-g { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+        .els-al-g { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
         .els-pl {
             font-size: 12px; font-weight: 600; height: 32px;
             border-radius: 9999px; border: 1px solid transparent;
@@ -104,8 +121,6 @@
             border-color: hsl(var(--primary) / 0.3);
         }
 
-        /* 포인트 컬러 */
-        .els-acr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .els-acd {
             width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
             border: 2.5px solid transparent; transition: 0.15s;
@@ -114,7 +129,6 @@
         .els-acd.on { border-color: hsl(var(--foreground) / 0.6); transform: scale(1.2); }
         .els-acd:hover:not(.on) { transform: scale(1.1); }
 
-        /* 치환 */
         #els-rpl { display: flex; flex-direction: column; gap: 6px; }
         .els-rrow { display: flex; align-items: center; gap: 6px; }
         .els-ri {
@@ -141,9 +155,8 @@
         }
         #els-radd:hover { background: hsl(var(--muted) / 0.7); color: hsl(var(--foreground)); }
 
-        .els-div { height: 1px; background: hsl(var(--border) / 0.18); }
+        .els-div { height: 1px; background: hsl(var(--border) / 0.18); flex-shrink: 0; }
 
-        /* 하단 버튼 */
         .els-ab {
             padding: 9px 22px; border-radius: 9999px; border: none;
             font-size: 13px; font-weight: 600; cursor: pointer;
@@ -170,37 +183,36 @@
     // ==========================================
     // 설정
     // ==========================================
-
-    // 배경: 밝은/어두운 골고루
     const BGS = [
-        { n:'화이트',   a:'#ffffff',   b:'#f7f7f7' },
-        { n:'크림',     a:'#fdf8f0',   b:'#f5ede0' },
-        { n:'연보라',   a:'#f3f0ff',   b:'#ede8ff' },
-        { n:'차콜',     a:'#1e1e1e',   b:'#282828' },
-        { n:'딥 블루',  a:'#0f1523',   b:'#151d2e' },
-        { n:'딥 그린',  a:'#0c1a10',   b:'#122016' },
+        { n:'화이트',  a:'#ffffff' },
+        { n:'크림',    a:'#fdf8f0' },
+        { n:'연보라',  a:'#f3f0ff' },
+        { n:'차콜',    a:'#1e1e1e' },
+        { n:'딥 블루', a:'#0f1523' },
+        { n:'딥 그린', a:'#0c1a10' },
     ];
-
-    // 포인트: 다양한 계열로
     const ACS = [
-        '#7c3aed', // 퍼플 (기본)
-        '#db2777', // 핑크
-        '#2563eb', // 블루
-        '#059669', // 그린
-        '#d97706', // 앰버
-        '#dc2626', // 레드
-        '#0891b2', // 시안
-        '#374151', // 다크 그레이
+        '#7c3aed','#db2777','#2563eb','#059669',
+        '#d97706','#dc2626','#0891b2','#374151',
     ];
-
+    const THOUGHT_ACS = [
+        '#a78bfa','#f9a8d4','#93c5fd','#6ee7b7',
+        '#fcd34d','#fca5a5','#67e8f9','#9ca3af',
+    ];
     const FNS = [
         { l:'기본체', v:'Pretendard, "Apple SD Gothic Neo", sans-serif' },
         { l:'명조체', v:'"Noto Serif KR", Georgia, serif' },
         { l:'고딕체', v:'"Nanum Gothic", "Malgun Gothic", sans-serif' },
     ];
+    const ALIGNS = [
+        { l:'양끝',   v:'justify' },
+        { l:'왼쪽',   v:'left'    },
+        { l:'가운데', v:'center'  },
+        { l:'오른쪽', v:'right'   },
+    ];
 
     let rp = GM_getValue('els_rp', []);
-    let st = { bg:0, ac:0, fn:0 };
+    let st = { bg:0, ac:0, fn:0, al:1 };
     let savedText = '';
 
     // ==========================================
@@ -209,7 +221,7 @@
     const bar = document.createElement('div');
     bar.id = 'els-bar';
     bar.innerHTML = `
-        <span id="els-prev-txt" style="display: none;"></span>
+        <span id="els-prev-txt" style="display:none"></span>
         <button id="els-open-btn">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
@@ -233,43 +245,43 @@
         `<div class="els-acd${i===0?' on':''}" data-ac="${i}" style="background:${c}"></div>`).join('');
     const fnH = FNS.map((f,i) =>
         `<button class="els-pl${i===0?' on':''}" data-fn="${i}">${f.l}</button>`).join('');
+    const alH = ALIGNS.map((a,i) =>
+        `<button class="els-pl${i===1?' on':''}" data-al="${i}">${a.l}</button>`).join('');
 
     ov.innerHTML = `
         <div id="els-pn">
-            <div class="els-ph">
-                <div class="els-pt">📷 로그 카드 저장</div>
-                <button id="els-xbtn">✕</button>
-            </div>
-
             <div id="els-cvw"></div>
 
             <div class="els-div"></div>
 
-            <div class="els-sec">
-                <div class="els-sl">배경</div>
-                <div class="els-bg-g">${bgH}</div>
-            </div>
-            <div class="els-sec">
-                <div class="els-sl">폰트</div>
-                <div class="els-bg-g">${fnH}</div>
-            </div>
-
-            <div class="els-div"></div>
-
-            <div class="els-sec">
-                <div class="els-sl">
-                    텍스트 치환
-                    <span style="font-weight:400;opacity:0.5;margin-left:4px">PNG 저장 시 자동 적용</span>
+            <div id="els-opts">
+                <div class="els-sec">
+                    <div class="els-sl">배경</div>
+                    <div class="els-bg-g">${bgH}</div>
                 </div>
-                <div id="els-rpl"></div>
-                <button id="els-radd">+ 치환 추가</button>
-            </div>
+                <div class="els-sec">
+                    <div class="els-sl">폰트</div>
+                    <div class="els-bg-g">${fnH}</div>
+                </div>
 
-            <div class="els-div"></div>
 
-            <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button class="els-ab els-cn" id="els-cnbtn">취소</button>
-                <button class="els-ab els-sv" id="els-svbtn">↓ PNG 저장</button>
+                <div class="els-div"></div>
+
+                <div class="els-sec">
+                    <div class="els-sl">
+                        텍스트 치환
+                        <span style="font-weight:400;opacity:0.5;margin-left:4px">PNG 저장 시 자동 적용</span>
+                    </div>
+                    <div id="els-rpl"></div>
+                    <button id="els-radd">+ 치환 추가</button>
+                </div>
+
+                <div class="els-div"></div>
+
+                <div style="display:flex;gap:8px;justify-content:flex-end">
+                    <button class="els-ab els-cn" id="els-cnbtn">취소</button>
+                    <button class="els-ab els-sv" id="els-svbtn">↓ PNG 저장</button>
+                </div>
             </div>
         </div>
     `;
@@ -318,46 +330,105 @@
     }
 
     // ==========================================
-    // 카드 렌더링 — 심플 + 라운드 PNG
+    // 텍스트 토큰 파싱
+    // ==========================================
+    function parseTokens(text) {
+        const tokens = [];
+        const RE = /"([^"]*)"|'([^']*)'|'([^']*)'|\*([^*]+)\*/g;
+        let last = 0, m;
+        while ((m = RE.exec(text)) !== null) {
+            if (m.index > last) tokens.push({ type:'normal',   text: text.slice(last, m.index) });
+            if      (m[1] !== undefined) tokens.push({ type:'dialogue', text: '\u201c' + m[1] + '\u201d' });
+            else if (m[2] !== undefined) tokens.push({ type:'thought',  text: "'"  + m[2] + "'"  });
+            else if (m[3] !== undefined) tokens.push({ type:'thought',  text: '\u2018' + m[3] + '\u2019' });
+            else if (m[4] !== undefined) tokens.push({ type:'italic',   text: m[4] });
+            last = m.index + m[0].length;
+        }
+        if (last < text.length) tokens.push({ type:'normal', text: text.slice(last) });
+        return tokens;
+    }
+
+    // ==========================================
+    // 토큰 단위 줄바꿈
+    // ==========================================
+    function wrapTokenLines(tc, tokens, maxW, fs, font) {
+        if (!tokens.length) return [[{ type:'normal', text:'' }]];
+        const lines = [];
+        let curLine = [], curW = 0;
+
+        function msr(type, str) {
+            tc.font = `${type === 'italic' ? 'italic' : '400'} ${fs}px ${font}`;
+            return tc.measureText(str).width;
+        }
+        function pushLine() { lines.push(curLine); curLine = []; curW = 0; }
+
+        for (const tok of tokens) {
+            if (!tok.text) { curLine.push({ type: tok.type, text: '' }); continue; }
+            let buf = '';
+            for (const ch of tok.text) {
+                const wBuf = msr(tok.type, buf);
+                const wCh  = msr(tok.type, ch);
+                if (buf && curW + wBuf + wCh > maxW) {
+                    curLine.push({ type: tok.type, text: buf });
+                    pushLine();
+                    buf  = ch;
+                    curW = 0;
+                } else {
+                    buf += ch;
+                }
+            }
+            if (buf) {
+                curLine.push({ type: tok.type, text: buf });
+                curW += msr(tok.type, buf);
+            }
+        }
+        if (curLine.length) pushLine();
+        return lines.length ? lines : [[{ type:'normal', text:'' }]];
+    }
+
+    // ==========================================
+    // 카드 렌더링
     // ==========================================
     function makeCard() {
-        const bg   = BGS[st.bg];
-        const ac   = ACS[st.ac];
-        const font = FNS[st.fn].v;
-        const txt  = applyRp(savedText || '');
-        const dark = isDark(bg.a);
+        const bg        = BGS[st.bg];
+        const ac        = ACS[st.ac];
+        const thoughtAc = THOUGHT_ACS[st.ac];
+        const font      = FNS[st.fn].v;
+        const align     = ALIGNS[st.al].v;
+        const txt       = applyRp(savedText || '');
+        const dark      = isDark(bg.a);
 
-        // 색상 계산
-        const acRgb  = hexToRgb(ac);
-        const textC  = dark ? 'rgba(240,238,255,0.90)' : 'rgba(18,12,40,0.88)';
-        const mutedC = dark ? `rgba(${acRgb},0.55)` : `rgba(${acRgb},0.7)`;
-        const sepC   = dark ? `rgba(${acRgb},0.2)` : `rgba(${acRgb},0.25)`;
-        const bgCard = bg.a;
+        const acRgb       = hexToRgb(ac);
+        const textC       = dark ? 'rgba(240,238,255,0.90)' : 'rgba(18,12,40,0.88)';
+        const mutedC      = dark ? `rgba(${acRgb},0.55)` : `rgba(${acRgb},0.7)`;
+        const sepC        = dark ? `rgba(${acRgb},0.2)`  : `rgba(${acRgb},0.25)`;
+        const italicAlpha = dark ? 0.45 : 0.40;
 
-        const W      = 920;
-        const R      = 24;     // 카드 라운드
-        const PX     = 52;
-        const PT     = 80;
-        const PB     = 40;
-        const FS     = 26;
-        const LH     = FS * 1.5;
+        const W  = 920;
+        const R  = 24;
+        const PX = 52;
+        const PT = 80;
+        const PB = 40;
+        const FS = 26;
+        const LH = FS * 1.5;
 
-        // 줄바꿈 계산
-        const tmp = document.createElement('canvas');
-        const tc  = tmp.getContext('2d');
-        tc.font   = `400 ${FS}px ${font}`;
+        const tmp   = document.createElement('canvas');
+        const tc    = tmp.getContext('2d');
         const textW = W - PX * 2;
 
         const paras = txt.split('\n');
-        const allLines = [];
-        paras.forEach((p, pi) => {
-            const ls = wrapLine(tc, p.trim(), textW);
-            allLines.push(...ls);
+        const allLineTokens = [];
+        paras.forEach(p => {
+            const tokens  = parseTokens(p.trim());
+            const wrapped = wrapTokenLines(tc, tokens, textW, FS, font);
+            allLineTokens.push(...wrapped);
         });
-        while (allLines.length && allLines[allLines.length-1] === '') allLines.pop();
+        while (allLineTokens.length && allLineTokens[allLineTokens.length-1].every(t => !t.text.trim())) {
+            allLineTokens.pop();
+        }
 
         const FOOTER_H = 44;
-        const textH    = Math.max(allLines.length, 1) * LH;
+        const textH    = Math.max(allLineTokens.length, 1) * LH;
         const H        = PT + textH + LH * 0.1 + 2 + FOOTER_H + PB;
 
         const cv  = document.createElement('canvas');
@@ -365,53 +436,88 @@
         cv.height = Math.max(H, 280);
         const ctx = cv.getContext('2d');
 
-        // ── 라운드 클리핑
         ctx.save();
         ctx.beginPath(); rrPath(ctx, 0, 0, W, cv.height, R); ctx.clip();
-
-        // ── 배경
-        ctx.fillStyle = bgCard;
+        ctx.fillStyle = bg.a;
         ctx.fillRect(0, 0, W, cv.height);
-
-        // 상단 포인트 컬러 얇은 띠
         ctx.fillStyle = ac;
         ctx.fillRect(0, 0, W, 3);
 
-        // ── 본문 텍스트
-        ctx.font      = `400 ${FS}px ${font}`;
-        ctx.fillStyle = textC;
-        allLines.forEach((l, i) => {
-            if (l.trim()) ctx.fillText(l, PX, PT + i * LH);
+        // 본문 렌더링
+        const totalLines = allLineTokens.length;
+        allLineTokens.forEach((lineTokens, row) => {
+            const y          = PT + row * LH;
+            const isLastLine = row === totalLines - 1;
+
+            // 줄 총 너비 계산
+            let lineW = 0;
+            lineTokens.forEach(tok => {
+                ctx.font = `${tok.type === 'italic' ? 'italic' : '400'} ${FS}px ${font}`;
+                lineW += ctx.measureText(tok.text).width;
+            });
+
+            let startX     = PX;
+            let extraSpace = 0;
+
+            if (align === 'right') {
+                startX = PX + textW - lineW;
+            } else if (align === 'center') {
+                startX = PX + (textW - lineW) / 2;
+            } else if (align === 'justify' && !isLastLine) {
+                const fullText = lineTokens.map(t => t.text).join('');
+                const spCount  = (fullText.match(/ /g) || []).length;
+                if (spCount > 0) extraSpace = (textW - lineW) / spCount;
+            }
+
+            let x = startX;
+            lineTokens.forEach(tok => {
+                if (!tok.text) return;
+                ctx.font = `${tok.type === 'italic' ? 'italic' : '400'} ${FS}px ${font}`;
+
+                if      (tok.type === 'dialogue') { ctx.fillStyle = ac;        ctx.globalAlpha = 1; }
+                else if (tok.type === 'thought')  { ctx.fillStyle = thoughtAc; ctx.globalAlpha = 1; }
+                else if (tok.type === 'italic')   { ctx.fillStyle = textC;     ctx.globalAlpha = italicAlpha; }
+                else                              { ctx.fillStyle = textC;     ctx.globalAlpha = 1; }
+
+                if (align === 'justify' && extraSpace > 0 && !isLastLine) {
+                    for (const ch of tok.text) {
+                        ctx.fillText(ch, x, y);
+                        x += ctx.measureText(ch).width + (ch === ' ' ? extraSpace : 0);
+                    }
+                } else {
+                    ctx.fillText(tok.text, x, y);
+                    x += ctx.measureText(tok.text).width;
+                }
+            });
+            ctx.globalAlpha = 1;
         });
 
-        // ── 하단 구분선
+        // 하단 구분선
         const sepY = cv.height - PB - FOOTER_H + 8;
         ctx.strokeStyle = sepC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PX, sepY); ctx.lineTo(W - PX, sepY); ctx.stroke();
 
-        // ── 하단 좌: 포인트 컬러 dot + 채팅방명
-        const botY   = cv.height - PB - 4;
+        // 하단 좌
+        const botY = cv.height - PB - 4;
         ctx.beginPath();
         ctx.arc(PX + 5, botY - 4, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = ac;
-        ctx.fill();
+        ctx.fillStyle = ac; ctx.globalAlpha = 1; ctx.fill();
 
-        const room = (document.title.replace(/\s*[-|]\s*Elyn.*$/i,'').trim() || 'elyn.ai').slice(0, 36);
-        ctx.font      = `500 13px Pretendard, sans-serif`;
+        const room = (document.title.replace(/\s*[-|]\s*Elyn.*$/i,'').trim() || 'elyn.ai').slice(0,36);
+        ctx.font = `500 13px Pretendard, sans-serif`;
         ctx.fillStyle = mutedC;
         ctx.fillText(room, PX + 16, botY);
 
-        // ── 하단 우: 날짜
+        // 하단 우
         const now     = new Date();
         const dateStr = `${now.getFullYear()}.${pad(now.getMonth()+1)}.${pad(now.getDate())}`;
         ctx.font      = `400 12px Pretendard, sans-serif`;
         ctx.fillStyle = mutedC;
-        const dw = ctx.measureText(dateStr).width;
+        const dw      = ctx.measureText(dateStr).width;
         ctx.fillText(dateStr, W - PX - dw, botY);
 
-        ctx.restore(); // 클리핑 해제
+        ctx.restore();
 
-        // ── 카드 테두리
         ctx.save();
         ctx.strokeStyle = dark ? `rgba(${acRgb},0.25)` : `rgba(${acRgb},0.3)`;
         ctx.lineWidth   = 1.5;
@@ -424,18 +530,6 @@
     // ==========================================
     // 유틸
     // ==========================================
-    function wrapLine(ctx, text, maxW) {
-        if (!text) return [''];
-        const lines = []; let line = '';
-        for (const ch of text) {
-            const t = line + ch;
-            if (ctx.measureText(t).width > maxW) { if (line) lines.push(line); line = ch; }
-            else line = t;
-        }
-        if (line) lines.push(line);
-        return lines.length ? lines : [''];
-    }
-
     function rrPath(ctx, x, y, w, h, r) {
         ctx.beginPath();
         ctx.moveTo(x+r, y);
@@ -445,27 +539,27 @@
         ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
         ctx.closePath();
     }
-
     function hexToRgb(hex) {
         const c = hex.replace('#','');
         return `${parseInt(c.slice(0,2),16)},${parseInt(c.slice(2,4),16)},${parseInt(c.slice(4,6),16)}`;
     }
-
     function isDark(hex) {
         const c = hex.replace('#','');
         const r=parseInt(c.slice(0,2),16),g=parseInt(c.slice(2,4),16),b=parseInt(c.slice(4,6),16);
         return (r*299+g*587+b*114)/1000 < 128;
     }
-
     function pad(n) { return String(n).padStart(2,'0'); }
 
     // ==========================================
-    // 미리보기 갱신
+    // 미리보기 — CSS max-width/max-height로 contain
     // ==========================================
     function redraw() {
-        const w = document.getElementById('els-cvw');
-        w.innerHTML = '';
-        w.appendChild(makeCard());
+        const cvw = document.getElementById('els-cvw');
+        cvw.innerHTML = '';
+        const cv = makeCard();
+        // CSS가 max-width:100% / max-height:100% / width:auto / height:auto 로
+        // 컨테이너 안에서 비율 유지하며 최대한 크게 표시
+        cvw.appendChild(cv);
     }
 
     // ==========================================
@@ -477,18 +571,22 @@
         ov.querySelectorAll('.els-pl[data-bg]').forEach(x => x.classList.remove('on'));
         b.classList.add('on'); redraw();
     }));
-
     ov.querySelectorAll('.els-acd').forEach(d => d.addEventListener('click', e => {
         e.stopPropagation();
         st.ac = +d.dataset.ac;
         ov.querySelectorAll('.els-acd').forEach(x => x.classList.remove('on'));
         d.classList.add('on'); redraw();
     }));
-
     ov.querySelectorAll('.els-pl[data-fn]').forEach(b => b.addEventListener('click', e => {
         e.stopPropagation();
         st.fn = +b.dataset.fn;
         ov.querySelectorAll('.els-pl[data-fn]').forEach(x => x.classList.remove('on'));
+        b.classList.add('on'); redraw();
+    }));
+    ov.querySelectorAll('.els-pl[data-al]').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation();
+        st.al = +b.dataset.al;
+        ov.querySelectorAll('.els-pl[data-al]').forEach(x => x.classList.remove('on'));
         b.classList.add('on'); redraw();
     }));
 
@@ -500,13 +598,12 @@
         if (t) savedText = t;
         if (!savedText) return;
         ov.classList.add('on');
-        redraw();
+        requestAnimationFrame(() => requestAnimationFrame(redraw));
         barHide();
     });
 
     // 모달 닫기
     function closeOv() { ov.classList.remove('on'); }
-    document.getElementById('els-xbtn').addEventListener('click',  e => { e.stopPropagation(); closeOv(); });
     document.getElementById('els-cnbtn').addEventListener('click', e => { e.stopPropagation(); closeOv(); });
     ov.addEventListener('click', e => { if (e.target === ov) closeOv(); });
     document.getElementById('els-pn').addEventListener('click', e => e.stopPropagation());
@@ -528,7 +625,6 @@
     document.getElementById('els-bar-close').addEventListener('click', e => {
         e.stopPropagation(); barHide();
     });
-
     function barHide() { bar.style.display = 'none'; }
 
     // ==========================================
@@ -548,8 +644,7 @@
 
     document.addEventListener('mousedown', e => {
         if (ov.contains(e.target) || bar.contains(e.target)) return;
-        pendingSel = true;
-        barHide();
+        pendingSel = true; barHide();
     }, true);
 
     document.addEventListener('mouseup', e => {
