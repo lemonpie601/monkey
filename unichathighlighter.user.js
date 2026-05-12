@@ -3,7 +3,7 @@
 // @namespace    https://www.univers.chat/
 // @version      2.1.0
 // @description  유니버스챗 형광펜 노트
-// @author       adapted from 레몬파이
+// @author       레몬파이
 // @match        https://www.univers.chat/*
 // @grant        GM_addStyle
 // @license      MIT
