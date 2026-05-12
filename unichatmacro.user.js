@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 매크로
 // @namespace    https://www.univers.chat/
-// @version      3.1.5
+// @version      3.1.4
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
 // @author       레몬파이 = 시범단계
 // @match        https://www.univers.chat/*
@@ -133,27 +133,25 @@
     // ==========================================
     // 매크로 실행
     // ==========================================
-    // 흐름: .viewer-content 새로 추가됨
-    //   → 현재 모델 히스토리 기록
-    //   → 매크로 켜져있으면 다음 턴 모델로 전환
-    //   → 매크로 턴 증가
+    // 흐름:
+    //   전송 직전(클릭/Enter) → 현재 모델 기억 + 다음 매크로 턴 모델로 미리 전환
+    //   전송 완료 후          → 기억한 모델 히스토리 기록 + 매크로 턴 증가
     // ==========================================
     let macroRunning = false;
+    let modelUsedThisTurn = null; // 전송 직전에 기억한 실제 사용 모델
 
-    async function onAfterSend() {
-        // 1. 현재 모델 히스토리 기록
-        const usedModel = getCurrentModelName();
-        addHistory(usedModel);
-        if (isActive()) incMacroTurn();
-        setTurn();
-        renderPopupList();
+    // 전송 직전 호출 — 현재 모델 기억 + 다음 매크로 턴 모델로 미리 전환
+    async function onBeforeSend() {
+        // 현재 모델을 기억 (이게 이번 턴에 실제로 사용되는 모델)
+        modelUsedThisTurn = getCurrentModelName();
 
-        // 2. 매크로 켜져있으면 다음 턴 모델로 전환
+        // 매크로가 켜져있으면 다음 매크로 턴 모델로 미리 전환
         if (isActive() && !macroRunning) {
             const cfg = loadRoomConfig();
             if (cfg?.steps?.length) {
-                const nextModel = getModelForTurn(cfg.steps, getMacroTurn());
-                if (nextModel && nextModel !== getCurrentModelName()) {
+                const nextMacroTurn = getMacroTurn() + 1;
+                const nextModel = getModelForTurn(cfg.steps, nextMacroTurn);
+                if (nextModel && nextModel !== modelUsedThisTurn) {
                     macroRunning = true;
                     const ok = await switchToModel(nextModel);
                     macroRunning = false;
@@ -163,20 +161,58 @@
         }
     }
 
+    // 전송 완료 후 호출 — 히스토리 기록 + 매크로 턴 증가
+    function onAfterSend() {
+        const usedModel = modelUsedThisTurn || getCurrentModelName();
+        modelUsedThisTurn = null;
+        addHistory(usedModel);
+        if (isActive()) incMacroTurn(); // 매크로 켜진 동안만 카운트
+        setTurn();
+        renderPopupList();
+    }
+
     function watchSendButton() {
-        // .viewer-content가 새로 추가될 때마다 onAfterSend() 호출
+        // 전송 직전 감지: 클릭 or Enter → onBeforeSend()
+        // 전송 완료 감지: msg-assistant-* div가 새로 추가될 때 → onAfterSend()
+
         let lastMsgCount = 0;
 
         function getMsgCount() {
+            // viewer-content = 어시스턴트 메시지만 해당
             return document.querySelectorAll('.viewer-content').length;
         }
 
+        // 전송 의도 감지 (클릭 or Enter)
+        function attachSendIntent(sendBtn) {
+            if (sendBtn._mcrWatched) return;
+            sendBtn._mcrWatched = true;
+            sendBtn.addEventListener('click', () => {
+                if (!sendBtn.disabled) onBeforeSend();
+            }, true);
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                const ta = document.querySelector('textarea');
+                if (ta && document.activeElement === ta && ta.value.trim().length > 0) {
+                    onBeforeSend();
+                }
+            }
+        }, true);
+
+        // 전송 완료 감지: msg-assistant-* div 새로 추가됨
         new MutationObserver(() => {
+            // 전송 버튼에 인텐트 리스너 붙이기
+            const sendBtn = document.querySelector('button[aria-label="메시지 전송"]');
+            if (sendBtn) attachSendIntent(sendBtn);
+
+            // 새 메시지 등장 = 전송 완료 (유저+어시스턴트 쌍으로 추가되므로 1 이상 증가 시 처리)
             const cur = getMsgCount();
             if (cur > lastMsgCount) {
                 lastMsgCount = cur;
-                clearTimeout(watchSendButton._timer);
-                watchSendButton._timer = setTimeout(() => onAfterSend(), 100);
+                // 중복 방지: 짧은 시간 내 여러번 호출 방어
+                clearTimeout(watchSendButton._afterSendTimer);
+                watchSendButton._afterSendTimer = setTimeout(() => onAfterSend(), 100);
             }
         }).observe(document.body, { childList: true, subtree: true });
 
@@ -976,6 +1012,19 @@
     watchSendButton();
 
 
-    // 이어서 생성하기는 .viewer-content 감지로 자동 처리됨 (별도 처리 불필요)
+    // ==========================================
+    // 이어서 생성하기 버튼 감지 → onBeforeSend만 호출
+    // (onAfterSend는 msg-assistant-* 추가로 자동 감지)
+    // ==========================================
+    function watchContinueButton() {
+        document.addEventListener('click', e => {
+            const btn = e.target.closest('button[aria-label="이어서 생성하기"]');
+            if (btn && !btn.disabled) {
+                onBeforeSend();
+            }
+        }, true);
+    }
+
+    watchContinueButton();
 
 })();
