@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 매크로
 // @namespace    https://www.univers.chat/
-// @version      3.0.0
+// @version      3.0.2
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
 // @author       레몬파이 = 시범단계
 // @match        https://www.univers.chat/*
@@ -150,18 +150,39 @@
     }
 
     function watchSendButton() {
-        let lastDisabled = true;
+        let intendedSend = false; // 실제 전송 의도 플래그 (클릭 or Enter)
+
+        // textarea Enter 키 감지 (Shift+Enter 제외)
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                const ta = document.querySelector('textarea');
+                if (ta && document.activeElement === ta && ta.value.trim().length > 0) {
+                    intendedSend = true;
+                }
+            }
+        }, true);
 
         function observe() {
             const sendBtn = document.querySelector('button[aria-label="메시지 전송"]');
             if (!sendBtn || sendBtn._mcrWatched) return;
             sendBtn._mcrWatched = true;
-            lastDisabled = sendBtn.disabled;
 
+            // 버튼 클릭 시 플래그 세팅
+            sendBtn.addEventListener('click', () => {
+                if (!sendBtn.disabled) intendedSend = true;
+            }, true);
+
+            // disabled: false → true = 버튼 비활성화
+            // 클릭 or Enter로 인한 것일 때만 전송으로 인식
+            let lastDisabled = sendBtn.disabled;
             new MutationObserver(() => {
                 const nowDisabled = sendBtn.disabled;
-                // disabled: false → true = 전송 완료
-                if (!lastDisabled && nowDisabled) onSend();
+                if (!lastDisabled && nowDisabled) {
+                    if (intendedSend) {
+                        onSend();
+                    }
+                    intendedSend = false;
+                }
                 lastDisabled = nowDisabled;
             }).observe(sendBtn, { attributes: true, attributeFilter: ['disabled'] });
         }
