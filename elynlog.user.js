@@ -503,7 +503,7 @@
         ctx.arc(PX + 5, botY - 4, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = ac; ctx.globalAlpha = 1; ctx.fill();
 
-        const room = (document.title.replace(/\s*[-|]\s*Elyn.*$/i,'').trim() || 'elyn.ai').slice(0,36);
+        const room = (document.title.replace(/^엘린\s*[-|]\s*/, '').trim() || 'elyn.ai').slice(0, 36);
         ctx.font = `500 13px Pretendard, sans-serif`;
         ctx.fillStyle = mutedC;
         ctx.fillText(room, PX + 16, botY);
@@ -611,13 +611,14 @@
     // PNG 저장
     document.getElementById('els-svbtn').addEventListener('click', e => {
         e.stopPropagation();
-        makeCard().toBlob(blob => {
-            const url = URL.createObjectURL(blob);
-            const a   = document.createElement('a');
-            a.href = url; a.download = `elyn-log-${Date.now()}.png`;
-            document.body.appendChild(a); a.click();
-            document.body.removeChild(a); URL.revokeObjectURL(url);
-        }, 'image/png');
+        const cv = makeCard();
+        const charName = document.title.replace(/^엘린\s*[-|]\s*/, '').trim().replace(/\s+/g, '_') || 'elyn';
+        const a = document.createElement('a');
+        a.href = cv.toDataURL('image/png');
+        a.download = `엘린_${charName}_${Date.now()}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
         closeOv();
         toast('📷 카드가 저장됐어요!');
     });
