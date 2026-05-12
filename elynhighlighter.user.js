@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         엘린 형광펜
 // @namespace    https://elyn.ai/
-// @version      1.0.0
+// @version      2.4.0
 // @description  엘린에서 텍스트에 형광펜 표시 + 메모 기능
 // @author       adapted from 레몬파이
 // @match        https://elyn.ai/*
@@ -17,14 +17,14 @@
     // ==========================================
     // 포인트 컬러
     // ==========================================
-    const P1 = '#FF4D77';
-    const P2 = '#FFB300';
+    const P1 = 'hsl(var(--primary))';
+    const P2 = 'hsl(var(--primary))';
 
     const DEFAULT_COLORS = [
-        { bg: '#FFB300', text: '' },
-        { bg: '#FF4D77', text: '' },
-        { bg: '#b2f0e8', text: '' },
-        { bg: '#d0bfff', text: '' },
+        { bg: '#a78bfa', text: '' },   // 엘린 바이올렛
+        { bg: '#818cf8', text: '' },   // 인디고
+        { bg: '#f472b6', text: '' },   // 핑크
+        { bg: '#34d399', text: '' },   // 그린
     ];
     const MAX_COLORS = 8;
 
@@ -94,31 +94,44 @@
     // CSS — 엘린 UI 스타일 (rounded-2xl, backdrop-blur)
     // ==========================================
     GM_addStyle(`
+        /* =========================================
+           엘린 형광펜 — 엘린 UI 스타일 (라이트/다크 반응형)
+           bg-popover/95, backdrop-blur-md, rounded-2xl
+        ========================================= */
+
+        /* ── CSS 변수 (라이트 기본) ── */
+        #elp-popup {
+            --elp-bg: hsl(var(--popover) / 0.95);
+            --elp-border: hsl(var(--border) / 0.6);
+            --elp-text: hsl(var(--popover-foreground));
+            --elp-muted: hsl(var(--muted-foreground));
+            --elp-card: hsl(var(--card) / 0.7);
+            --elp-input: hsl(var(--input) / 0.5);
+            --elp-sep: hsl(var(--border) / 0.1);
+            --elp-hover: hsl(var(--muted) / 0.3);
+        }
+
         /* ── 팝업 ── */
         #elp-popup {
             position: fixed;
-            width: 280px; max-height: 580px;
+            width: 300px; max-height: 580px;
             border-radius: 16px;
-            border: 1px solid rgba(var(--border), 0.6);
-            box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.1);
+            border: 1px solid var(--elp-border);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.25), 0 4px 16px rgba(0,0,0,0.1);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-            background: rgba(255,255,255,0.88);
-            color: #1a1a1a;
+            background: var(--elp-bg);
+            color: var(--elp-text);
             z-index: 2147483640 !important;
             display: none; flex-direction: column; overflow: hidden;
-            font-family: 'Pretendard','Apple SD Gothic Neo','Noto Sans KR',sans-serif;
+            font-family: Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
             font-size: 13px;
         }
-        .elp-dark#elp-popup {
-            background: rgba(20,20,20,0.92); color: #e8e8e8;
-            border-color: rgba(255,255,255,0.08);
-        }
 
-        /* 모바일 바텀시트 */
+        /* ── 오버레이 (모바일 바텀시트) ── */
         #elp-overlay {
             display: none; position: fixed; inset: 0;
-            background: rgba(0,0,0,0.4); z-index: 2147483639 !important;
-            backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+            background: rgba(0,0,0,0.45); z-index: 2147483639 !important;
+            backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
         }
         #elp-overlay.show { display: block; }
 
@@ -129,16 +142,15 @@
                 bottom: 0 !important; top: auto !important;
                 width: 100% !important; max-width: 100% !important;
                 max-height: 85vh !important;
-                border-radius: 16px 16px 0 0 !important;
+                border-radius: 20px 20px 0 0 !important;
                 border-bottom: none !important;
             }
             #elp-popup::before {
                 content: ''; display: block;
-                width: 36px; height: 4px;
-                background: rgba(0,0,0,0.15); border-radius: 2px;
-                margin: 8px auto 0; flex-shrink: 0;
+                width: 32px; height: 3px;
+                background: var(--elp-muted); opacity: 0.4; border-radius: 2px;
+                margin: 10px auto 0; flex-shrink: 0;
             }
-            .elp-dark#elp-popup::before { background: rgba(255,255,255,0.2); }
             .elp-popup-header { cursor: default !important; }
             #elp-toolbar-btn .elp-btn-label { display: none; }
         }
@@ -146,199 +158,220 @@
         /* ── 선택/편집 바 ── */
         #elp-selection-bar, #elp-edit-bar {
             position: absolute; display: none;
+            background: hsl(var(--popover) / 0.95);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            background: rgba(20,20,20,0.88);
-            padding: 7px 10px; border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.1);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            padding: 7px 11px; border-radius: 12px;
+            border: 1px solid hsl(var(--border) / 0.5);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
             z-index: 2147483641 !important; gap: 7px; align-items: center;
         }
 
-        /* ── 오버레이 ── */
+        /* ── 오버레이 UI ── */
         #elp-reset-overlay, #elp-custom-alert {
             position: fixed; inset: 0; background: rgba(0,0,0,0.55);
             z-index: 2147483642 !important; display: none;
             justify-content: center; align-items: center;
-            backdrop-filter: blur(6px); font-family: 'Pretendard',sans-serif;
+            backdrop-filter: blur(8px); font-family: Pretendard, sans-serif;
         }
 
         /* ── 컨텍스트 메뉴 ── */
         #elp-context-menu {
             position: absolute; display: none;
+            background: hsl(var(--popover) / 0.95);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            background: rgba(20,20,20,0.92);
-            padding: 12px 14px; border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.1);
-            box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+            padding: 12px 14px; border-radius: 14px;
+            border: 1px solid hsl(var(--border) / 0.5);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.2);
             z-index: 2147483644 !important; flex-direction: column; gap: 10px;
-            font-family: 'Pretendard',sans-serif;
+            font-family: Pretendard, sans-serif;
         }
 
         /* ── 컬러 버튼 ── */
         .elp-color-btn {
             width: 20px; height: 20px; border-radius: 50%;
-            border: 1.5px solid rgba(255,255,255,0.5);
+            border: 1.5px solid hsl(var(--border) / 0.5);
             cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
             flex-shrink: 0; box-sizing: border-box;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.15);
         }
-        .elp-color-btn:hover { transform: scale(1.3); box-shadow: 0 0 0 2.5px ${P1}88; }
+        .elp-color-btn:hover { transform: scale(1.25); box-shadow: 0 0 0 2.5px ${P1}99; }
 
         /* ── 공통 버튼 ── */
-        .elp-ctx-text  { color: #ccc; font-size: 12px; font-weight: 600; text-align: center; }
+        .elp-ctx-text { color: var(--elp-muted); font-size: 12px; font-weight: 600; text-align: center; }
         .elp-ctx-actions { display: flex; gap: 8px; justify-content: center; }
-        .elp-ctx-btn { padding: 7px 16px; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s; }
-        .elp-ctx-cancel { background: rgba(255,255,255,0.1); color: #ccc; }
-        .elp-ctx-cancel:hover { background: rgba(255,255,255,0.18); }
-        .elp-ctx-delete { background: rgba(255,77,119,0.2); color: ${P1}; }
-        .elp-ctx-delete:hover { background: ${P1}; color: #fff; }
+        .elp-ctx-btn {
+            padding: 7px 16px; border: none; border-radius: 8px;
+            font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
+            font-family: Pretendard, sans-serif;
+        }
+        .elp-ctx-cancel { background: hsl(var(--muted) / 0.5); color: var(--elp-text); }
+        .elp-ctx-cancel:hover { background: hsl(var(--muted)); }
+        .elp-ctx-delete { background: hsl(var(--destructive) / 0.15); color: hsl(var(--destructive)); }
+        .elp-ctx-delete:hover { background: hsl(var(--destructive)); color: #fff; }
 
         /* ── 모달 박스 ── */
         .elp-alert-box {
-            backdrop-filter: blur(20px); background: rgba(20,20,20,0.9);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: hsl(var(--popover) / 0.98); backdrop-filter: blur(20px);
+            border: 1px solid hsl(var(--border) / 0.5);
             padding: 24px 28px; border-radius: 16px; text-align: center; max-width: 300px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         }
         .elp-reset-box {
-            backdrop-filter: blur(20px); background: rgba(20,20,20,0.9);
-            border: 1px solid rgba(255,77,119,0.3);
+            background: hsl(var(--popover) / 0.98); backdrop-filter: blur(20px);
+            border: 1px solid hsl(var(--destructive) / 0.3);
             padding: 28px; border-radius: 16px; text-align: center; max-width: 320px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         }
 
         /* ── 헤더 ── */
         .elp-popup-header {
             padding: 12px 14px 10px;
-            border-bottom: 1px solid rgba(0,0,0,0.07);
+            border-bottom: 1px solid var(--elp-sep);
             display: flex; justify-content: space-between; align-items: center;
             cursor: grab; user-select: none;
         }
-        .elp-dark .elp-popup-header { border-bottom-color: rgba(255,255,255,0.07); }
         .elp-popup-header:active { cursor: grabbing; }
         .elp-header-title { display: flex; align-items: center; gap: 8px; }
         .elp-header-badge {
             display: inline-flex; align-items: center; gap: 5px;
-            background: rgba(0,0,0,0.05); border-radius: 8px;
-            padding: 3px 9px 3px 7px; font-size: 12px; font-weight: 600;
-            color: rgba(0,0,0,0.75); border: 1px solid rgba(0,0,0,0.07);
+            background: hsl(var(--primary) / 0.1); border-radius: 8px;
+            padding: 3px 9px 3px 7px; font-size: 12px; font-weight: 700;
+            color: ${P1}; border: 1px solid hsl(var(--primary) / 0.25);
         }
-        .elp-dark .elp-header-badge { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); border-color: rgba(255,255,255,0.1); }
-        .elp-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(135deg,${P1},${P2}); flex-shrink: 0; }
-        .elp-header-count { font-size: 10.5px; font-weight: 600; color: ${P1}; background: rgba(255,77,119,0.1); border-radius: 6px; padding: 2px 6px; border: 1px solid rgba(255,77,119,0.2); }
+        .elp-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: ${P1}; flex-shrink: 0; }
+        .elp-header-count {
+            font-size: 10px; font-weight: 700; color: ${P1};
+            background: hsl(var(--primary) / 0.1); border-radius: 6px;
+            padding: 2px 6px; border: 1px solid hsl(var(--primary) / 0.2);
+        }
         .elp-header-actions { display: flex; gap: 3px; align-items: center; }
 
         /* ── 아이콘 버튼 ── */
         .elp-icon-btn {
             background: none; border: none; font-size: 13px; cursor: pointer;
-            color: rgba(0,0,0,0.35); padding: 0; line-height: 1;
+            color: var(--elp-muted); padding: 0; line-height: 1;
             display: flex; align-items: center; justify-content: center;
             width: 26px; height: 26px; border-radius: 7px; transition: 0.15s;
         }
-        .elp-dark .elp-icon-btn { color: rgba(255,255,255,0.35); }
-        .elp-icon-btn:hover { color: ${P1}; background: rgba(255,77,119,0.1); }
-        .elp-bold-active { background: rgba(255,179,0,0.15) !important; color: ${P2} !important; border: 1px solid rgba(255,179,0,0.25) !important; }
+        .elp-icon-btn:hover { color: hsl(var(--primary)); background: hsl(var(--primary) / 0.1); }
+        .elp-bold-active {
+            background: hsl(var(--primary) / 0.12) !important;
+            color: ${P1} !important;
+            border: 1px solid hsl(var(--primary) / 0.25) !important;
+        }
 
         /* ── 슬라이더 ── */
         #elp-opacity-slider {
             width: 48px; height: 3px; border-radius: 2px;
-            appearance: none; background: rgba(0,0,0,0.12); outline: none; cursor: pointer;
+            appearance: none; background: hsl(var(--muted)); outline: none; cursor: pointer;
         }
-        .elp-dark #elp-opacity-slider { background: rgba(255,255,255,0.15); }
         #elp-opacity-slider::-webkit-slider-thumb {
             appearance: none; width: 11px; height: 11px; border-radius: 50%;
-            background: ${P2}; box-shadow: 0 1px 4px rgba(0,0,0,0.2); cursor: pointer; transition: 0.15s;
+            background: hsl(var(--primary)); box-shadow: 0 1px 4px rgba(0,0,0,0.2); cursor: pointer; transition: 0.15s;
         }
-        #elp-opacity-slider::-webkit-slider-thumb:hover { transform: scale(1.25); }
+        #elp-opacity-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
 
         /* ── 바디 ── */
         .elp-popup-body { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
-        .elp-sec { padding: 10px 14px; border-bottom: 1px solid rgba(0,0,0,0.06); }
-        .elp-dark .elp-sec { border-bottom-color: rgba(255,255,255,0.06); }
-        .elp-sec-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: rgba(0,0,0,0.4); margin-bottom: 8px; }
-        .elp-dark .elp-sec-label { color: rgba(255,255,255,0.35); }
+        .elp-sec { padding: 10px 14px; border-bottom: 1px solid var(--elp-sep); }
+        .elp-sec-label {
+            font-size: 9px; font-weight: 700; letter-spacing: 0.9px;
+            text-transform: uppercase; color: var(--elp-muted); margin-bottom: 8px; opacity: 0.7;
+        }
 
         /* ── 팔레트 ── */
         .elp-palette-wrap { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
         .elp-color-add {
             width: 20px; height: 20px; border-radius: 50%;
-            background: rgba(0,0,0,0.05); border: 1.5px dashed rgba(0,0,0,0.25);
+            background: hsl(var(--muted) / 0.5);
+            border: 1.5px dashed hsl(var(--border));
             display: flex; align-items: center; justify-content: center;
-            cursor: pointer; color: rgba(0,0,0,0.35); font-size: 13px; line-height: 1;
+            cursor: pointer; color: var(--elp-muted); font-size: 13px; line-height: 1;
             transition: 0.15s; box-sizing: border-box;
         }
-        .elp-dark .elp-color-add { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.35); }
-        .elp-color-add:hover { border-color: ${P1}; color: ${P1}; background: rgba(255,77,119,0.08); }
+        .elp-color-add:hover { border-color: hsl(var(--primary)); color: hsl(var(--primary)); background: hsl(var(--primary) / 0.08); }
 
         /* ── 색상 피커 ── */
         .elp-picker-ui {
             display: none; flex-direction: column; gap: 9px;
-            background: rgba(0,0,0,0.04); padding: 10px 12px;
-            border-radius: 10px; border: 1px solid rgba(0,0,0,0.07);
+            background: hsl(var(--muted) / 0.3); padding: 10px 12px;
+            border-radius: 10px; border: 1px solid var(--elp-sep);
             margin-top: 9px; font-size: 12px;
         }
-        .elp-dark .elp-picker-ui { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
         .elp-picker-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .elp-picker-label { display: flex; align-items: center; gap: 7px; cursor: pointer; color: rgba(0,0,0,0.7); }
-        .elp-dark .elp-picker-label { color: rgba(255,255,255,0.7); }
+        .elp-picker-label { display: flex; align-items: center; gap: 7px; cursor: pointer; color: var(--elp-text); }
         .elp-color-input { width: 22px; height: 22px; padding: 0; border: none; cursor: pointer; border-radius: 6px; }
-        .elp-picker-preview { width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.1); flex-shrink: 0; }
-        .elp-dark .elp-picker-preview { border-color: rgba(255,255,255,0.1); }
+        .elp-picker-preview { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--elp-sep); flex-shrink: 0; }
         .elp-add-btn {
-            flex: 1; background: rgba(255,77,119,0.1); color: ${P1};
-            border: 1px solid rgba(255,77,119,0.25); padding: 6px 12px; border-radius: 8px;
-            font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
+            flex: 1; background: hsl(var(--primary) / 0.1); color: ${P1};
+            border: 1px solid hsl(var(--primary) / 0.25); padding: 6px 12px; border-radius: 8px;
+            font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s; font-family: Pretendard, sans-serif;
         }
-        .elp-add-btn:hover { background: ${P1}; color: #fff; border-color: ${P1}; }
+        .elp-add-btn:hover { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: hsl(var(--primary)); }
 
         /* ── 검색 ── */
         .elp-search-wrap {
             display: flex; align-items: center; gap: 7px;
-            background: rgba(0,0,0,0.05); border: 1px solid rgba(0,0,0,0.08);
+            background: hsl(var(--muted) / 0.3);
+            border: 1px solid hsl(var(--border) / 0.3);
             border-radius: 10px; padding: 0 10px; transition: border-color 0.15s;
         }
-        .elp-dark .elp-search-wrap { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); }
-        .elp-search-wrap:focus-within { border-color: ${P1}88; }
-        .elp-search-icon { color: rgba(0,0,0,0.3); font-size: 13px; flex-shrink: 0; }
-        .elp-dark .elp-search-icon { color: rgba(255,255,255,0.3); }
-        .elp-search-input { flex:1; padding:8px 0; border:none; background:transparent; color:rgba(0,0,0,0.8); font-size:12.5px; outline:none; }
-        .elp-dark .elp-search-input { color: rgba(255,255,255,0.8); }
-        .elp-search-input::placeholder { color: rgba(0,0,0,0.3); }
-        .elp-dark .elp-search-input::placeholder { color: rgba(255,255,255,0.3); }
+        .elp-search-wrap:focus-within { border-color: hsl(var(--primary) / 0.5); }
+        .elp-search-icon { color: var(--elp-muted); font-size: 13px; flex-shrink: 0; }
+        .elp-search-input {
+            flex: 1; padding: 8px 0; border: none; background: transparent;
+            color: var(--elp-text); font-size: 12.5px; outline: none; font-family: Pretendard, sans-serif;
+        }
+        .elp-search-input::placeholder { color: var(--elp-muted); opacity: 0.6; }
 
         /* ── 리스트 ── */
-        .elp-list-sec { flex:1; overflow-y:auto; padding:8px 12px 12px; }
+        .elp-list-sec { flex: 1; overflow-y: auto; padding: 8px 12px 12px; }
         .elp-list-sec::-webkit-scrollbar { width: 3px; }
-        .elp-list-sec::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
-        .elp-dark .elp-list-sec::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
-        .elp-empty { text-align:center; color:rgba(0,0,0,0.35); margin-top:28px; font-size:12px; line-height:1.8; }
-        .elp-dark .elp-empty { color: rgba(255,255,255,0.3); }
+        .elp-list-sec::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 2px; }
+        .elp-empty { text-align: center; color: var(--elp-muted); margin-top: 28px; font-size: 12px; line-height: 1.8; opacity: 0.7; }
 
         /* ── 아이템 ── */
-        .elp-item { display:flex; flex-direction:column; gap:6px; padding:9px 10px; border-radius:10px; margin-bottom:4px; cursor:pointer; transition:background 0.15s; background:transparent; }
-        .elp-item:hover { background: rgba(0,0,0,0.04); }
-        .elp-dark .elp-item:hover { background: rgba(255,255,255,0.05); }
-        .elp-item-top { display:flex; align-items:flex-start; gap:8px; }
-        .elp-item-dot { width:8px; height:8px; border-radius:50%; margin-top:3.5px; flex-shrink:0; }
-        .elp-item-body { flex:1; min-width:0; }
-        .elp-item-text { font-size:12.5px; font-weight:600; line-height:1.35; color:rgba(0,0,0,0.85); word-break:break-all; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-        .elp-dark .elp-item-text { color: rgba(255,255,255,0.85); }
-        .elp-item-del { background:none; border:none; cursor:pointer; color:rgba(0,0,0,0.25); font-size:11px; padding:0; width:18px; height:18px; display:flex; align-items:center; justify-content:center; border-radius:5px; flex-shrink:0; transition:0.15s; margin-top:1px; }
-        .elp-dark .elp-item-del { color: rgba(255,255,255,0.25); }
-        .elp-item-del:hover { color: ${P1}; background: rgba(255,77,119,0.1); }
-        .elp-note-input { width:100%; padding:5px 8px; border:1px dashed rgba(0,0,0,0.12); border-radius:7px; background:transparent; color:rgba(0,0,0,0.45); font-size:11px; outline:none; box-sizing:border-box; transition:0.15s; font-family:inherit; }
-        .elp-dark .elp-note-input { border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.4); }
-        .elp-note-input:focus { border-style:solid; border-color:${P2}88; color:rgba(0,0,0,0.75); background:rgba(0,0,0,0.03); }
-        .elp-dark .elp-note-input:focus { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.05); }
-        .elp-note-input:not(:placeholder-shown) { border-style:solid; color:rgba(0,0,0,0.7); }
-        .elp-dark .elp-note-input:not(:placeholder-shown) { color: rgba(255,255,255,0.7); }
+        .elp-item {
+            display: flex; flex-direction: column; gap: 6px;
+            padding: 8px 10px; border-radius: 10px; margin-bottom: 3px;
+            cursor: pointer; transition: background 0.15s;
+        }
+        .elp-item:hover { background: hsl(var(--muted) / 0.35); }
+        .elp-item-top { display: flex; align-items: flex-start; gap: 8px; }
+        .elp-item-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 3.5px; flex-shrink: 0; }
+        .elp-item-body { flex: 1; min-width: 0; }
+        .elp-item-text {
+            font-size: 12.5px; font-weight: 500; line-height: 1.4;
+            color: var(--elp-text); word-break: break-all;
+            display: -webkit-box; -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical; overflow: hidden;
+        }
+        .elp-item-del {
+            background: none; border: none; cursor: pointer; color: var(--elp-muted);
+            font-size: 11px; padding: 0; width: 18px; height: 18px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 5px; flex-shrink: 0; transition: 0.15s; margin-top: 1px; opacity: 0.5;
+        }
+        .elp-item-del:hover { color: hsl(var(--destructive)); background: hsl(var(--destructive) / 0.1); opacity: 1; }
+        .elp-note-input {
+            width: 100%; padding: 5px 8px;
+            border: 1px dashed hsl(var(--border) / 0.5);
+            border-radius: 7px; background: transparent;
+            color: var(--elp-muted); font-size: 11px; outline: none;
+            box-sizing: border-box; transition: 0.15s; font-family: Pretendard, sans-serif;
+        }
+        .elp-note-input:focus {
+            border-style: solid; border-color: hsl(var(--primary) / 0.4);
+            color: var(--elp-text); background: hsl(var(--primary) / 0.04);
+        }
+        .elp-note-input:not(:placeholder-shown) { border-style: solid; color: var(--elp-text); opacity: 0.8; }
 
         /* ── 구분선 ── */
-        .elp-divider { display:flex; align-items:center; gap:8px; padding:6px 10px 4px; }
-        .elp-divider-label { font-size:9.5px; font-weight:700; letter-spacing:0.7px; text-transform:uppercase; color:rgba(0,0,0,0.35); white-space:nowrap; }
-        .elp-dark .elp-divider-label { color: rgba(255,255,255,0.3); }
-        .elp-divider-line { flex:1; height:1px; background:rgba(0,0,0,0.08); }
-        .elp-dark .elp-divider-line { background: rgba(255,255,255,0.08); }
+        .elp-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px 4px; }
+        .elp-divider-label {
+            font-size: 9px; font-weight: 700; letter-spacing: 0.7px;
+            text-transform: uppercase; color: var(--elp-muted); white-space: nowrap; opacity: 0.6;
+        }
+        .elp-divider-line { flex: 1; height: 1px; background: var(--elp-sep); }
 
         /* ── 형광펜 mark ── */
         mark.elp-hl {
@@ -356,27 +389,30 @@
         /* ── 토스트 ── */
         #elp-toast {
             position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
-            backdrop-filter: blur(12px); background: rgba(20,20,20,0.85); color: rgba(255,255,255,0.9);
-            padding: 9px 18px; border-radius: 10px; z-index: 2147483647;
-            font-size: 12px; font-weight: 600; border: 1px solid rgba(255,255,255,0.1);
-            font-family: 'Pretendard',sans-serif;
+            background: hsl(var(--popover) / 0.95); backdrop-filter: blur(12px);
+            color: var(--elp-text); padding: 9px 18px; border-radius: 10px;
+            z-index: 2147483647; font-size: 12px; font-weight: 600;
+            border: 1px solid hsl(var(--border) / 0.5);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            font-family: Pretendard, sans-serif;
         }
 
         /* ── 툴바 버튼 ── */
         #elp-toolbar-btn {
             display: inline-flex; align-items: center; gap: 4px;
-            padding: 0 8px; height: 28px; border-radius: 9999px;
-            background: rgba(var(--card), 0.7);
+            padding: 0 10px; height: 28px; border-radius: 9999px;
+            background: hsl(var(--card) / 0.7);
             border: none; cursor: pointer;
             font-size: 12px; font-weight: 500;
-            color: rgba(0,0,0,0.5);
+            color: hsl(var(--muted-foreground));
             transition: background 0.15s, color 0.15s;
-            font-family: 'Pretendard','Apple SD Gothic Neo',sans-serif;
+            font-family: Pretendard, 'Apple SD Gothic Neo', sans-serif;
             white-space: nowrap; flex-shrink: 0;
         }
-        .elp-dark-toolbar #elp-toolbar-btn { color: rgba(255,255,255,0.5); }
-        #elp-toolbar-btn:hover { background: rgba(0,0,0,0.1); color: rgba(0,0,0,0.8); }
-        .elp-dark-toolbar #elp-toolbar-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+        #elp-toolbar-btn:hover {
+            background: hsl(var(--card-hover) / 0.7);
+            color: hsl(var(--foreground));
+        }
     `);
 
     // ==========================================
@@ -431,7 +467,7 @@
     // 알림
     const alertOverlay = document.createElement('div');
     alertOverlay.id = 'elp-custom-alert';
-    alertOverlay.innerHTML = `<div class="elp-alert-box"><p id="elp-alert-msg" style="margin:0 0 18px;color:rgba(255,255,255,0.8);font-size:13px;line-height:1.6;word-break:keep-all;"></p><button id="elp-alert-ok" class="elp-ctx-btn elp-ctx-cancel" style="padding:7px 22px;">확인</button></div>`;
+    alertOverlay.innerHTML = `<div class="elp-alert-box"><p id="elp-alert-msg" style="margin:0 0 18px;color:rgba(255,255,255,0.75);font-size:13px;line-height:1.6;word-break:keep-all;font-family:Pretendard,sans-serif;"></p><button id="elp-alert-ok" class="elp-ctx-btn elp-ctx-cancel" style="padding:7px 22px;">확인</button></div>`;
     document.body.appendChild(alertOverlay);
     function customAlert(msg) { document.getElementById('elp-alert-msg').innerHTML = msg; alertOverlay.style.display = 'flex'; }
     document.getElementById('elp-alert-ok').onclick = () => alertOverlay.style.display = 'none';
@@ -476,7 +512,7 @@
     popup.innerHTML = `
         <div class="elp-popup-header">
             <div class="elp-header-title">
-                <div class="elp-header-badge"><span class="elp-badge-dot"></span>형광펜 노트</div>
+                <div class="elp-header-badge"><span class="elp-badge-dot"></span>형광펜</div>
                 <span class="elp-header-count" id="elp-header-count">0</span>
             </div>
             <div class="elp-header-actions">
@@ -672,8 +708,7 @@
     }
 
     function syncToolbarTheme() {
-        const isDark = document.documentElement.classList.contains('dark') || document.body.classList.contains('dark');
-        document.body.classList.toggle('elp-dark-toolbar', isDark);
+        // 툴바 버튼도 CSS 변수로 처리 — 별도 클래스 불필요
     }
 
     document.addEventListener('keydown', e => { if(e.altKey&&e.key==='h'){e.preventDefault();togglePopup();} });
@@ -682,8 +717,8 @@
     // 테마
     // ==========================================
     function syncTheme() {
-        const isDark = document.documentElement.classList.contains('dark') || document.body.classList.contains('dark');
-        popup.classList.toggle('elp-dark', isDark);
+        // 엘린 라이트/다크 반응형 — CSS 변수가 자동 처리하므로 클래스 불필요
+        // (elp-dark 클래스 제거 — hsl(var(--...)) 가 테마 따라감)
         syncToolbarTheme();
     }
     syncTheme();
