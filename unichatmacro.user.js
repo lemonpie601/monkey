@@ -3,7 +3,7 @@
 // @namespace    https://www.univers.chat/
 // @version      3.0.9
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
-// @author       레몬파이
+// @author       레몬파이 = 시범단계
 // @match        https://www.univers.chat/*
 // @grant        GM_addStyle
 // @license      MIT
