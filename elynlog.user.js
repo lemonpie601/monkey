@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         엘린 로그 저장
 // @namespace    https://elyn.ai/
-// @version      6.5.0
+// @version      6.4.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
 // @author       레몬파이
 // @match        https://elyn.ai/*
@@ -16,11 +16,10 @@
 
     GM_addStyle(`
         #els-bar {
-            position: fixed; bottom: clamp(60px, 6vh, 100px); left: 50%;
+            position: fixed; bottom: 80px; left: 50%;
             transform: translateX(-50%);
-            display: none; align-items: center; gap: clamp(5px, 0.6vw, 10px);
-            padding: clamp(5px, 0.5vh, 9px) clamp(8px, 0.8vw, 16px);
-            border-radius: 9999px;
+            display: none; align-items: center; gap: 8px;
+            padding: 7px 12px; border-radius: 9999px;
             background: hsl(var(--popover) / 0.97);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
             border: 1px solid hsl(var(--border) / 0.4);
@@ -30,27 +29,22 @@
             white-space: nowrap;
         }
         #els-prev-txt {
-            max-width: clamp(120px, 14vw, 240px);
-            font-size: clamp(10px, 0.85vw, 14px);
+            max-width: 180px; font-size: 12px;
             color: hsl(var(--muted-foreground));
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         #els-open-btn {
-            display: inline-flex; align-items: center; gap: clamp(4px, 0.4vw, 7px);
-            padding: clamp(4px, 0.4vh, 7px) clamp(10px, 1vw, 18px);
-            border-radius: 9999px; border: none; cursor: pointer;
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 5px 14px; border-radius: 9999px; border: none; cursor: pointer;
             background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
-            font-size: clamp(10px, 0.85vw, 14px); font-weight: 600;
-            font-family: Pretendard, sans-serif;
+            font-size: 12px; font-weight: 600; font-family: Pretendard, sans-serif;
             transition: opacity 0.15s; white-space: nowrap;
         }
         #els-open-btn:hover { opacity: 0.82; }
         #els-bar-close {
             background: none; border: none; cursor: pointer;
-            color: hsl(var(--muted-foreground));
-            padding: clamp(1px, 0.2vh, 3px) clamp(3px, 0.3vw, 7px);
-            font-size: clamp(11px, 0.9vw, 15px);
-            border-radius: 5px; transition: 0.15s; line-height: 1;
+            color: hsl(var(--muted-foreground)); padding: 2px 5px;
+            font-size: 13px; border-radius: 5px; transition: 0.15s; line-height: 1;
         }
         #els-bar-close:hover { color: hsl(var(--foreground)); }
 
@@ -62,16 +56,16 @@
         }
         #els-ov.on { display: flex; }
 
-        /* 패널: 뷰포트 기준 반응형 */
+        /* 패널: 뷰포트 92% 높이 고정, flex column */
         #els-pn {
             background: hsl(var(--popover));
             border: 1px solid hsl(var(--border) / 0.3);
-            border-radius: clamp(16px, 1.5vw, 28px);
-            padding: clamp(14px, 1.4vw, 26px);
-            width: min(clamp(340px, 46vw, 680px), 94vw);
-            height: clamp(480px, 82vh, 900px);
+            border-radius: 24px;
+            padding: 20px;
+            width: min(600px, 94vw);
+            height: 80vh;
             box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-            display: flex; flex-direction: column; gap: clamp(10px, 1.1vh, 18px);
+            display: flex; flex-direction: column; gap: 14px;
             font-family: Pretendard, sans-serif;
             overflow: hidden;
             box-sizing: border-box;
@@ -80,8 +74,8 @@
         /* 미리보기: 남은 공간 전부 차지, 캔버스를 contain으로 */
         #els-cvw {
             flex: 1 1 0;
-            min-height: 0;
-            border-radius: clamp(10px, 1vw, 18px);
+            min-height: 0;          /* flex 자식 shrink 허용 */
+            border-radius: 14px;
             overflow: hidden;
             display: flex;
             align-items: center;
@@ -89,31 +83,31 @@
             background: transparent;
         }
         #els-cvw canvas {
+            /* 영역 안에서 비율 유지하며 최대한 크게 */
             max-width: 100%;
             max-height: 100%;
             width: auto;
             height: auto;
             display: block;
-            border-radius: clamp(10px, 1vw, 18px);
+            border-radius: 14px;
         }
 
         /* 옵션 영역: 고정 크기 */
         #els-opts {
             flex: 0 0 auto;
-            display: flex; flex-direction: column; gap: clamp(10px, 1.1vh, 18px);
+            display: flex; flex-direction: column; gap: 14px;
         }
 
-        .els-sec { display: flex; flex-direction: column; gap: clamp(5px, 0.5vh, 9px); }
+        .els-sec { display: flex; flex-direction: column; gap: 7px; }
         .els-sl {
-            font-size: clamp(9px, 0.72vw, 12px); font-weight: 600; letter-spacing: 0.4px;
+            font-size: 10.5px; font-weight: 600; letter-spacing: 0.4px;
             color: hsl(var(--muted-foreground));
         }
 
-        .els-bg-g { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(4px, 0.4vw, 8px); }
-        .els-al-g { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(4px, 0.4vw, 8px); }
+        .els-bg-g { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+        .els-al-g { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
         .els-pl {
-            font-size: clamp(10px, 0.82vw, 13px); font-weight: 600;
-            height: clamp(26px, 2.6vh, 38px);
+            font-size: 12px; font-weight: 600; height: 32px;
             border-radius: 9999px; border: 1px solid transparent;
             cursor: pointer; transition: all 0.16s;
             background: hsl(var(--muted) / 0.4);
@@ -128,45 +122,34 @@
         }
 
         .els-acd {
-            width: clamp(16px, 1.5vw, 26px); height: clamp(16px, 1.5vw, 26px);
-            border-radius: 50%; cursor: pointer;
+            width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
             border: 2.5px solid transparent; transition: 0.15s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.15);
         }
         .els-acd.on { border-color: hsl(var(--foreground) / 0.6); transform: scale(1.2); }
         .els-acd:hover:not(.on) { transform: scale(1.1); }
 
-        #els-rpl { display: flex; flex-direction: column; gap: clamp(4px, 0.5vh, 8px); }
-        .els-rrow { display: flex; align-items: center; gap: clamp(4px, 0.5vw, 8px); }
+        #els-rpl { display: flex; flex-direction: column; gap: 6px; }
+        .els-rrow { display: flex; align-items: center; gap: 6px; }
         .els-ri {
-            flex: 1; height: clamp(26px, 2.6vh, 38px);
-            padding: 0 clamp(7px, 0.7vw, 13px);
-            border-radius: clamp(7px, 0.7vw, 12px);
+            flex: 1; height: 32px; padding: 0 10px; border-radius: 10px;
             border: 1px solid hsl(var(--border) / 0.4);
             background: hsl(var(--muted) / 0.25);
-            color: hsl(var(--foreground));
-            font-size: clamp(10px, 0.82vw, 13px);
-            outline: none;
+            color: hsl(var(--foreground)); font-size: 12px; outline: none;
             font-family: Pretendard, sans-serif; transition: border-color 0.15s;
         }
         .els-ri:focus { border-color: hsl(var(--primary) / 0.5); }
         .els-ri::placeholder { color: hsl(var(--muted-foreground)); opacity: 0.55; }
-        .els-rsep {
-            font-size: clamp(10px, 0.82vw, 13px);
-            color: hsl(var(--muted-foreground)); flex-shrink:0; opacity:0.5;
-        }
+        .els-rsep { font-size: 12px; color: hsl(var(--muted-foreground)); flex-shrink:0; opacity:0.5; }
         .els-rdel {
             background: none; border: none; cursor: pointer;
-            color: hsl(var(--muted-foreground));
-            font-size: clamp(11px, 0.9vw, 15px);
-            padding: 2px clamp(3px, 0.3vw, 6px); border-radius: 5px; transition: 0.15s;
+            color: hsl(var(--muted-foreground)); font-size: 13px;
+            padding: 2px 5px; border-radius: 5px; transition: 0.15s;
         }
         .els-rdel:hover { color: hsl(0 72% 55%); }
         #els-radd {
-            align-self: flex-start;
-            font-size: clamp(9px, 0.75vw, 12px); font-weight: 600;
-            padding: clamp(3px, 0.35vh, 6px) clamp(8px, 0.8vw, 13px);
-            border-radius: clamp(6px, 0.6vw, 10px); border: none; cursor: pointer;
+            align-self: flex-start; font-size: 11.5px; font-weight: 600;
+            padding: 4px 10px; border-radius: 8px; border: none; cursor: pointer;
             background: hsl(var(--muted) / 0.4); color: hsl(var(--muted-foreground));
             font-family: Pretendard, sans-serif; transition: 0.15s;
         }
@@ -175,9 +158,8 @@
         .els-div { height: 1px; background: hsl(var(--border) / 0.18); flex-shrink: 0; }
 
         .els-ab {
-            padding: clamp(7px, 0.7vh, 12px) clamp(16px, 1.5vw, 28px);
-            border-radius: 9999px; border: none;
-            font-size: clamp(11px, 0.9vw, 15px); font-weight: 600; cursor: pointer;
+            padding: 9px 22px; border-radius: 9999px; border: none;
+            font-size: 13px; font-weight: 600; cursor: pointer;
             font-family: Pretendard, sans-serif; transition: 0.15s;
         }
         .els-cn { background: hsl(var(--muted) / 0.45); color: hsl(var(--muted-foreground)); }
@@ -186,13 +168,11 @@
         .els-sv:hover { opacity: 0.85; }
 
         #els-ts {
-            position: fixed; bottom: clamp(22px, 2.5vh, 40px); left: 50%; transform: translateX(-50%);
+            position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
             background: hsl(var(--popover) / 0.97); backdrop-filter: blur(12px);
             color: hsl(var(--popover-foreground));
-            padding: clamp(7px, 0.7vh, 13px) clamp(16px, 1.5vw, 28px);
-            border-radius: 9999px;
-            z-index: 2147483647;
-            font-size: clamp(10px, 0.85vw, 14px); font-weight: 600;
+            padding: 10px 22px; border-radius: 9999px;
+            z-index: 2147483647; font-size: 12.5px; font-weight: 600;
             border: 1px solid hsl(var(--border) / 0.4);
             font-family: Pretendard, sans-serif;
             opacity: 0; transition: opacity 0.2s; pointer-events: none;
@@ -234,40 +214,6 @@
     let rp = GM_getValue('els_rp', []);
     let st = { bg:0, ac:0, fn:0, al:1 };
     let savedText = '';
-
-    // ==========================================
-    // 화면 크기 기준 카드 치수 계산
-    // ==========================================
-    function getCardMetrics() {
-        // 기준: 1920px 너비에서 W=920, FS=26
-        // 뷰포트 너비에 따라 선형 스케일, 최솟값/최댓값 제한
-        const vw = window.innerWidth;
-
-        // 패널 실제 너비에 맞게 캔버스 W 결정
-        // 패널이 min(clamp(340, 46vw, 680), 94vw) 이므로
-        const panelW = Math.min(Math.max(340, vw * 0.46), 680, vw * 0.94);
-        // 캔버스는 패널보다 약간 여유 두고 짝수로
-        const W = Math.round(Math.min(panelW * 1.6, 1200) / 2) * 2;
-
-        // FS: W 기준 비례 (W=920 → FS=26)
-        const FS = Math.round(W * 26 / 920);
-
-        const R  = Math.round(W * 24 / 920);
-        const PX = Math.round(W * 52 / 920);
-        const PT = Math.round(W * 80 / 920);
-        const PB = Math.round(W * 40 / 920);
-        const LH = FS * 1.5;
-        const FOOTER_H = Math.round(W * 44 / 920);
-        const FOOTER_FS_L = Math.round(W * 13 / 920);   // 좌측 하단 폰트
-        const FOOTER_FS_R = Math.round(W * 12 / 920);   // 날짜 폰트
-        const DOT_R = Math.round(W * 3.5 / 920);        // 점 반지름
-        const DOT_OFFSET = Math.round(W * 5 / 920);     // 점 x 오프셋
-        const DOT_Y_OFF  = Math.round(W * 4 / 920);     // 점 y 오프셋
-        const TEXT_Y_OFF  = Math.round(W * 16 / 920);   // 텍스트 y 오프셋
-
-        return { W, R, PX, PT, PB, FS, LH, FOOTER_H,
-                 FOOTER_FS_L, FOOTER_FS_R, DOT_R, DOT_OFFSET, DOT_Y_OFF, TEXT_Y_OFF };
-    }
 
     // ==========================================
     // 하단 바
@@ -392,9 +338,9 @@
         let last = 0, m;
         while ((m = RE.exec(text)) !== null) {
             if (m.index > last) tokens.push({ type:'normal',   text: text.slice(last, m.index) });
-            if      (m[1] !== undefined) tokens.push({ type:'dialogue', text: '“' + m[1] + '”' });
+            if      (m[1] !== undefined) tokens.push({ type:'dialogue', text: '\u201c' + m[1] + '\u201d' });
             else if (m[2] !== undefined) tokens.push({ type:'thought',  text: "'"  + m[2] + "'"  });
-            else if (m[3] !== undefined) tokens.push({ type:'thought',  text: '‘' + m[3] + '’' });
+            else if (m[3] !== undefined) tokens.push({ type:'thought',  text: '\u2018' + m[3] + '\u2019' });
             else if (m[4] !== undefined) tokens.push({ type:'italic',   text: m[4] });
             last = m.index + m[0].length;
         }
@@ -458,9 +404,13 @@
         const sepC        = dark ? `rgba(${acRgb},0.2)`  : `rgba(${acRgb},0.25)`;
         const italicAlpha = dark ? 0.45 : 0.40;
 
-        // 화면 크기에 따라 치수 계산
-        const { W, R, PX, PT, PB, FS, LH, FOOTER_H,
-                FOOTER_FS_L, FOOTER_FS_R, DOT_R, DOT_OFFSET, DOT_Y_OFF, TEXT_Y_OFF } = getCardMetrics();
+        const W  = 920;
+        const R  = 24;
+        const PX = 52;
+        const PT = 80;
+        const PB = 40;
+        const FS = 26;
+        const LH = FS * 1.5;
 
         const tmp   = document.createElement('canvas');
         const tc    = tmp.getContext('2d');
@@ -477,12 +427,13 @@
             allLineTokens.pop();
         }
 
+        const FOOTER_H = 44;
         const textH    = Math.max(allLineTokens.length, 1) * LH;
         const H        = PT + textH + LH * 0.1 + 2 + FOOTER_H + PB;
 
         const cv  = document.createElement('canvas');
         cv.width  = W;
-        cv.height = Math.max(H, Math.round(W * 280 / 920));
+        cv.height = Math.max(H, 280);
         const ctx = cv.getContext('2d');
 
         ctx.save();
@@ -490,7 +441,7 @@
         ctx.fillStyle = bg.a;
         ctx.fillRect(0, 0, W, cv.height);
         ctx.fillStyle = ac;
-        ctx.fillRect(0, 0, W, Math.max(2, Math.round(W * 3 / 920)));
+        ctx.fillRect(0, 0, W, 3);
 
         // 본문 렌더링
         const totalLines = allLineTokens.length;
@@ -498,6 +449,7 @@
             const y          = PT + row * LH;
             const isLastLine = row === totalLines - 1;
 
+            // 줄 총 너비 계산
             let lineW = 0;
             lineTokens.forEach(tok => {
                 ctx.font = `${tok.type === 'italic' ? 'italic' : '400'} ${FS}px ${font}`;
@@ -541,25 +493,25 @@
         });
 
         // 하단 구분선
-        const sepY = cv.height - PB - FOOTER_H + TEXT_Y_OFF / 2;
+        const sepY = cv.height - PB - FOOTER_H + 8;
         ctx.strokeStyle = sepC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PX, sepY); ctx.lineTo(W - PX, sepY); ctx.stroke();
 
         // 하단 좌
-        const botY = cv.height - PB - Math.round(W * 4 / 920);
+        const botY = cv.height - PB - 4;
         ctx.beginPath();
-        ctx.arc(PX + DOT_OFFSET, botY - DOT_Y_OFF, DOT_R, 0, Math.PI * 2);
+        ctx.arc(PX + 5, botY - 4, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = ac; ctx.globalAlpha = 1; ctx.fill();
 
         const room = (document.title.replace(/^엘린\s*[-|]\s*/, '').trim() || 'elyn.ai').slice(0, 36);
-        ctx.font = `500 ${FOOTER_FS_L}px Pretendard, sans-serif`;
+        ctx.font = `500 13px Pretendard, sans-serif`;
         ctx.fillStyle = mutedC;
-        ctx.fillText(room, PX + DOT_OFFSET * 2 + DOT_R, botY);
+        ctx.fillText(room, PX + 16, botY);
 
         // 하단 우
         const now     = new Date();
         const dateStr = `${now.getFullYear()}.${pad(now.getMonth()+1)}.${pad(now.getDate())}`;
-        ctx.font      = `400 ${FOOTER_FS_R}px Pretendard, sans-serif`;
+        ctx.font      = `400 12px Pretendard, sans-serif`;
         ctx.fillStyle = mutedC;
         const dw      = ctx.measureText(dateStr).width;
         ctx.fillText(dateStr, W - PX - dw, botY);
@@ -605,6 +557,8 @@
         const cvw = document.getElementById('els-cvw');
         cvw.innerHTML = '';
         const cv = makeCard();
+        // CSS가 max-width:100% / max-height:100% / width:auto / height:auto 로
+        // 컨테이너 안에서 비율 유지하며 최대한 크게 표시
         cvw.appendChild(cv);
     }
 
