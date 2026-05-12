@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         유니챗 매크로
 // @namespace    https://www.univers.chat/
-// @version      3.0.2
+// @version      3.0.9
 // @description  턴 번호에 따라 자동으로 모델 전환 + 히스토리 표시
-// @author       레몬파이 = 시범단계
+// @author       레몬파이
 // @match        https://www.univers.chat/*
 // @grant        GM_addStyle
 // @license      MIT
@@ -28,12 +28,17 @@
     let currentPath = location.pathname;
     let availableModels = [];
 
+    // 매크로 전용 턴 카운터 (메모리, 끄면 초기화)
+    let macroTurn = 1;
+    const getMacroTurn  = () => macroTurn;
+    const resetMacroTurn = () => { macroTurn = 1; };
+    const incMacroTurn  = () => { macroTurn++; };
+
     const loadRoomConfig = () => { const d = localStorage.getItem(ROOM_KEY()); return d ? JSON.parse(d) : null; };
     const saveRoomConfig = v => localStorage.setItem(ROOM_KEY(), JSON.stringify(v));
     const isActive       = () => localStorage.getItem(ACTIVE_KEY()) === 'true';
     const setActive      = v => { localStorage.setItem(ACTIVE_KEY(), v ? 'true' : 'false'); updateTriggerBtn(); };
-    const getTurn        = () => loadHistory().length + 1; // 항상 히스토리 기반
-    const setTurn        = () => { updateTriggerBtn(); }; // 히스토리 기반이라 저장 불필요
+    const getTurn        = () => loadHistory().length + 1; // 히스토리 기반 (히스토리 표시용)
     const loadPresets    = () => { const d = localStorage.getItem(PRESETS_KEY); return d ? JSON.parse(d) : []; };
     const savePresets    = v => localStorage.setItem(PRESETS_KEY, JSON.stringify(v));
     const loadHistory    = () => { const d = localStorage.getItem(HISTORY_KEY()); return d ? JSON.parse(d) : []; };
@@ -54,14 +59,20 @@
     function getSwitchBtn() {
         return document.querySelector('button[aria-label="모델 전환"]');
     }
+
+    // 현재 선택된 모델명: 전환 버튼 왼쪽 버튼의 span.truncate
     function getCurrentModelName() {
-        const trigger = document.querySelector('[data-slot="dropdown-menu-trigger"]');
-        if (!trigger) return null;
-        const span = trigger.querySelector('span.truncate, span[class*="truncate"]');
-        return span ? span.textContent.trim() : trigger.textContent.trim();
+        const switchBtn = getSwitchBtn();
+        if (!switchBtn) return null;
+        const group = switchBtn.closest('div');
+        if (!group) return null;
+        const span = group.querySelector('button span.truncate');
+        return span ? span.textContent.trim() : null;
     }
+
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+    // 전환 버튼을 한 바퀴 돌며 모델 목록 수집
     async function collectModels() {
         const btn = getSwitchBtn();
         if (!btn) return [];
@@ -70,25 +81,22 @@
         const models = [start];
         for (let i = 0; i < 30; i++) {
             btn.click();
-            await sleep(130);
+            await sleep(150);
             const cur = getCurrentModelName();
-            if (!cur || cur === start || models.includes(cur)) break;
-            models.push(cur);
-        }
-        if (getCurrentModelName() !== start) {
-            btn.click();
-            await sleep(130);
+            if (!cur || cur === start) break;
+            if (!models.includes(cur)) models.push(cur);
         }
         return models;
     }
 
+    // 전환 버튼을 목표 모델이 나올 때까지 클릭
     async function switchToModel(modelName) {
         const btn = getSwitchBtn();
         if (!btn) return false;
         if (getCurrentModelName() === modelName) return true;
         for (let i = 0; i < 30; i++) {
             btn.click();
-            await sleep(130);
+            await sleep(150);
             if (getCurrentModelName() === modelName) return true;
         }
         return false;
@@ -110,42 +118,56 @@
     }
 
     // ==========================================
+    // 매크로 활성화 시 즉시 1턴 모델로 전환 + 카운터 리셋
+    // ==========================================
+    async function activateMacro() {
+        const cfg = loadRoomConfig();
+        if (!cfg?.steps?.length) return;
+        resetMacroTurn(); // 1턴부터 시작
+        const modelName = getModelForTurn(cfg.steps, getMacroTurn());
+        if (!modelName) return;
+        const ok = await switchToModel(modelName);
+        if (ok) showToast(`⚡ 매크로 1턴 → ${modelName}`);
+    }
+
+    // ==========================================
     // 매크로 실행
     // ==========================================
-    // ==========================================
-    // 전송 감지 — textarea 비어있으면 무시, Shift+Enter 무시
-    // 턴 카운트는 항상 누적 (매크로 켜짐/꺼짐 무관)
-    // 매크로는 턴 카운트를 보고 전환만 함 (카운트 직접 올리지 않음)
+    // 흐름:
+    //   전송 직전(클릭/Enter) → 현재 모델 기억 + 다음 매크로 턴 모델로 미리 전환
+    //   전송 완료 후          → 기억한 모델 히스토리 기록 + 매크로 턴 증가
     // ==========================================
     let macroRunning = false;
+    let modelUsedThisTurn = null; // 전송 직전에 기억한 실제 사용 모델
 
-    // 실제 전송 시 호출 — 턴 누적 + 매크로 실행
-    async function onSend() {
-        const turn = getTurn();
+    // 전송 직전 호출 — 현재 모델 기억 + 다음 매크로 턴 모델로 미리 전환
+    async function onBeforeSend() {
+        // 현재 모델을 기억 (이게 이번 턴에 실제로 사용되는 모델)
+        modelUsedThisTurn = getCurrentModelName();
 
-        // 1. 매크로가 켜져있으면 이 턴에 맞는 모델로 전환
+        // 매크로가 켜져있으면 다음 매크로 턴 모델로 미리 전환
         if (isActive() && !macroRunning) {
             const cfg = loadRoomConfig();
             if (cfg?.steps?.length) {
-                const modelName = getModelForTurn(cfg.steps, turn);
-                if (modelName) {
+                const nextMacroTurn = getMacroTurn() + 1;
+                const nextModel = getModelForTurn(cfg.steps, nextMacroTurn);
+                if (nextModel && nextModel !== modelUsedThisTurn) {
                     macroRunning = true;
-                    const ok = await switchToModel(modelName);
+                    const ok = await switchToModel(nextModel);
                     macroRunning = false;
-                    if (ok) {
-                        // 매크로 기록은 addHistory에서 하지 않음
-                        // → 아래 2번에서 실제 사용 모델로 통합 기록
-                        showToast(`⚡ 턴 ${turn} → ${modelName}`);
-                    }
+                    if (ok) showToast(`⚡ 다음 턴 → ${nextModel}`);
                 }
             }
         }
+    }
 
-        // 2. 턴 카운트 누적 (매크로 켜짐/꺼짐 무관)
-        // 전송 시점의 실제 사용 모델 기록 (매크로 전환 모델 X, 실제 사용 모델 O)
-        const usedModel = getCurrentModelName();
+    // 전송 완료 후 호출 — 히스토리 기록 + 매크로 턴 증가
+    function onAfterSend() {
+        const usedModel = modelUsedThisTurn || getCurrentModelName();
+        modelUsedThisTurn = null;
         addHistory(usedModel);
-        setTurn(); // 히스토리에 추가됐으므로 자동 반영
+        if (isActive()) incMacroTurn(); // 매크로 켜진 동안만 카운트
+        setTurn();
         renderPopupList();
     }
 
@@ -158,6 +180,7 @@
                 const ta = document.querySelector('textarea');
                 if (ta && document.activeElement === ta && ta.value.trim().length > 0) {
                     intendedSend = true;
+                    onBeforeSend(); // 전송 직전 처리
                 }
             }
         }, true);
@@ -167,19 +190,22 @@
             if (!sendBtn || sendBtn._mcrWatched) return;
             sendBtn._mcrWatched = true;
 
-            // 버튼 클릭 시 플래그 세팅
+            // 버튼 클릭 시 플래그 세팅 + 전송 직전 처리
             sendBtn.addEventListener('click', () => {
-                if (!sendBtn.disabled) intendedSend = true;
+                if (!sendBtn.disabled) {
+                    intendedSend = true;
+                    onBeforeSend(); // 전송 직전 처리
+                }
             }, true);
 
-            // disabled: false → true = 버튼 비활성화
-            // 클릭 or Enter로 인한 것일 때만 전송으로 인식
+            // disabled: false → true = 전송 완료
+            // 클릭 or Enter로 인한 것일 때만 히스토리 기록
             let lastDisabled = sendBtn.disabled;
             new MutationObserver(() => {
                 const nowDisabled = sendBtn.disabled;
                 if (!lastDisabled && nowDisabled) {
                     if (intendedSend) {
-                        onSend();
+                        onAfterSend();
                     }
                     intendedSend = false;
                 }
@@ -686,7 +712,10 @@
 
         // 토글
         document.getElementById('mcr-toggle')?.addEventListener('click', () => {
-            setActive(!isActive());
+            const nowActive = !isActive();
+            setActive(nowActive);
+            if (nowActive) activateMacro();
+            else resetMacroTurn(); // 끄면 카운터 초기화
             buildPopup();
         });
 
@@ -724,6 +753,7 @@
             const cfg = loadRoomConfig();
             if (!cfg?.steps?.length) { showToast('스텝을 먼저 추가해주세요'); return; }
             setActive(true);
+            activateMacro();
             buildPopup(); showToast('⚡ 매크로 활성화!');
         });
 
@@ -798,7 +828,12 @@
         }
         popup.style.display = 'flex';
         collectModels().then(models => {
-            if (models.length) { availableModels = models; buildPopup(); }
+            if (models.length) {
+                availableModels = models;
+                buildPopup();
+            } else {
+                showToast('⚠️ 모델 목록 수집 실패 — 모델 전환 버튼을 확인해주세요');
+            }
         });
     }
 
