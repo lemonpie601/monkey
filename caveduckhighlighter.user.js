@@ -23,9 +23,9 @@
     const P2 = '#a61544';
 
     const DEFAULT_COLORS = [
-        { bg: '#bc1e51', text: '#fff' },
-        { bg: '#f5a623', text: '#fff' },
-        { bg: '#5ac8fa', text: '#fff' },
+        { bg: '#bc1e51' },
+        { bg: '#f5a623' },
+        { bg: '#5ac8fa' },
     ];
     const MAX_COLORS = 8;
 
