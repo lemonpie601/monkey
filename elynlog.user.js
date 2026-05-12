@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         엘린 로그 저장
 // @namespace    https://elyn.ai/
-// @version      6.6.0
+// @version      6.7.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
 // @author       레몬파이
 // @match        https://elyn.ai/*
@@ -14,13 +14,45 @@
 (function () {
     'use strict';
 
-    // DPR: 캔버스 해상도 선명도용 (UI 크기와 무관)
     const DPR = window.devicePixelRatio || 1;
+
+    // 패널 기준 설계 크기 (이 크기로 px값을 전부 작성)
+    const BASE_W = 600; // 기준 패널 너비 (px)
+
+    // 실제 뷰포트에서 패널이 차지할 너비 (vw 기준, 최대 BASE_W)
+    // → 이 비율로 패널 전체를 scale해서 모양 유지하며 크기 조절
+    function getPanelScale() {
+        const vw = window.innerWidth;
+        // 뷰포트의 50% 사용, 단 BASE_W보다 크면 BASE_W로 고정
+        const targetW = Math.min(vw * 0.5, BASE_W);
+        return targetW / BASE_W;
+    }
+
+    // 패널 scale 적용 (모달 열릴 때마다 호출)
+    function applyPanelScale() {
+        const s = getPanelScale();
+        const pn = document.getElementById('els-pn');
+        if (pn) {
+            pn.style.transform = `scale(${s})`;
+            pn.style.transformOrigin = 'center center';
+        }
+        const bar = document.getElementById('els-bar');
+        if (bar) {
+            bar.style.transform = `translateX(-50%) scale(${s})`;
+            bar.style.transformOrigin = 'bottom center';
+        }
+        const ts = document.getElementById('els-ts');
+        if (ts) {
+            ts.style.transform = `translateX(-50%) scale(${s})`;
+            ts.style.transformOrigin = 'bottom center';
+        }
+    }
 
     GM_addStyle(`
         #els-bar {
             position: fixed; bottom: 80px; left: 50%;
             transform: translateX(-50%);
+            transform-origin: bottom center;
             display: none; align-items: center; gap: 8px;
             padding: 7px 12px; border-radius: 9999px;
             background: hsl(var(--popover) / 0.97);
@@ -59,19 +91,20 @@
         }
         #els-ov.on { display: flex; }
 
-        /* 패널: 뷰포트에 맞게 유동 */
+        /* 패널: 기준 크기로 고정 설계, transform scale로 통째로 스케일 */
         #els-pn {
             background: hsl(var(--popover));
             border: 1px solid hsl(var(--border) / 0.3);
             border-radius: 24px;
             padding: 20px;
-            width: min(600px, 94vw);
+            width: 600px;
             height: 80vh;
             box-shadow: 0 20px 60px rgba(0,0,0,0.35);
             display: flex; flex-direction: column; gap: 14px;
             font-family: Pretendard, sans-serif;
             overflow: hidden;
             box-sizing: border-box;
+            transform-origin: center center;
         }
 
         #els-cvw {
@@ -84,7 +117,6 @@
             justify-content: center;
             background: transparent;
         }
-        /* 캔버스 CSS 크기: 컨테이너 안에서 비율 유지하며 최대한 크게 (contain) */
         #els-cvw canvas {
             max-width: 100%;
             max-height: 100%;
@@ -169,7 +201,9 @@
         .els-sv:hover { opacity: 0.85; }
 
         #els-ts {
-            position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+            position: fixed; bottom: 32px; left: 50%;
+            transform: translateX(-50%);
+            transform-origin: bottom center;
             background: hsl(var(--popover) / 0.97); backdrop-filter: blur(12px);
             color: hsl(var(--popover-foreground));
             padding: 10px 22px; border-radius: 9999px;
@@ -287,6 +321,9 @@
     `;
     document.body.appendChild(ov);
 
+    // resize 시 scale 재적용
+    window.addEventListener('resize', applyPanelScale);
+
     // ==========================================
     // 치환
     // ==========================================
@@ -387,8 +424,7 @@
     }
 
     // ==========================================
-    // 카드 렌더링
-    // DPR 반영: 캔버스 실제 픽셀을 DPR배로 키우고 ctx를 scale → 선명한 고해상도 PNG
+    // 카드 렌더링 (카드 크기는 항상 고정, DPR로 선명도만)
     // ==========================================
     function makeCard() {
         const bg        = BGS[st.bg];
@@ -405,7 +441,6 @@
         const sepC        = dark ? `rgba(${acRgb},0.2)`  : `rgba(${acRgb},0.25)`;
         const italicAlpha = dark ? 0.45 : 0.40;
 
-        // 논리적 크기 (고정값 — 항상 동일)
         const W  = 920;
         const R  = 24;
         const PX = 52;
@@ -414,7 +449,6 @@
         const FS = 26;
         const LH = FS * 1.5;
 
-        // DPR 반영: 실제 캔버스 픽셀은 W*DPR, 그리기는 scale(DPR)로 논리 좌표 유지
         const tmp   = document.createElement('canvas');
         const tc    = tmp.getContext('2d');
         const textW = W - PX * 2;
@@ -435,15 +469,11 @@
         const H        = PT + textH + LH * 0.1 + 2 + FOOTER_H + PB;
         const logicalH = Math.max(H, 280);
 
-        // 실제 캔버스 크기 = 논리 크기 × DPR (선명도)
         const cv  = document.createElement('canvas');
         cv.width  = W * DPR;
         cv.height = logicalH * DPR;
-        // CSS 표시 크기는 지정하지 않음 → #els-cvw의 max-width/max-height: 100%가
-        // 컨테이너 안에서 비율 유지하며 최대한 크게 contain (원래 6.4.0 동작)
-
         const ctx = cv.getContext('2d');
-        ctx.scale(DPR, DPR);  // 이후 모든 좌표는 논리 픽셀 기준
+        ctx.scale(DPR, DPR);
 
         ctx.save();
         ctx.beginPath(); rrPath(ctx, 0, 0, W, logicalH, R); ctx.clip();
@@ -452,7 +482,6 @@
         ctx.fillStyle = ac;
         ctx.fillRect(0, 0, W, 3);
 
-        // 본문 렌더링
         const totalLines = allLineTokens.length;
         allLineTokens.forEach((lineTokens, row) => {
             const y          = PT + row * LH;
@@ -500,12 +529,10 @@
             ctx.globalAlpha = 1;
         });
 
-        // 하단 구분선
         const sepY = logicalH - PB - FOOTER_H + 8;
         ctx.strokeStyle = sepC; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(PX, sepY); ctx.lineTo(W - PX, sepY); ctx.stroke();
 
-        // 하단 좌
         const botY = logicalH - PB - 4;
         ctx.beginPath();
         ctx.arc(PX + 5, botY - 4, 3.5, 0, Math.PI * 2);
@@ -516,7 +543,6 @@
         ctx.fillStyle = mutedC;
         ctx.fillText(room, PX + 16, botY);
 
-        // 하단 우
         const now     = new Date();
         const dateStr = `${now.getFullYear()}.${pad(now.getMonth()+1)}.${pad(now.getDate())}`;
         ctx.font      = `400 12px Pretendard, sans-serif`;
@@ -604,6 +630,7 @@
         if (t) savedText = t;
         if (!savedText) return;
         ov.classList.add('on');
+        applyPanelScale();
         requestAnimationFrame(() => requestAnimationFrame(redraw));
         barHide();
     });
@@ -633,6 +660,9 @@
         e.stopPropagation(); barHide();
     });
     function barHide() { bar.style.display = 'none'; }
+
+    // 초기 scale 적용
+    applyPanelScale();
 
     // ==========================================
     // 토스트
@@ -666,6 +696,7 @@
                 document.getElementById('els-prev-txt').textContent =
                     t.length > 26 ? t.slice(0,26) + '…' : t;
                 bar.style.display = 'flex';
+                applyPanelScale();
             }
         }, 60);
     }, true);
@@ -679,6 +710,7 @@
                 document.getElementById('els-prev-txt').textContent =
                     t.length > 26 ? t.slice(0,26) + '…' : t;
                 bar.style.display = 'flex';
+                applyPanelScale();
             }
         }, 60);
     }, true);
