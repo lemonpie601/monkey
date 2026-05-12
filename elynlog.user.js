@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         엘린 로그 저장 📷
+// @name         엘린 로그 저장
 // @namespace    https://elyn.ai/
 // @version      6.4.0
 // @description  텍스트 드래그 → 심플 카드 PNG 저장
