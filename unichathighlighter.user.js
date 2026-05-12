@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗 형광펜
 // @namespace    https://www.univers.chat/
-// @version      2.1.0
+// @version      2.2.0
 // @description  유니버스챗 형광펜 노트
 // @author       레몬파이
 // @match        https://www.univers.chat/*
@@ -577,7 +577,7 @@
             <div class="hlp-header-title">
                 <div class="hlp-header-badge">
                     <span class="hlp-badge-dot"></span>
-                    형광펜 노트
+                    형광펜
                 </div>
                 <span class="hlp-header-count" id="hlp-header-count">0</span>
             </div>
