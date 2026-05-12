@@ -2,7 +2,7 @@
 // @name         유니챗 형광펜
 // @namespace    https://www.univers.chat/
 // @version      2.2.0
-// @description  유니버스챗 형광펜 노트
+// @description  유니버스챗 형광펜 노트 (모바일 최적화)
 // @author       레몬파이
 // @match        https://www.univers.chat/*
 // @grant        GM_addStyle
@@ -117,7 +117,7 @@
             border-color: rgba(255,255,255,0.08);
         }
 
-        /* ── 선택/편집 바 ── */
+        /* ── 선택/편집 바 (PC) ── */
         #hlp-selection-bar, #hlp-edit-bar {
             position: absolute; display: none;
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
@@ -126,6 +126,31 @@
             border: 1px solid rgba(255,255,255,0.12);
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
             z-index: 2147483641 !important; gap: 7px; align-items: center;
+        }
+
+        /* ── 모바일 선택/편집 바: 화면 하단 고정 ── */
+        @media (max-width: 640px) {
+            #hlp-selection-bar, #hlp-edit-bar {
+                position: fixed !important;
+                left: 50% !important;
+                top: auto !important;
+                bottom: 90px !important;
+                transform: translateX(-50%) !important;
+                border-radius: 24px !important;
+                padding: 10px 16px !important;
+                gap: 12px !important;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.45) !important;
+                white-space: nowrap;
+                /* 손가락으로 터치해도 선택 안 풀리게 */
+                touch-action: none;
+            }
+            /* 모바일 컬러 버튼: 충분히 크게 */
+            #hlp-selection-bar .hlp-color-btn,
+            #hlp-edit-bar .hlp-color-btn {
+                width: 36px !important;
+                height: 36px !important;
+                border-width: 2px !important;
+            }
         }
 
         /* ── 오버레이 ── */
@@ -660,14 +685,13 @@
         });
     });
 
-    // 드래그
+    // 드래그 (PC 전용)
     const popupHeader = popup.querySelector('.hlp-popup-header');
     let isDragging=false, dragSX, dragSY, initL, initT;
-    // 초기 위치는 hlpOpenPopup()에서 설정
 
     const dStart = e => {
         if (e.target.closest('.hlp-header-actions')) return;
-        if (hlpIsMobile()) return; // 바텀시트는 드래그 없음
+        if (hlpIsMobile()) return;
         isDragging=true;
         dragSX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
         dragSY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
@@ -723,7 +747,6 @@
     let hlpLastIsMobile = null;
     function injectToolbarButton() {
         const mobile = hlpIsMobile();
-        // 모바일↔PC 전환 시 재삽입
         if (hlpLastIsMobile !== null && hlpLastIsMobile !== mobile) {
             document.getElementById('hlp-toolbar-btn')?.remove();
         }
@@ -746,17 +769,9 @@
         hlBtn.addEventListener('mouseleave', () => hlBtn.style.color = 'rgba(0,0,0,0.4)');
         hlBtn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); togglePopup(); });
 
-        if (mobile) {
-            // 모바일: @ * " ✎ 그룹 오른쪽에 삽입
-            const lastBtn = btnGroup.querySelector('button:last-child');
-            if (lastBtn) lastBtn.classList.remove('rounded-r-full');
-            btnGroup.appendChild(hlBtn);
-        } else {
-            // PC: 그룹 맨 끝에 추가
-            const lastBtn = btnGroup.querySelector('button:last-child');
-            if (lastBtn) lastBtn.classList.remove('rounded-r-full');
-            btnGroup.appendChild(hlBtn);
-        }
+        const lastBtn = btnGroup.querySelector('button:last-child');
+        if (lastBtn) lastBtn.classList.remove('rounded-r-full');
+        btnGroup.appendChild(hlBtn);
     }
 
     const togglePopup = () => {
@@ -791,10 +806,44 @@
     syncTheme();
 
     // ==========================================
-    // 텍스트 선택 — Range 저장
+    // 텍스트 선택 — 모바일/PC 분기
     // ==========================================
+
+    // 모바일: selectionchange 이벤트로 선택 감지 (더 안정적)
+    let mobileSelectionTimer = null;
+    let lastMobileSelText = '';
+
+    function onSelectionChange() {
+        if (!hlpIsMobile()) return;
+        clearTimeout(mobileSelectionTimer);
+        mobileSelectionTimer = setTimeout(() => {
+            const sel = window.getSelection();
+            const text = sel?.toString().trim();
+            if (text && text.length > 0 && sel.rangeCount > 0) {
+                // 선택 바나 편집 바 안에서 발생한 선택은 무시
+                const anchorNode = sel.anchorNode;
+                if (selectionBar.contains(anchorNode) || editBar.contains(anchorNode) ||
+                    popup.contains(anchorNode) || ctxMenu.contains(anchorNode)) return;
+
+                lastMobileSelText = text;
+                savedSelectionText = text.includes('\n') ? text.split('\n')[0].trim() : text;
+                savedSelectionRange = sel.getRangeAt(0).cloneRange();
+                selectionBar.style.display = 'flex';
+                editBar.style.display = 'none';
+                currentEditingId = null;
+            } else {
+                // 선택 해제됐을 때 바로 숨기지 않음 — 버튼 누를 시간 필요
+                // (touchend에서 버튼 클릭 처리 후 숨김)
+            }
+        }, 300); // 손가락이 멈춘 후 300ms 뒤에 반응
+    }
+
+    document.addEventListener('selectionchange', onSelectionChange);
+
+    // PC: 기존 mouseup 방식 유지
     const handleSelectionEnd = e => {
-        if (e.type==='mouseup'&&e.button!==0) return;
+        if (hlpIsMobile()) return; // 모바일은 selectionchange로 처리
+        if (e.button !== 0) return;
         if ([selectionBar,editBar,popup,ctxMenu].some(el=>el.contains(e.target))) return;
 
         if (e.target.tagName==='MARK'&&e.target.classList.contains('custom-hlp')) {
@@ -823,11 +872,53 @@
     };
 
     const handleSelectionStart = e => {
+        if (hlpIsMobile()) return; // 모바일은 별도 처리
         if (!selectionBar.contains(e.target)) selectionBar.style.display='none';
         if (!editBar.contains(e.target)&&e.target.tagName!=='MARK') { editBar.style.display='none'; currentEditingId=null; }
     };
 
+    // 모바일: 형광펜 mark 터치 → 편집 바
+    document.addEventListener('touchend', e => {
+        if (!hlpIsMobile()) return;
+        const target = e.target;
+
+        // 선택 바 / 편집 바 위의 터치는 무시 (버튼 동작)
+        if (selectionBar.contains(target) || editBar.contains(target)) return;
+
+        if (target.tagName === 'MARK' && target.classList.contains('custom-hlp')) {
+            const sel = window.getSelection();
+            // 드래그 선택 중이 아닐 때만 편집 바 열기
+            if (!sel || sel.toString().trim().length === 0) {
+                window.getSelection().removeAllRanges();
+                selectionBar.style.display = 'none';
+                savedSelectionText = ''; savedSelectionRange = null;
+                currentEditingId = target.dataset.hlpId;
+                editBar.style.display = 'flex';
+                return;
+            }
+        }
+
+        // 다른 곳 터치 시 바 숨기기
+        // 단, 선택이 살아있으면 선택 바 유지
+        const sel = window.getSelection();
+        if (!sel || sel.toString().trim().length === 0) {
+            // 타이머 걸어서 버튼 클릭 처리 후 숨김
+            setTimeout(() => {
+                const sel2 = window.getSelection();
+                if (!sel2 || sel2.toString().trim().length === 0) {
+                    if (!selectionBar.contains(document.activeElement) &&
+                        !editBar.contains(document.activeElement)) {
+                        selectionBar.style.display = 'none';
+                        editBar.style.display = 'none';
+                        currentEditingId = null;
+                    }
+                }
+            }, 200);
+        }
+    });
+
     function positionBar(bar, e, sel) {
+        // PC 전용 위치 계산 (모바일은 CSS fixed로 처리)
         let px = e.pageX || e.changedTouches?.[0]?.pageX;
         let py = e.pageY || e.changedTouches?.[0]?.pageY;
         if (!px&&sel?.rangeCount>0) { const r=sel.getRangeAt(0).getBoundingClientRect(); px=r.right+window.scrollX; py=r.bottom+window.scrollY; }
@@ -837,9 +928,7 @@
     }
 
     document.addEventListener('mouseup',    handleSelectionEnd);
-    document.addEventListener('touchend',   handleSelectionEnd);
     document.addEventListener('mousedown',  handleSelectionStart);
-    document.addEventListener('touchstart', handleSelectionStart, {passive:true});
 
     // ==========================================
     // 형광펜 추가 — 위치(Range) 저장
