@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         케덕 정규식과 퀵입력
 // @namespace    https://caveduck.io/
-// @version      15.2.1
+// @version      15.3.0
 // @description  케이브덕: 정규식 + 퀵입력 (형광펜 호환 + React #418 회피 패치)
 // @author       레몬파이
 // @match        https://caveduck.io/*
@@ -25,9 +25,9 @@
     set: (k, v) => GM_setValue(k, JSON.stringify(v)),
   };
   let quick = S.get('cdh_q',  []);  // [{id,label,text}]
-  let rules = [];                    // 저장 안 함 — 세션 중에만 유지
+  let rules = S.get('cdh_r', []);   // 정규식 규칙 영구 저장
   let regOn = S.get('cdh_on', false);
-  const save = () => { S.set('cdh_q', quick); S.set('cdh_on', regOn); };
+  const save = () => { S.set('cdh_q', quick); S.set('cdh_on', regOn); S.set('cdh_r', rules); };
   const uid  = () => Math.random().toString(36).slice(2, 8);
   const esc  = s  => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -70,13 +70,24 @@
         const raw = sp.textContent;
         if (!raw.trim()) return;
 
+        // 이미 숨겨진 원본 span이면 → 다음 형제가 cdh-overlay인지 확인 후 처리
+        const alreadyHidden = sp.style.visibility === 'hidden';
+
         const next = applyRules(raw);
+
         if (next === raw) {
-          // 치환 없음 — 오버레이 있으면 제거 (단, 안에 형광펜 mark 있으면 보존)
-          const ov = sp.nextSibling;
-          if (ov && ov.classList?.contains('cdh-overlay')) {
-            if (!ov.querySelector?.('mark.custom-cdhlp')) {
-              ov.remove();
+          // 치환 없음
+          if (alreadyHidden) {
+            // 원본을 복원하고 오버레이 제거 (형광펜 mark 있으면 보존)
+            const ov = sp.nextElementSibling;
+            if (ov && ov.classList?.contains('cdh-overlay')) {
+              if (!ov.querySelector?.('mark.custom-cdhlp')) {
+                ov.remove();
+                sp.style.visibility = '';
+                sp.style.position   = '';
+              }
+            } else {
+              // 오버레이가 없어진 경우 원본 복원
               sp.style.visibility = '';
               sp.style.position   = '';
             }
@@ -84,30 +95,41 @@
           return;
         }
 
-        // 이미 오버레이 있으면 텍스트만 갱신 — 단, 안에 형광펜 mark 있으면 건드리지 않음
-        const existing = sp.nextSibling;
-        if (existing && existing.classList?.contains('cdh-overlay')) {
-          const hasHl = existing.querySelector?.('mark.custom-cdhlp');
-          if (!hasHl && existing.textContent !== next) existing.textContent = next;
-        } else {
-          // 오버레이 새로 삽입
-          const ov = document.createElement('span');
-          ov.className = 'cdh-overlay';
-          ov.textContent = next;
-          // 원본 span의 스타일 복사 (색상, italic 등)
-          const cs = getComputedStyle(sp);
-          ov.style.cssText = `
-            font-style:${cs.fontStyle};
-            font-weight:${cs.fontWeight};
-            font-family:${cs.fontFamily};
-            font-size:${cs.fontSize};
-            line-height:${cs.lineHeight};
-            letter-spacing:${cs.letterSpacing};
-            color:${cs.color};
-          `;
-          ov.setAttribute('aria-hidden', 'true');
-          sp.after(ov);
+        if (alreadyHidden) {
+          // 이미 처리된 span — nextElementSibling이 cdh-overlay이면 텍스트만 갱신
+          const ov = sp.nextElementSibling;
+          if (ov && ov.classList?.contains('cdh-overlay')) {
+            const hasHl = ov.querySelector?.('mark.custom-cdhlp');
+            if (!hasHl && ov.textContent !== next) ov.textContent = next;
+          } else {
+            // 오버레이가 사라진 경우 재삽입
+            const ov2 = document.createElement('span');
+            ov2.className = 'cdh-overlay';
+            ov2.textContent = next;
+            const cs = getComputedStyle(sp);
+            ov2.style.cssText = `font-style:${cs.fontStyle};font-weight:${cs.fontWeight};font-family:${cs.fontFamily};font-size:${cs.fontSize};line-height:${cs.lineHeight};letter-spacing:${cs.letterSpacing};color:${cs.color};`;
+            ov2.setAttribute('aria-hidden', 'true');
+            sp.after(ov2);
+          }
+          return;
         }
+
+        // 아직 처리 안 된 span — 오버레이 새로 삽입
+        const ov = document.createElement('span');
+        ov.className = 'cdh-overlay';
+        ov.textContent = next;
+        const cs = getComputedStyle(sp);
+        ov.style.cssText = `
+          font-style:${cs.fontStyle};
+          font-weight:${cs.fontWeight};
+          font-family:${cs.fontFamily};
+          font-size:${cs.fontSize};
+          line-height:${cs.lineHeight};
+          letter-spacing:${cs.letterSpacing};
+          color:${cs.color};
+        `;
+        ov.setAttribute('aria-hidden', 'true');
+        sp.after(ov);
         sp.style.visibility = 'hidden';
         sp.style.position   = 'absolute';
       });
@@ -818,7 +840,8 @@
   /* ────────────────────────────────────────
      MutationObserver + 초기화
   ──────────────────────────────────────── */
-  let _pend = false;
+  let _pend   = false;
+  let _debounceTimer = null;
   new MutationObserver(mutations => {
     if (_patching) return;
     const ignore = mutations.every(m =>
@@ -829,12 +852,15 @@
       )
     );
     if (ignore) return;
-    if (_pend) return; _pend = true;
-    requestAnimationFrame(() => {
-      _pend = false;
-      if (!document.getElementById('cdh-wrap')) injectUI();
-      if (regOn) patchAll();
-    });
+    // UI 주입은 즉시
+    if (!document.getElementById('cdh-wrap')) injectUI();
+    // 정규식 치환은 스트리밍이 멈춘 후 300ms 뒤에 실행 (누적 중복 방지)
+    if (!regOn) return;
+    clearTimeout(_debounceTimer);
+    _debounceTimer = setTimeout(() => {
+      restoreAll();   // 기존 오버레이 전부 지우고
+      patchAll();     // 안정된 DOM에 한 번만 적용
+    }, 300);
   }).observe(document.body, { childList: true, subtree: true });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', injectUI);
