@@ -658,8 +658,8 @@
     rBtn.innerHTML = ICON_R;
     _rBtn = rBtn;
 
-    bar.appendChild(qBtn);
-    bar.appendChild(rBtn);
+    bar.insertBefore(qBtn, bar.querySelector('[data-tour="chat-model-selector"]')?.parentElement || null);
+    bar.insertBefore(rBtn, bar.querySelector('[data-tour="chat-model-selector"]')?.parentElement || null);
 
     /* 칩 스트립 */
     const wrap = document.createElement('div');
