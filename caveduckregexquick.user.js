@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         케덕 정규식과 퀵입력
 // @namespace    https://caveduck.io/
-// @version      11.5.0
+// @version      15.0.0
 // @description  케이브덕: 정규식 + 퀵입력
 // @author       레몬파이
 // @match        https://caveduck.io/*
@@ -25,9 +25,9 @@
     set: (k, v) => GM_setValue(k, JSON.stringify(v)),
   };
   let quick = S.get('cdh_q',  []);  // [{id,label,text}]
-  let rules = S.get('cdh_r',  []);  // [{id,from,to,on}]
+  let rules = [];                    // 저장 안 함 — 세션 중에만 유지
   let regOn = S.get('cdh_on', false);
-  const save = () => { S.set('cdh_q', quick); S.set('cdh_r', rules); S.set('cdh_on', regOn); };
+  const save = () => { S.set('cdh_q', quick); S.set('cdh_on', regOn); };
   const uid  = () => Math.random().toString(36).slice(2, 8);
   const esc  = s  => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -43,56 +43,71 @@
     }
     return r;
   }
-  // span의 "순수 텍스트" 추출
-  // 자식이 없으면 textContent 그대로,
-  // 자식이 전부 형광펜 <mark class="custom-cdhlp"> 이면 합산,
-  // 그 외 다른 자식 있으면 null 반환(건너뜀)
-  function getSpanText(sp) {
-    if (sp.childElementCount === 0) return sp.textContent;
-    let text = '';
-    for (const node of sp.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.nodeValue;
-      } else if (
-        node.nodeType === Node.ELEMENT_NODE &&
-        node.tagName === 'MARK' &&
-        node.classList.contains('custom-cdhlp')
-      ) {
-        text += node.textContent;
-      } else {
-        return null; // 알 수 없는 자식 → 건너뜀
-      }
-    }
-    return text;
-  }
+  // ── 정규식 치환: 오버레이 삽입 방식 ─────────────────
+  // React 관리 텍스트 노드를 절대 건드리지 않음
+  // 대신 치환 텍스트를 담은 <span class="cdh-overlay"> 를
+  // 원본 span 바로 뒤에 삽입하고, 원본 span을 visibility:hidden
+
+  let _patching = false;
 
   function patchAll() {
-    document.querySelectorAll('[class*="contain"]').forEach(c => {
-      c.querySelectorAll('span').forEach(sp => {
-        const rawText = getSpanText(sp);
-        if (rawText === null || !rawText.trim()) return;
+    if (_patching) return;
+    _patching = true;
+    try {
+      const wrap = document.getElementById('cdh-wrap');
+      document.querySelectorAll('[class*="contain"] span').forEach(sp => {
+        if (wrap && wrap.contains(sp)) return;
+        if (sp.classList.contains('cdh-overlay')) return;
+        if (sp.childElementCount > 0) return;
+        const raw = sp.textContent;
+        if (!raw.trim()) return;
 
-        // orig 저장/갱신
-        // 형광펜이 DOM을 재구성하면 rawText가 이전 패치값이 아닌 원본으로 돌아오므로
-        // patched와 다르고 orig와도 다르면 형광펜이 복원한 것 → orig 갱신
-        if (!sp.dataset.orig) {
-          sp.dataset.orig = rawText;
-        } else {
-          const patched = applyRules(sp.dataset.orig);
-          if (rawText !== patched && rawText !== sp.dataset.orig) {
-            sp.dataset.orig = rawText;
+        const next = applyRules(raw);
+        if (next === raw) {
+          // 치환 없음 — 오버레이 있으면 제거
+          const ov = sp.nextSibling;
+          if (ov && ov.classList?.contains('cdh-overlay')) {
+            ov.remove();
+            sp.style.visibility = '';
           }
+          return;
         }
 
-        const next = applyRules(sp.dataset.orig);
-        if (sp.textContent !== next) sp.textContent = next;
+        // 이미 오버레이 있으면 텍스트만 갱신
+        const existing = sp.nextSibling;
+        if (existing && existing.classList?.contains('cdh-overlay')) {
+          if (existing.textContent !== next) existing.textContent = next;
+        } else {
+          // 오버레이 새로 삽입
+          const ov = document.createElement('span');
+          ov.className = 'cdh-overlay';
+          ov.textContent = next;
+          // 원본 span의 스타일 복사 (색상, italic 등)
+          ov.style.cssText = sp.style.cssText;
+          ov.setAttribute('aria-hidden', 'true');
+          sp.after(ov);
+        }
+        sp.style.visibility = 'hidden';
+        sp.style.position   = 'absolute';
       });
-    });
+    } finally {
+      _patching = false;
+    }
   }
+
   function restoreAll() {
-    document.querySelectorAll('[data-orig]').forEach(sp => {
-      if (sp.dataset.orig) sp.textContent = sp.dataset.orig;
-    });
+    _patching = true;
+    try {
+      document.querySelectorAll('.cdh-overlay').forEach(ov => ov.remove());
+      document.querySelectorAll('[class*="contain"] span').forEach(sp => {
+        if (sp.style.visibility === 'hidden') {
+          sp.style.visibility = '';
+          sp.style.position   = '';
+        }
+      });
+    } finally {
+      _patching = false;
+    }
   }
 
   /* ────────────────────────────────────────
@@ -177,6 +192,12 @@
     }
 
     #cdh-wrap { margin-bottom: 6px; }
+
+    /* 정규식 오버레이 span */
+    .cdh-overlay {
+      pointer-events: none;
+      user-select: none;
+    }
 
     /* ── 버튼 ── */
     .cdh-btn {
@@ -581,7 +602,7 @@
      아이콘 상수
   ──────────────────────────────────────── */
   const ICON_Q = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h4"/></svg>`;
-  const ICON_R = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 12 5-5 5 5-5 5Z"/><path d="M12 21.21V2.79"/><path d="m12 12 5-5 5 5-5 5Z"/></svg>`;
+  const ICON_R = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v12"/><path d="M17.196 9 6.804 15"/><path d="m6.804 9 10.392 6"/></svg>`;
 
   let _rBtn = null;
 
@@ -777,7 +798,16 @@
      MutationObserver + 초기화
   ──────────────────────────────────────── */
   let _pend = false;
-  new MutationObserver(() => {
+  new MutationObserver(mutations => {
+    if (_patching) return;
+    const ignore = mutations.every(m =>
+      [...m.addedNodes, ...m.removedNodes].every(n =>
+        n.nodeType === Node.TEXT_NODE ||
+        (n.nodeType === Node.ELEMENT_NODE && n.tagName === 'MARK' && n.classList?.contains('custom-cdhlp')) ||
+        (n.nodeType === Node.ELEMENT_NODE && n.classList?.contains('cdh-overlay'))
+      )
+    );
+    if (ignore) return;
     if (_pend) return; _pend = true;
     requestAnimationFrame(() => {
       _pend = false;
