@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         케덕 정규식과 퀵입력
+// @name         CaveDuck Helper - 정규식 & 퀵입력
 // @namespace    https://caveduck.io/
-// @version      9.1.0
-// @description  케이브덕: 정규식 + 퀵입력 칩 (아이콘 버튼, 드롭다운 폼)
-// @author       레몬파이
+// @version      11.5.0
+// @description  케이브덕: 정규식 + 퀵입력
+// @author       You
 // @match        https://caveduck.io/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -17,19 +17,23 @@
   const SEL_BTNBAR = 'form[data-tour="chat-input"] .order-first';
   const SEL_INPUT  = 'textarea[name="userInput"]';
 
-  /* ── 스토리지 ── */
+  /* ────────────────────────────────────────
+     스토리지
+  ──────────────────────────────────────── */
   const S = {
     get: (k, d) => { try { return JSON.parse(GM_getValue(k, JSON.stringify(d))); } catch { return d; } },
     set: (k, v) => GM_setValue(k, JSON.stringify(v)),
   };
-  let quick = S.get('cdh_q',  []);
-  let rules = S.get('cdh_r',  []);
+  let quick = S.get('cdh_q',  []);  // [{id,label,text}]
+  let rules = S.get('cdh_r',  []);  // [{id,from,to,on}]
   let regOn = S.get('cdh_on', false);
   const save = () => { S.set('cdh_q', quick); S.set('cdh_r', rules); S.set('cdh_on', regOn); };
   const uid  = () => Math.random().toString(36).slice(2, 8);
   const esc  = s  => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  /* ── 정규식 치환 ── */
+  /* ────────────────────────────────────────
+     정규식 치환
+  ──────────────────────────────────────── */
   function applyRules(t) {
     if (!regOn) return t;
     let r = t;
@@ -39,21 +43,61 @@
     }
     return r;
   }
+  // span의 "순수 텍스트" 추출
+  // 자식이 없으면 textContent 그대로,
+  // 자식이 전부 형광펜 <mark class="custom-cdhlp"> 이면 합산,
+  // 그 외 다른 자식 있으면 null 반환(건너뜀)
+  function getSpanText(sp) {
+    if (sp.childElementCount === 0) return sp.textContent;
+    let text = '';
+    for (const node of sp.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.nodeValue;
+      } else if (
+        node.nodeType === Node.ELEMENT_NODE &&
+        node.tagName === 'MARK' &&
+        node.classList.contains('custom-cdhlp')
+      ) {
+        text += node.textContent;
+      } else {
+        return null; // 알 수 없는 자식 → 건너뜀
+      }
+    }
+    return text;
+  }
+
   function patchAll() {
     document.querySelectorAll('[class*="contain"]').forEach(c => {
       c.querySelectorAll('span').forEach(sp => {
-        if (sp.childElementCount > 0 || !sp.textContent.trim()) return;
-        if (!sp.dataset.orig) sp.dataset.orig = sp.textContent;
+        const rawText = getSpanText(sp);
+        if (rawText === null || !rawText.trim()) return;
+
+        // orig 저장/갱신
+        // 형광펜이 DOM을 재구성하면 rawText가 이전 패치값이 아닌 원본으로 돌아오므로
+        // patched와 다르고 orig와도 다르면 형광펜이 복원한 것 → orig 갱신
+        if (!sp.dataset.orig) {
+          sp.dataset.orig = rawText;
+        } else {
+          const patched = applyRules(sp.dataset.orig);
+          if (rawText !== patched && rawText !== sp.dataset.orig) {
+            sp.dataset.orig = rawText;
+          }
+        }
+
         const next = applyRules(sp.dataset.orig);
         if (sp.textContent !== next) sp.textContent = next;
       });
     });
   }
   function restoreAll() {
-    document.querySelectorAll('[data-orig]').forEach(sp => { sp.textContent = sp.dataset.orig; });
+    document.querySelectorAll('[data-orig]').forEach(sp => {
+      if (sp.dataset.orig) sp.textContent = sp.dataset.orig;
+    });
   }
 
-  /* ── React textarea 삽입 ── */
+  /* ────────────────────────────────────────
+     입력창 삽입 (React 우회)
+  ──────────────────────────────────────── */
   function insertText(text) {
     const el = document.querySelector(SEL_INPUT);
     if (!el) return;
@@ -68,553 +112,649 @@
     el.focus();
   }
 
-  /* ════════════════════════════════════════
-     드롭다운 싱글턴 관리
-     — 하나만 열리고, 바깥 클릭 시 닫힘
-  ════════════════════════════════════════ */
-  let _openDD = null;
+  /* ────────────────────────────────────────
+     드롭다운 싱글턴
+     항상 앵커의 위쪽에 뜨고, 내용 길이가
+     늘어나도 아래가 아닌 위로 성장
+  ──────────────────────────────────────── */
+  let _curDD   = null;  // 현재 열린 DD
+  let _curAnchor = null;
 
-  function openDD(dd, anchor) {
-    if (_openDD && _openDD !== dd) closeDD(_openDD);
-    document.body.appendChild(dd);  // body 최상단에 붙임
+  function ddOpen(dd, anchor) {
+    if (_curDD && _curDD !== dd) ddClose(_curDD);
+    if (!document.body.contains(dd)) document.body.appendChild(dd);
+    _curDD     = dd;
+    _curAnchor = anchor;
     dd.style.display = 'flex';
-    positionDD(dd, anchor);
-    _openDD = dd;
+    ddPos(dd, anchor);
   }
-  function closeDD(dd) {
+
+  function ddClose(dd) {
     if (!dd) return;
     dd.style.display = 'none';
-    if (_openDD === dd) _openDD = null;
+    if (_curDD === dd) { _curDD = null; _curAnchor = null; }
+    // 버튼 뱃지 정리
+    document.querySelectorAll('.cdh-btn.dd-open').forEach(b => b.classList.remove('dd-open'));
   }
-  function positionDD(dd, anchor) {
+
+  // 항상 앵커 위에 붙이고, 좌우 넘침 보정
+  function ddPos(dd, anchor) {
     const r   = anchor.getBoundingClientRect();
-    const dw  = dd.offsetWidth  || 260;
-    const dh  = dd.offsetHeight || 120;
+    const dw  = dd.offsetWidth  || 270;
+    const dh  = dd.offsetHeight || 10;
     const gap = 6;
-    // 기본: 앵커 위쪽
-    let top  = r.top - dh - gap + window.scrollY;
+    // bottom 고정: 앵커 top 에서 gap 위
+    const bottom = window.innerHeight - r.top + gap;
     let left = r.left + window.scrollX;
-    // 화면 아래로 튀어나오면 앵커 아래로
-    if (top < window.scrollY + 4) top = r.bottom + gap + window.scrollY;
-    // 화면 오른쪽 넘으면 왼쪽으로 당김
-    if (left + dw > window.innerWidth - 8) left = window.innerWidth - dw - 8 + window.scrollX;
+    if (left + dw > window.innerWidth - 8) left = window.innerWidth - dw - 8;
     if (left < 4) left = 4;
-    dd.style.top  = top  + 'px';
-    dd.style.left = left + 'px';
+    dd.style.bottom = bottom + 'px';
+    dd.style.top    = 'auto';
+    dd.style.left   = left + 'px';
+    dd.style.maxHeight = (r.top - gap - 8) + 'px';  // 화면 위로 넘치지 않게
   }
 
-  document.addEventListener('click', () => { if (_openDD) closeDD(_openDD); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && _openDD) closeDD(_openDD); });
+  // 열린 DD 위치 갱신 (내용 변경 후)
+  function ddRepos() {
+    if (_curDD && _curAnchor) {
+      requestAnimationFrame(() => ddPos(_curDD, _curAnchor));
+    }
+  }
 
-  /* ════════════════════════════════════════
+  document.addEventListener('click',   () => { if (_curDD) ddClose(_curDD); });
+  document.addEventListener('keydown', e  => { if (e.key === 'Escape' && _curDD) ddClose(_curDD); });
+
+  /* ────────────────────────────────────────
      스타일
-  ════════════════════════════════════════ */
+  ──────────────────────────────────────── */
   document.head.insertAdjacentHTML('beforeend', `<style>
-    /* 반응형 크기 변수 */
     :root {
-      --cdh-fs:  clamp(12px, 1.4vw, 15px);
-      --cdh-fss: clamp(11px, 1.2vw, 13px);
-      --cdh-h:   clamp(28px, 3.4vw, 34px);
-      --cdh-r:   8px;
-      --cdh-gap: clamp(4px, 0.8vw, 8px);
-      --cdh-pad: clamp(7px, 1vw, 11px);
+      --cdh-fs:  clamp(12px, 1.5vw, 15px);
+      --cdh-fss: clamp(11px, 1.3vw, 13px);
+      --cdh-gap: clamp(4px, 0.7vw, 8px);
+      --cdh-pad: clamp(8px, 1.1vw, 12px);
+      --cdh-btn: clamp(32px, 4vw, 38px);
     }
 
-    /* 입력창과의 여백 */
     #cdh-wrap { margin-bottom: 6px; }
 
-    /* ── 아이콘 버튼 (하단 버튼 바) ── */
+    /* ── 버튼 ── */
     .cdh-btn {
-      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-      height: var(--cdh-h); width: var(--cdh-h);
-      border-radius: var(--cdh-r); border: none;
-      background: rgba(255,255,255,.07); color: #bbb;
-      font-size: clamp(15px, 1.8vw, 19px);
+      display: inline-flex; align-items: center; justify-content: center;
+      position: relative;
+      width: var(--cdh-btn); height: var(--cdh-btn);
+      border-radius: 50%; border: none;
+      background: transparent; color: #aaa;
+      font-size: clamp(16px, 2vw, 20px);
       cursor: pointer; flex-shrink: 0;
       -webkit-tap-highlight-color: transparent; touch-action: manipulation;
       transition: background .12s, color .12s;
-      position: relative;
     }
-    .cdh-btn:hover   { background: rgba(255,255,255,.13); color: #eee; }
-    .cdh-btn:active  { opacity: .7; }
-    .cdh-btn.on      { background: #bc1e51; color: #fff; }
-    .cdh-btn.on:hover { background: #a01a45; }
-    /* 정규식 관리 패널 열린 상태 — 노란 점 */
-    .cdh-btn.managing::after {
+    .cdh-btn:hover  { background: rgba(255,255,255,.08); color: #eee; }
+    .cdh-btn:active { opacity: .7; }
+    .cdh-btn.on     { color: #bc1e51; }
+    .cdh-btn.on:hover { color: #e0305a; }
+    /* 드롭다운 열림 뱃지 */
+    .cdh-btn.dd-open::after {
       content: '';
       position: absolute; bottom: 3px; right: 3px;
       width: 5px; height: 5px;
       border-radius: 50%; background: #fdc700;
-    }
-    /* 툴팁 */
-    .cdh-btn[title]:hover::before {
-      content: attr(title);
-      position: absolute; bottom: calc(100% + 5px); left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,.8); color: #eee;
-      font-size: 11px; white-space: nowrap;
-      padding: 3px 7px; border-radius: 5px;
-      pointer-events: none; z-index: 9999;
+      pointer-events: none;
     }
 
     /* ── 칩 스트립 ── */
     #cdh-chips {
       display: none; align-items: center; gap: var(--cdh-gap);
-      padding: var(--cdh-gap) var(--cdh-pad) calc(var(--cdh-gap) * 0.6);
-      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      padding: var(--cdh-gap) var(--cdh-pad) calc(var(--cdh-gap) * .5);
+      overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap;
     }
     #cdh-chips.open { display: flex; }
     #cdh-chips::-webkit-scrollbar { display: none; }
 
     .cdh-chip {
       display: inline-flex; align-items: center;
-      height: clamp(24px, 3vw, 30px);
-      padding: 0 clamp(8px, 1.1vw, 12px);
+      height: clamp(26px, 3.2vw, 32px);
+      padding: 0 clamp(9px, 1.2vw, 13px);
       border-radius: 20px; border: 1px solid rgba(255,255,255,.13);
       background: rgba(255,255,255,.07); color: #ccc;
       font-size: var(--cdh-fss); font-weight: 500; font-family: inherit;
-      white-space: nowrap; cursor: grab; flex-shrink: 0;
+      white-space: nowrap; flex-shrink: 0; cursor: grab;
       -webkit-tap-highlight-color: transparent;
       transition: background .1s, border-color .1s, opacity .1s;
       user-select: none;
     }
-    .cdh-chip:hover        { background: rgba(255,255,255,.12); color: #eee; }
-    .cdh-chip.dragging     { opacity: .35; cursor: grabbing; }
-    .cdh-chip.drag-over    { border-color: #fdc700; background: rgba(253,199,0,.1); }
+    .cdh-chip:hover     { background: rgba(255,255,255,.13); color: #eee; }
+    .cdh-chip.dragging  { opacity: .3; cursor: grabbing; }
+    .cdh-chip.drag-over { border-color: #fdc700; background: rgba(253,199,0,.1); }
 
     .cdh-chip-x {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 13px; height: 13px;
-      margin-left: 5px; margin-right: -3px;
+      width: 14px; height: 14px; margin-left: 5px; margin-right: -3px;
       border-radius: 50%; background: rgba(255,255,255,.14); border: none;
       color: #888; font-size: 8px; cursor: pointer; line-height: 1;
-      -webkit-tap-highlight-color: transparent; transition: background .1s;
-      flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent; transition: background .1s; flex-shrink: 0;
     }
     .cdh-chip-x:hover { background: #bc1e51; color: #fff; }
 
-    /* + 추가 칩 */
     #cdh-chip-add {
       cursor: pointer !important;
-      background: rgba(188,30,81,.1) !important;
-      border-color: rgba(188,30,81,.3) !important;
-      color: #bc1e51 !important;
-      font-size: clamp(13px, 1.5vw, 16px) !important;
-      padding: 0 clamp(7px, 1vw, 11px) !important;
+      background: rgba(188,30,81,.1) !important; border-color: rgba(188,30,81,.3) !important;
+      color: #bc1e51 !important; font-size: clamp(14px,1.6vw,17px) !important;
+      padding: 0 clamp(8px,1.1vw,12px) !important;
     }
     #cdh-chip-add:hover { background: rgba(188,30,81,.2) !important; }
 
-    /* 정규식 인라인 패널 (form 안, 드롭다운 아님) */
-    #cdh-rpanel {
-      display: none; flex-direction: column;
-      border-top: 1px solid rgba(255,255,255,.07);
-      background: rgba(0,0,0,.18);
-    }
-    #cdh-rpanel.open { display: flex; }
-
-    #cdh-rform {
-      display: flex; align-items: center; gap: var(--cdh-gap);
-      padding: var(--cdh-gap) var(--cdh-pad);
-      border-bottom: 1px solid rgba(255,255,255,.06);
-    }
-    #cdh-rform input {
-      flex: 1; min-width: 0;
-      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
-      border-radius: var(--cdh-r); color: #eee;
-      font-size: var(--cdh-fss); font-family: monospace;
-      padding: clamp(4px, 0.6vw, 7px) clamp(7px, 1vw, 10px);
-      outline: none; -webkit-appearance: none; transition: border-color .12s;
-    }
-    #cdh-rform input:focus { border-color: #bc1e51; }
-    #cdh-rform input::placeholder { font-family: inherit; opacity: .45; font-size: clamp(10px, 1.1vw, 12px); }
-    #cdh-rform .arr { color: #555; font-size: var(--cdh-fs); flex-shrink: 0; }
-    #cdh-rform button {
-      height: clamp(26px, 3.1vw, 30px); padding: 0 clamp(8px, 1.1vw, 12px);
-      border-radius: var(--cdh-r); border: none;
-      background: rgba(255,255,255,.08); color: #bbb;
-      font-size: var(--cdh-fss); font-weight: 700; font-family: inherit;
-      cursor: pointer; flex-shrink: 0; white-space: nowrap;
-      -webkit-tap-highlight-color: transparent; transition: background .1s;
-    }
-    #cdh-rform button:hover { background: rgba(255,255,255,.16); color: #eee; }
-
-    #cdh-rlist { display: flex; flex-direction: column; }
-    .cdh-rule {
-      display: flex; align-items: center; gap: var(--cdh-gap);
-      padding: clamp(5px, 0.7vw, 7px) var(--cdh-pad);
-      border-bottom: 1px solid rgba(255,255,255,.04);
-    }
-    .cdh-rule-chk { accent-color: #bc1e51; width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
-    .cdh-rule-text {
-      flex: 1; font-size: var(--cdh-fss); font-family: monospace; color: #ccc;
-      overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-    }
-    .cdh-rule-text .arr { color: #444; margin: 0 3px; }
-    .cdh-rule-text .to  { color: #fdc700; }
-    .cdh-rule-x {
-      background: none; border: none; color: #555; font-size: var(--cdh-fs);
-      cursor: pointer; padding: 3px 5px; border-radius: 5px; flex-shrink: 0;
-      -webkit-tap-highlight-color: transparent; transition: color .1s;
-    }
-    .cdh-rule-x:hover { color: #bc1e51; }
-    .cdh-r-empty { padding: clamp(8px, 1.2vw, 12px); font-size: var(--cdh-fss); color: #555; text-align: center; }
-    .cdh-r-info {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 4px var(--cdh-pad); border-bottom: 1px solid rgba(255,255,255,.04);
-    }
-    .cdh-r-info span { font-size: var(--cdh-fss); color: #555; }
-    .cdh-r-info span b { color: #aaa; }
-    .cdh-r-info button {
-      background: none; border: none; font-size: var(--cdh-fss);
-      color: #8ec5ff; cursor: pointer; font-family: inherit; padding: 0;
-    }
-    .cdh-r-info button:hover { text-decoration: underline; }
-
-    /* ── 공용 드롭다운 (퀵입력 추가 / 수정 폼) ── */
+    /* ── 공용 드롭다운 ── */
     .cdh-dd {
-      position: absolute;     /* body에 붙지만 top/left로 위치 지정 */
-      z-index: 999999;
-      flex-direction: column; gap: var(--cdh-gap);
+      position: fixed; z-index: 999999;
+      flex-direction: column; gap: clamp(7px, 1vw, 11px);
       background: #1e1f1f;
-      border: 1px solid rgba(255,255,255,.12);
-      border-radius: 10px;
-      box-shadow: 0 6px 24px rgba(0,0,0,.6);
-      padding: clamp(9px, 1.2vw, 13px);
-      width: clamp(220px, 30vw, 300px);
-      display: none;   /* openDD 가 flex 로 바꿈 */
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: 11px;
+      box-shadow: 0 -4px 24px rgba(0,0,0,.6), 0 2px 8px rgba(0,0,0,.4);
+      padding: clamp(11px, 1.4vw, 15px);
+      width: clamp(240px, 30vw, 300px);
+      display: none;
     }
-    .cdh-dd label {
-      font-size: var(--cdh-fss); color: #888; margin-bottom: 2px; display: block;
+    @media (max-width: 600px) {
+      .cdh-dd { width: min(300px, calc(100vw - 20px)); }
     }
+
+    .cdh-dd-title { font-size: var(--cdh-fss); font-weight: 700; color: #777; }
+    .cdh-dd label { font-size: var(--cdh-fss); color: #666; margin-bottom: 2px; display: block; }
     .cdh-dd input, .cdh-dd textarea {
-      width: 100%;
+      width: 100%; box-sizing: border-box;
       background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.11);
       border-radius: 7px; color: #eee;
       font-size: var(--cdh-fs); font-family: inherit;
-      padding: clamp(5px, 0.7vw, 8px) clamp(8px, 1vw, 11px);
+      padding: clamp(5px,.7vw,8px) clamp(8px,1vw,11px);
       outline: none; -webkit-appearance: none; resize: none;
       transition: border-color .12s;
     }
     .cdh-dd input:focus, .cdh-dd textarea:focus { border-color: #bc1e51; }
-    .cdh-dd textarea { min-height: clamp(52px, 7vw, 72px); }
+    .cdh-dd textarea { min-height: clamp(54px, 7vw, 74px); }
+
     .cdh-dd-row { display: flex; gap: var(--cdh-gap); }
     .cdh-dd-row button {
-      flex: 1;
-      height: clamp(28px, 3.3vw, 34px);
+      flex: 1; height: clamp(30px, 3.5vw, 36px);
       border-radius: 7px; border: none;
       font-size: var(--cdh-fs); font-weight: 700; font-family: inherit;
       cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background .1s;
     }
     .cdh-dd-ok     { background: #bc1e51; color: #fff; }
     .cdh-dd-ok:hover { background: #a01a45; }
-    .cdh-dd-edit-ok  { background: #fdc700; color: #1a1a1a; }
-    .cdh-dd-edit-ok:hover { background: #e6b400; }
-    .cdh-dd-cancel { background: rgba(255,255,255,.07); color: #aaa; }
-    .cdh-dd-cancel:hover { background: rgba(255,255,255,.14); }
-    /* 드롭다운 제목 */
-    .cdh-dd-title {
-      font-size: var(--cdh-fss); font-weight: 700; color: #999;
-      margin-bottom: 2px;
+    .cdh-dd-save   { background: #fdc700; color: #111; }
+    .cdh-dd-save:hover { background: #e6b400; }
+    .cdh-dd-cancel { background: rgba(255,255,255,.08); color: #aaa; }
+    .cdh-dd-cancel:hover { background: rgba(255,255,255,.15); }
+
+    /* ── 정규식 드롭다운 전용 ── */
+    .cdh-rdd-top {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-bottom: clamp(6px,.8vw,9px);
+      border-bottom: 1px solid rgba(255,255,255,.07);
     }
+    .cdh-rdd-top-label { font-size: var(--cdh-fs); font-weight: 600; color: #ccc; }
+
+    /* 토글 스위치 */
+    .cdh-sw { position: relative; width: 38px; height: 21px; cursor: pointer; flex-shrink: 0; }
+    .cdh-sw input { display: none; }
+    .cdh-sw-track {
+      position: absolute; inset: 0;
+      background: rgba(255,255,255,.12); border-radius: 11px; transition: background .2s;
+    }
+    .cdh-sw input:checked ~ .cdh-sw-track { background: #bc1e51; }
+    .cdh-sw-thumb {
+      position: absolute; top: 3px; left: 3px;
+      width: 15px; height: 15px; border-radius: 50%; background: #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,.35); transition: left .2s;
+    }
+    .cdh-sw input:checked ~ .cdh-sw-track .cdh-sw-thumb { left: 20px; }
+
+    /* 정규식 추가 폼 */
+    .cdh-rdd-form {
+      display: flex; align-items: center; gap: clamp(4px,.6vw,7px);
+    }
+    .cdh-rdd-form input {
+      flex: 1; min-width: 0; box-sizing: border-box;
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.11);
+      border-radius: 7px; color: #eee;
+      font-size: var(--cdh-fss); font-family: monospace;
+      padding: clamp(4px,.6vw,7px) clamp(6px,.9vw,9px);
+      outline: none; -webkit-appearance: none; transition: border-color .12s;
+    }
+    .cdh-rdd-form input:focus { border-color: #bc1e51; }
+    .cdh-rdd-form input::placeholder { font-family: inherit; opacity: .4; font-size: clamp(9px,1vw,11px); }
+    .cdh-rdd-form .arr { color: #555; font-size: var(--cdh-fss); flex-shrink: 0; }
+    .cdh-rdd-form button {
+      height: clamp(27px,3.2vw,33px); padding: 0 clamp(7px,1vw,11px);
+      border-radius: 7px; border: none;
+      background: rgba(255,255,255,.09); color: #bbb;
+      font-size: var(--cdh-fss); font-weight: 700; font-family: inherit;
+      cursor: pointer; flex-shrink: 0; white-space: nowrap;
+      -webkit-tap-highlight-color: transparent; transition: background .1s;
+    }
+    .cdh-rdd-form button:hover { background: rgba(255,255,255,.17); color: #eee; }
+
+    /* 정규식 규칙 목록 */
+    .cdh-rdd-info {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-bottom: clamp(3px,.5vw,5px);
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+    .cdh-rdd-info span { font-size: var(--cdh-fss); color: #555; }
+    .cdh-rdd-info span b { color: #999; }
+    .cdh-rdd-info button {
+      background: none; border: none; font-size: var(--cdh-fss);
+      color: #8ec5ff; cursor: pointer; font-family: inherit; padding: 0;
+    }
+    .cdh-rdd-info button:hover { text-decoration: underline; }
+
+    /* 규칙 목록 */
+    .cdh-rdd-rules {
+      display: flex; flex-direction: column; gap: 4px;
+      max-height: 200px;
+      overflow-y: auto; overflow-x: hidden;
+    }
+    .cdh-rdd-rules::-webkit-scrollbar { width: 3px; }
+    .cdh-rdd-rules::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+    /* 규칙 카드 */
+    .cdh-rule {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 8px;
+      background: rgba(255,255,255,.04);
+      border-radius: 7px;
+      border: 1.5px solid rgba(255,255,255,.06);
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .cdh-rule:hover { background: rgba(255,255,255,.07); }
+    .cdh-rule.active {
+      border-color: #bc1e51;
+      background: rgba(188,30,81,.08);
+    }
+    .cdh-rule.active .cdh-rule-from { color: #fff; }
+    /* 패턴/치환 텍스트 영역 */
+    .cdh-rule-body {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .cdh-rule-from {
+      font-size: var(--cdh-fss); font-family: monospace;
+      color: #ccc;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cdh-rule-to {
+      font-size: calc(var(--cdh-fss) - 1px); font-family: monospace;
+      color: #fdc700;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cdh-rule-to::before { content: '→ '; color: #444; }
+    .cdh-rule-to.empty { color: #555; }
+    .cdh-rule-to.empty::before { color: #333; }
+    .cdh-rule-x {
+      background: none; border: none; color: #555;
+      font-size: 13px; cursor: pointer;
+      padding: 3px 5px; border-radius: 5px;
+      flex-shrink: 0; line-height: 1;
+      -webkit-tap-highlight-color: transparent; transition: color .1s;
+    }
+    .cdh-rule-x:hover { color: #bc1e51; }
+    .cdh-r-empty { font-size: var(--cdh-fss); color: #555; text-align: center; padding: 8px 0; }
   </style>`);
 
-  /* ════════════════════════════════════════
-     드롭다운 DOM: 퀵입력 추가
-  ════════════════════════════════════════ */
+  /* ────────────────────────────────────────
+     퀵입력 추가 드롭다운
+  ──────────────────────────────────────── */
   const addDD = document.createElement('div');
   addDD.className = 'cdh-dd';
   addDD.innerHTML = `
     <div class="cdh-dd-title">＋ 퀵입력 추가</div>
-    <div>
-      <label>이름</label>
-      <input id="cdh-add-lbl" placeholder="예: 인사말" maxlength="20">
-    </div>
-    <div>
-      <label>내용</label>
-      <textarea id="cdh-add-txt" placeholder="입력창에 삽입될 텍스트" rows="3"></textarea>
-    </div>
+    <div><label>이름</label><input class="add-lbl" placeholder="예: 인사말" maxlength="20"></div>
+    <div><label>내용</label><textarea class="add-txt" placeholder="입력창에 삽입될 텍스트" rows="3"></textarea></div>
     <div class="cdh-dd-row">
-      <button class="cdh-dd-ok"     id="cdh-add-ok">추가</button>
-      <button class="cdh-dd-cancel" id="cdh-add-cancel">취소</button>
+      <button class="cdh-dd-ok add-ok">추가</button>
+      <button class="cdh-dd-cancel add-cancel">취소</button>
     </div>
   `;
   addDD.addEventListener('click', e => e.stopPropagation());
 
-  const addLbl = () => document.getElementById('cdh-add-lbl');
-  const addTxt = () => document.getElementById('cdh-add-txt');
-
   function submitAdd() {
-    const lbl = addLbl().value.trim();
-    const txt = addTxt().value.trim();
+    const lbl = addDD.querySelector('.add-lbl').value.trim();
+    const txt = addDD.querySelector('.add-txt').value.trim();
     if (!lbl || !txt) return;
     quick.push({ id: uid(), label: lbl, text: txt });
     save();
-    addLbl().value = '';
-    addTxt().value = '';
-    closeDD(addDD);
+    addDD.querySelector('.add-lbl').value = '';
+    addDD.querySelector('.add-txt').value = '';
+    ddClose(addDD);
     renderChips();
   }
+  addDD.querySelector('.add-ok').addEventListener('click',     e => { e.stopPropagation(); submitAdd(); });
+  addDD.querySelector('.add-cancel').addEventListener('click',  e => { e.stopPropagation(); ddClose(addDD); });
+  addDD.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAdd(); } });
 
-  document.getElementById('cdh-add-ok')?.addEventListener('click', e => { e.stopPropagation(); submitAdd(); });
-  document.getElementById('cdh-add-cancel')?.addEventListener('click', e => { e.stopPropagation(); closeDD(addDD); });
-  // 나중에 DOM 붙고 나서 이벤트 재등록 (아직 body 안에 없으므로 아래 injectUI 에서)
-
-  /* ════════════════════════════════════════
-     드롭다운 DOM: 퀵입력 수정
-  ════════════════════════════════════════ */
+  /* ────────────────────────────────────────
+     퀵입력 수정 드롭다운
+  ──────────────────────────────────────── */
   const editDD = document.createElement('div');
   editDD.className = 'cdh-dd';
   editDD.innerHTML = `
-    <div class="cdh-dd-title">✎ 퀵입력 수정</div>
-    <div>
-      <label>이름</label>
-      <input id="cdh-edit-lbl" placeholder="이름" maxlength="20">
-    </div>
-    <div>
-      <label>내용</label>
-      <textarea id="cdh-edit-txt" placeholder="내용" rows="3"></textarea>
-    </div>
+    <div class="cdh-dd-title">✎ 수정</div>
+    <div><label>이름</label><input class="edit-lbl" placeholder="이름" maxlength="20"></div>
+    <div><label>내용</label><textarea class="edit-txt" placeholder="내용" rows="3"></textarea></div>
     <div class="cdh-dd-row">
-      <button class="cdh-dd-edit-ok" id="cdh-edit-ok">저장</button>
-      <button class="cdh-dd-cancel"  id="cdh-edit-cancel">취소</button>
+      <button class="cdh-dd-save edit-ok">저장</button>
+      <button class="cdh-dd-cancel edit-cancel">취소</button>
     </div>
   `;
   editDD.addEventListener('click', e => e.stopPropagation());
 
   let _editId = null;
-  const editLbl = () => document.getElementById('cdh-edit-lbl');
-  const editTxt = () => document.getElementById('cdh-edit-txt');
 
   function submitEdit() {
     if (!_editId) return;
-    const lbl = editLbl().value.trim();
-    const txt = editTxt().value.trim();
+    const lbl = editDD.querySelector('.edit-lbl').value.trim();
+    const txt = editDD.querySelector('.edit-txt').value.trim();
     if (!lbl || !txt) return;
     const q = quick.find(q => q.id === _editId);
     if (q) { q.label = lbl; q.text = txt; save(); renderChips(); }
-    closeDD(editDD);
+    ddClose(editDD);
     _editId = null;
   }
+  editDD.querySelector('.edit-ok').addEventListener('click',     e => { e.stopPropagation(); submitEdit(); });
+  editDD.querySelector('.edit-cancel').addEventListener('click',  e => { e.stopPropagation(); ddClose(editDD); _editId = null; });
+  editDD.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitEdit(); } });
 
-  function openEditDD(id, anchor) {
+  function openEditForChip(id, anchor) {
     const q = quick.find(q => q.id === id);
     if (!q) return;
     _editId = id;
-    editLbl().value = q.label;
-    editTxt().value = q.text;
-    openDD(editDD, anchor);
-    setTimeout(() => editLbl()?.focus(), 50);
+    editDD.querySelector('.edit-lbl').value = q.label;
+    editDD.querySelector('.edit-txt').value = q.text;
+    ddOpen(editDD, anchor);
+    setTimeout(() => editDD.querySelector('.edit-lbl')?.focus(), 60);
   }
 
-  /* ════════════════════════════════════════
+  /* ────────────────────────────────────────
+     정규식 드롭다운
+  ──────────────────────────────────────── */
+  const regDD = document.createElement('div');
+  regDD.className = 'cdh-dd';
+  regDD.innerHTML = `
+    <div class="cdh-rdd-top">
+      <span class="cdh-rdd-top-label">정규식 치환</span>
+      <label class="cdh-sw">
+        <input type="checkbox" class="reg-tog" ${regOn ? 'checked' : ''}>
+        <div class="cdh-sw-track"><div class="cdh-sw-thumb"></div></div>
+      </label>
+    </div>
+    <div class="cdh-rdd-form">
+      <input class="rf-from" placeholder="찾을 패턴">
+      <span class="arr">→</span>
+      <input class="rf-to" placeholder="바꿀 텍스트">
+      <button class="rf-add">추가</button>
+    </div>
+    <div class="cdh-rdd-rules-wrap"></div>
+  `;
+  regDD.addEventListener('click', e => e.stopPropagation());
+
+  // ON/OFF 토글 (드롭다운 내부)
+  regDD.querySelector('.reg-tog').addEventListener('change', e => {
+    regOn = e.target.checked; save();
+    syncRBtn();
+    if (regOn) patchAll(); else restoreAll();
+  });
+
+  // 규칙 추가
+  function submitRule() {
+    const from = regDD.querySelector('.rf-from').value.trim();
+    const to   = regDD.querySelector('.rf-to').value;
+    if (!from) { regDD.querySelector('.rf-from').focus(); return; }
+    try { new RegExp(from); } catch { alert('잘못된 정규식입니다.'); return; }
+    rules.push({ id: uid(), from, to, on: true });
+    save();
+    regDD.querySelector('.rf-from').value = '';
+    regDD.querySelector('.rf-to').value   = '';
+    renderRList();
+    ddRepos();           // 내용 늘어났으니 위치 재계산
+    if (regOn) patchAll();
+  }
+  regDD.querySelector('.rf-add').addEventListener('click', e => { e.stopPropagation(); submitRule(); });
+  regDD.querySelector('.cdh-rdd-form').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitRule(); } });
+
+  function renderRList() {
+    const wrap = regDD.querySelector('.cdh-rdd-rules-wrap');
+    if (!wrap) return;
+    if (rules.length === 0) {
+      wrap.innerHTML = `<div class="cdh-r-empty">규칙이 없어요.</div>`; return;
+    }
+    const onCnt = rules.filter(r => r.on).length;
+    wrap.innerHTML = `
+      <div class="cdh-rdd-info">
+        <span>활성 <b>${onCnt}/${rules.length}</b></span>
+        <button class="r-all-tog">전체 토글</button>
+      </div>
+      <div class="cdh-rdd-rules">
+        ${rules.map(r => `
+          <div class="cdh-rule ${r.on ? 'active' : ''}" data-id="${r.id}">
+            <div class="cdh-rule-body">
+              <div class="cdh-rule-from">${esc(r.from)}</div>
+              <div class="cdh-rule-to ${r.to ? '' : 'empty'}">${esc(r.to || '(빈 문자열)')}</div>
+            </div>
+            <button class="cdh-rule-x" data-id="${r.id}">✕</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    wrap.querySelector('.r-all-tog')?.addEventListener('click', e => {
+      e.stopPropagation();
+      const anyOn = rules.some(r => r.on);
+      rules.forEach(r => r.on = !anyOn); save(); renderRList(); ddRepos();
+      if (regOn) patchAll();
+    });
+    wrap.querySelectorAll('.cdh-rule').forEach(card => {
+      // 카드 클릭 → ON/OFF 토글 (✕ 버튼 클릭은 제외)
+      card.addEventListener('click', e => {
+        if (e.target.closest('.cdh-rule-x')) return;
+        e.stopPropagation();
+        const r = rules.find(r => r.id === card.dataset.id);
+        if (r) { r.on = !r.on; save(); }
+        renderRList(); ddRepos();
+        if (regOn) patchAll();
+      });
+    });
+    wrap.querySelectorAll('.cdh-rule-x').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        rules = rules.filter(r => r.id !== btn.dataset.id);
+        save(); renderRList(); ddRepos();
+        if (regOn) patchAll();
+      });
+    });
+  }
+
+  /* ────────────────────────────────────────
+     아이콘 상수
+  ──────────────────────────────────────── */
+  const ICON_Q = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h4"/></svg>`;
+  const ICON_R = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 12 5-5 5 5-5 5Z"/><path d="M12 21.21V2.79"/><path d="m12 12 5-5 5 5-5 5Z"/></svg>`;
+
+  let _rBtn = null;
+
+  function syncRBtn() {
+    if (!_rBtn) return;
+    // ON이면 색 변경, 드롭다운 열림이면 뱃지
+    _rBtn.className = 'cdh-btn'
+      + (regOn          ? ' on'      : '')
+      + (_curDD === regDD ? ' dd-open' : '');
+    // 드롭다운 내 토글도 동기화
+    const tog = regDD.querySelector('.reg-tog');
+    if (tog) tog.checked = regOn;
+  }
+
+  /* ────────────────────────────────────────
      UI 주입
-  ════════════════════════════════════════ */
+  ──────────────────────────────────────── */
   function injectUI() {
     const bar  = document.querySelector(SEL_BTNBAR);
     const form = document.querySelector(SEL_FORM);
     if (!bar || !form || bar.querySelector('.cdh-btn')) return;
 
-    /* SVG 아이콘 정의 */
-    // 퀵입력: 클립보드 리스트 아이콘
-    const ICON_QUICK = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h4"/></svg>`;
-    // 정규식 OFF (회색조 또는 기본 테두리)
-    const ICON_REGEX_OFF = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 12 5-5 5 5-5 5Z"/><path d="M12 21.21V2.79"/><path d="m12 12 5-5 5 5-5 5Z"/></svg>`;
-    // 정규식 ON (두께를 강조하거나 특정 색상 포인트)
-    const ICON_REGEX_ON  = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 12 5-5 5 5-5 5Z"/><path d="M12 21.21V2.79"/><path d="m12 12 5-5 5 5-5 5Z"/></svg>`;
-
-    /* 버튼 */
+    /* 퀵입력 버튼 */
     const qBtn = document.createElement('button');
-    qBtn.type = 'button'; qBtn.id = 'cdh-q-btn'; qBtn.className = 'cdh-btn';
-    qBtn.innerHTML = ICON_QUICK;
-    qBtn.title = '퀵입력';
+    qBtn.type = 'button'; qBtn.className = 'cdh-btn'; qBtn.title = '퀵입력';
+    qBtn.innerHTML = ICON_Q;
 
+    /* 정규식 버튼 */
     const rBtn = document.createElement('button');
-    rBtn.type = 'button'; rBtn.id = 'cdh-r-btn';
+    rBtn.type = 'button'; rBtn.title = '정규식 (우클릭: 관리)';
     rBtn.className = 'cdh-btn' + (regOn ? ' on' : '');
-    rBtn.innerHTML = regOn ? ICON_REGEX_ON : ICON_REGEX_OFF;
-    rBtn.title = regOn ? '정규식 ON (우클릭: 관리)' : '정규식 (우클릭: 관리)';
+    rBtn.innerHTML = ICON_R;
+    _rBtn = rBtn;
 
     bar.appendChild(qBtn);
     bar.appendChild(rBtn);
 
-    /* form 안 wrap (칩 스트립 + 정규식 패널) */
+    /* 칩 스트립 */
     const wrap = document.createElement('div');
     wrap.id = 'cdh-wrap';
-    wrap.innerHTML = `
-      <div id="cdh-chips"></div>
-      <div id="cdh-rpanel">
-        <div id="cdh-rform">
-          <input id="cdh-rf-from" placeholder="찾을 패턴 (정규식)">
-          <span class="arr">→</span>
-          <input id="cdh-rf-to"   placeholder="바꿀 텍스트">
-          <button id="cdh-rf-add">추가</button>
-        </div>
-        <div id="cdh-rlist"></div>
-      </div>
-    `;
+    wrap.innerHTML = `<div id="cdh-chips"></div>`;
     const taWrap = form.querySelector('.relative.w-full');
     if (taWrap) form.insertBefore(wrap, taWrap);
     else        form.prepend(wrap);
-
     wrap.addEventListener('click', e => e.stopPropagation());
-
-    /* addDD / editDD 이벤트 (DOM 붙은 후) */
-    addDD.querySelector('#cdh-add-ok').onclick     = e => { e.stopPropagation(); submitAdd(); };
-    addDD.querySelector('#cdh-add-cancel').onclick  = e => { e.stopPropagation(); closeDD(addDD); };
-    editDD.querySelector('#cdh-edit-ok').onclick    = e => { e.stopPropagation(); submitEdit(); };
-    editDD.querySelector('#cdh-edit-cancel').onclick = e => { e.stopPropagation(); closeDD(editDD); };
-
-    // 드롭다운 내 엔터 = 저장
-    [addDD, editDD].forEach(dd => {
-      dd.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          if (dd === addDD)  submitAdd();
-          if (dd === editDD) submitEdit();
-        }
-      });
-    });
 
     /* 퀵입력 버튼: 칩 스트립 토글 */
     qBtn.addEventListener('click', e => {
       e.stopPropagation();
-      closeDD(addDD); closeDD(editDD);
-      const chips  = document.getElementById('cdh-chips');
-      const rpanel = document.getElementById('cdh-rpanel');
+      // 열린 DD 닫기
+      if (_curDD) ddClose(_curDD);
+      const chips = document.getElementById('cdh-chips');
       if (chips.classList.contains('open')) {
         chips.classList.remove('open');
-        qBtn.classList.remove('on');
+        qBtn.classList.remove('dd-open');
       } else {
-        rpanel.classList.remove('open');
-        rBtn.classList.remove('managing');
         renderChips();
         chips.classList.add('open');
-        qBtn.classList.add('on');
+        qBtn.classList.add('dd-open');
       }
     });
 
-    /* 정규식 버튼: 좌클릭 = ON/OFF 토글 */
+    /* 정규식 버튼: 좌클릭 = ON/OFF 즉시 토글 */
     rBtn.addEventListener('click', e => {
       e.stopPropagation();
       regOn = !regOn; save();
-      const isManaging = rBtn.classList.contains('managing');
-      rBtn.className   = 'cdh-btn' + (regOn ? ' on' : '') + (isManaging ? ' managing' : '');
-      rBtn.innerHTML   = regOn ? ICON_REGEX_ON : ICON_REGEX_OFF;
-      rBtn.title       = regOn ? '정규식 ON (우클릭: 관리)' : '정규식 (우클릭: 관리)';
+      syncRBtn();
       if (regOn) patchAll(); else restoreAll();
     });
 
-    /* 정규식 버튼: 우클릭 / 롱프레스 = 관리 패널 토글 */
-    const toggleRPanel = () => {
-      const rpanel = document.getElementById('cdh-rpanel');
-      const chips  = document.getElementById('cdh-chips');
-      if (rpanel.classList.contains('open')) {
-        rpanel.classList.remove('open');
-        rBtn.classList.remove('managing');
-      } else {
-        chips.classList.remove('open');
-        closeDD(addDD); closeDD(editDD);
-        qBtn.classList.remove('on');
-        renderRList();
-        rpanel.classList.add('open');
-        rBtn.classList.add('managing');
-      }
-    };
-    rBtn.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); toggleRPanel(); });
-    let _rTimer;
-    rBtn.addEventListener('touchstart', () => { _rTimer = setTimeout(toggleRPanel, 500); }, { passive: true });
-    rBtn.addEventListener('touchend',   () => clearTimeout(_rTimer), { passive: true });
-    rBtn.addEventListener('touchmove',  () => clearTimeout(_rTimer), { passive: true });
+    /* 정규식 버튼: 우클릭 = 드롭다운 */
+    rBtn.addEventListener('contextmenu', e => {
+      e.preventDefault(); e.stopPropagation();
+      if (_curDD === regDD) { ddClose(regDD); syncRBtn(); }
+      else { renderRList(); ddOpen(regDD, rBtn); syncRBtn(); }
+    });
 
-    /* 정규식 추가 */
-    document.getElementById('cdh-rf-add').addEventListener('click', e => {
-      e.stopPropagation();
-      const from = document.getElementById('cdh-rf-from').value.trim();
-      const to   = document.getElementById('cdh-rf-to').value;
-      if (!from) { document.getElementById('cdh-rf-from').focus(); return; }
-      try { new RegExp(from); } catch { alert('잘못된 정규식입니다.'); return; }
-      rules.push({ id: uid(), from, to, on: true });
-      save(); renderRList();
-      document.getElementById('cdh-rf-from').value = '';
-      document.getElementById('cdh-rf-to').value   = '';
-      if (regOn) patchAll();
-    });
-    // 정규식 폼 엔터
-    document.getElementById('cdh-rform').addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); document.getElementById('cdh-rf-add').click(); }
-    });
+    /* 정규식 버튼: 롱프레스(모바일) = 드롭다운
+       — touchstart 후 300ms 안에 touchend 없으면 열림
+         touchmove 가 10px 이상이면 취소 */
+    let _rLongTimer = null;
+    let _rTouchStart = null;
+    rBtn.addEventListener('touchstart', e => {
+      _rTouchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      _rLongTimer  = setTimeout(() => {
+        _rLongTimer = null;
+        if (_curDD === regDD) { ddClose(regDD); syncRBtn(); }
+        else { renderRList(); ddOpen(regDD, rBtn); syncRBtn(); }
+      }, 400);
+    }, { passive: true });
+    rBtn.addEventListener('touchmove', e => {
+      if (!_rTouchStart) return;
+      const dx = Math.abs(e.touches[0].clientX - _rTouchStart.x);
+      const dy = Math.abs(e.touches[0].clientY - _rTouchStart.y);
+      if (dx > 10 || dy > 10) { clearTimeout(_rLongTimer); _rLongTimer = null; }
+    }, { passive: true });
+    rBtn.addEventListener('touchend', () => {
+      clearTimeout(_rLongTimer); _rLongTimer = null; _rTouchStart = null;
+    }, { passive: true });
 
     renderChips();
     renderRList();
   }
 
-  /* ════════════════════════════════════════
-     칩 스트립 렌더 + 드래그 정렬
-  ════════════════════════════════════════ */
+  /* ────────────────────────────────────────
+     칩 렌더 + 드래그 정렬
+  ──────────────────────────────────────── */
   let _dragId = null;
 
   function renderChips() {
     const strip = document.getElementById('cdh-chips');
     if (!strip) return;
 
-    strip.innerHTML = quick.map(q => `
-      <span class="cdh-chip" draggable="true" data-id="${q.id}"
-            title="클릭: 삽입 | 우클릭: 수정 | 드래그: 순서 변경">
+    strip.innerHTML = quick.map(q =>
+      `<span class="cdh-chip" draggable="true" data-id="${q.id}">
         ${esc(q.label)}
         <button class="cdh-chip-x" data-id="${q.id}">✕</button>
-      </span>
-    `).join('') + `<span class="cdh-chip" id="cdh-chip-add" draggable="false">＋</span>`;
+      </span>`
+    ).join('') + `<span class="cdh-chip" id="cdh-chip-add" draggable="false">＋</span>`;
 
-    /* 칩 클릭 → 삽입 */
     strip.querySelectorAll('.cdh-chip:not(#cdh-chip-add)').forEach(chip => {
-      chip.addEventListener('click', e => {
+      // 클릭 vs 드래그 구분
+      let _ps = null;
+      chip.addEventListener('pointerdown', e => {
+        if (e.button === 2) return; // 우클릭 무시
+        _ps = { x: e.clientX, y: e.clientY };
+      });
+      chip.addEventListener('pointerup',   e => {
+        if (e.button === 2) return; // 우클릭 무시
         if (e.target.closest('.cdh-chip-x')) return;
+        if (!_ps) return;
+        const moved = Math.hypot(e.clientX - _ps.x, e.clientY - _ps.y) > 8;
+        _ps = null;
+        if (moved) return;
+        // 좌클릭 → 입력창에 삽입
         const q = quick.find(q => q.id === chip.dataset.id);
         if (q) insertText(q.text);
       });
 
-      /* 우클릭 → 수정 드롭다운 */
+      // 우클릭 → 수정 드롭다운
       chip.addEventListener('contextmenu', e => {
         e.preventDefault(); e.stopPropagation();
-        closeDD(addDD);
-        openEditDD(chip.dataset.id, chip);
+        openEditForChip(chip.dataset.id, chip);
       });
 
-      /* 롱프레스(모바일) → 수정 드롭다운 */
-      let _ct;
-      chip.addEventListener('touchstart',  () => { _ct = setTimeout(() => { closeDD(addDD); openEditDD(chip.dataset.id, chip); }, 600); }, { passive: true });
-      chip.addEventListener('touchend',    () => clearTimeout(_ct), { passive: true });
-      chip.addEventListener('touchmove',   () => clearTimeout(_ct), { passive: true });
-
-      /* 드래그 정렬 */
+      // 드래그 정렬
       chip.addEventListener('dragstart', e => {
         _dragId = chip.dataset.id;
         chip.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
       });
-      chip.addEventListener('dragend',   () => {
+      chip.addEventListener('dragend', () => {
         chip.classList.remove('dragging');
         strip.querySelectorAll('.cdh-chip').forEach(c => c.classList.remove('drag-over'));
         _dragId = null;
       });
-      chip.addEventListener('dragover',  e => {
+      chip.addEventListener('dragover', e => {
         e.preventDefault();
         strip.querySelectorAll('.cdh-chip').forEach(c => c.classList.remove('drag-over'));
         if (chip.dataset.id !== _dragId) chip.classList.add('drag-over');
       });
-      chip.addEventListener('drop',      e => {
+      chip.addEventListener('drop', e => {
         e.preventDefault();
         if (!_dragId || _dragId === chip.dataset.id) return;
         const fi = quick.findIndex(q => q.id === _dragId);
         const ti = quick.findIndex(q => q.id === chip.dataset.id);
         if (fi < 0 || ti < 0) return;
-        const [m] = quick.splice(fi, 1);
-        quick.splice(ti, 0, m);
+        quick.splice(ti, 0, quick.splice(fi, 1)[0]);
         save(); renderChips();
       });
     });
 
-    /* ✕ 삭제 */
+    // ✕ 삭제
     strip.querySelectorAll('.cdh-chip-x').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -623,68 +763,19 @@
       });
     });
 
-    /* ＋ 추가 드롭다운 열기 */
+    // ＋ 추가
     strip.querySelector('#cdh-chip-add')?.addEventListener('click', e => {
       e.stopPropagation();
-      closeDD(editDD);
-      if (_openDD === addDD) closeDD(addDD);
-      else openDD(addDD, e.currentTarget);
-      setTimeout(() => addLbl()?.focus(), 50);
+      if (_curDD === addDD) { ddClose(addDD); return; }
+      ddClose(editDD);
+      ddOpen(addDD, e.currentTarget);
+      setTimeout(() => addDD.querySelector('.add-lbl')?.focus(), 60);
     });
   }
 
-  /* ════════════════════════════════════════
-     정규식 목록 렌더
-  ════════════════════════════════════════ */
-  function renderRList() {
-    const list = document.getElementById('cdh-rlist');
-    if (!list) return;
-    if (rules.length === 0) {
-      list.innerHTML = `<div class="cdh-r-empty">규칙이 없어요. 위에서 추가하세요.</div>`;
-      return;
-    }
-    const onCnt = rules.filter(r => r.on).length;
-    list.innerHTML = `
-      <div class="cdh-r-info">
-        <span>활성 <b>${onCnt}/${rules.length}</b></span>
-        <button id="cdh-r-toggleall">전체 토글</button>
-      </div>
-    ` + rules.map(r => `
-      <div class="cdh-rule">
-        <input class="cdh-rule-chk" type="checkbox" ${r.on ? 'checked' : ''} data-id="${r.id}">
-        <span class="cdh-rule-text">
-          ${esc(r.from)}<span class="arr">→</span><span class="to">${esc(r.to || '""')}</span>
-        </span>
-        <button class="cdh-rule-x" data-id="${r.id}">✕</button>
-      </div>
-    `).join('');
-
-    list.querySelector('#cdh-r-toggleall')?.addEventListener('click', e => {
-      e.stopPropagation();
-      const anyOn = rules.some(r => r.on);
-      rules.forEach(r => { r.on = !anyOn; });
-      save(); renderRList();
-      if (regOn) patchAll();
-    });
-    list.querySelectorAll('.cdh-rule-chk').forEach(cb => {
-      cb.addEventListener('change', () => {
-        const r = rules.find(r => r.id === cb.dataset.id);
-        if (r) { r.on = cb.checked; save(); }
-        renderRList(); if (regOn) patchAll();
-      });
-    });
-    list.querySelectorAll('.cdh-rule-x').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        rules = rules.filter(r => r.id !== btn.dataset.id);
-        save(); renderRList(); if (regOn) patchAll();
-      });
-    });
-  }
-
-  /* ════════════════════════════════════════
+  /* ────────────────────────────────────────
      MutationObserver + 초기화
-  ════════════════════════════════════════ */
+  ──────────────────────────────────────── */
   let _pend = false;
   new MutationObserver(() => {
     if (_pend) return; _pend = true;
