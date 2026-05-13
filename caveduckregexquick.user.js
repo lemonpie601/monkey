@@ -3,7 +3,7 @@
 // @namespace    https://caveduck.io/
 // @version      11.5.0
 // @description  케이브덕: 정규식 + 퀵입력
-// @author       You
+// @author       레몬파이
 // @match        https://caveduck.io/*
 // @grant        GM_setValue
 // @grant        GM_getValue
