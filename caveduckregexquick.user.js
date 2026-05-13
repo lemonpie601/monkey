@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         CaveDuck Helper - 정규식 & 퀵입력
+// @name         케덕 정규식과 퀵입력
 // @namespace    https://caveduck.io/
 // @version      11.5.0
 // @description  케이브덕: 정규식 + 퀵입력
