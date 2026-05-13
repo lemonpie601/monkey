@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         케덕 정규식과 퀵입력
 // @namespace    https://caveduck.io/
-// @version      15.0.0
-// @description  케이브덕: 정규식 + 퀵입력
+// @version      15.2.1
+// @description  케이브덕: 정규식 + 퀵입력 (형광펜 호환 + React #418 회피 패치)
 // @author       레몬파이
 // @match        https://caveduck.io/*
 // @grant        GM_setValue
@@ -47,6 +47,14 @@
   // React 관리 텍스트 노드를 절대 건드리지 않음
   // 대신 치환 텍스트를 담은 <span class="cdh-overlay"> 를
   // 원본 span 바로 뒤에 삽입하고, 원본 span을 visibility:hidden
+  //
+  // ── 형광펜(레몬파이 케이브덕 형광펜, mark.custom-cdhlp) 호환 ─
+  // 오버레이 안에 형광펜 mark 가 들어가 있으면
+  //   • existing.textContent = next 로 덮어쓰지 않음  (마크 보존)
+  //   • 무치환 분기에서도 오버레이를 제거하지 않음     (마크 보존)
+  // restoreAll 에서는 오버레이를 제거하면서 마크도 같이 사라지지만
+  // 형광펜 데이터는 localStorage 에 남아 있으므로
+  // 정규식을 다시 켜면 형광펜 스크립트의 MutationObserver 가 재적용함.
 
   let _patching = false;
 
@@ -64,26 +72,39 @@
 
         const next = applyRules(raw);
         if (next === raw) {
-          // 치환 없음 — 오버레이 있으면 제거
+          // 치환 없음 — 오버레이 있으면 제거 (단, 안에 형광펜 mark 있으면 보존)
           const ov = sp.nextSibling;
           if (ov && ov.classList?.contains('cdh-overlay')) {
-            ov.remove();
-            sp.style.visibility = '';
+            if (!ov.querySelector?.('mark.custom-cdhlp')) {
+              ov.remove();
+              sp.style.visibility = '';
+              sp.style.position   = '';
+            }
           }
           return;
         }
 
-        // 이미 오버레이 있으면 텍스트만 갱신
+        // 이미 오버레이 있으면 텍스트만 갱신 — 단, 안에 형광펜 mark 있으면 건드리지 않음
         const existing = sp.nextSibling;
         if (existing && existing.classList?.contains('cdh-overlay')) {
-          if (existing.textContent !== next) existing.textContent = next;
+          const hasHl = existing.querySelector?.('mark.custom-cdhlp');
+          if (!hasHl && existing.textContent !== next) existing.textContent = next;
         } else {
           // 오버레이 새로 삽입
           const ov = document.createElement('span');
           ov.className = 'cdh-overlay';
           ov.textContent = next;
           // 원본 span의 스타일 복사 (색상, italic 등)
-          ov.style.cssText = sp.style.cssText;
+          const cs = getComputedStyle(sp);
+          ov.style.cssText = `
+            font-style:${cs.fontStyle};
+            font-weight:${cs.fontWeight};
+            font-family:${cs.fontFamily};
+            font-size:${cs.fontSize};
+            line-height:${cs.lineHeight};
+            letter-spacing:${cs.letterSpacing};
+            color:${cs.color};
+          `;
           ov.setAttribute('aria-hidden', 'true');
           sp.after(ov);
         }
@@ -193,11 +214,11 @@
 
     #cdh-wrap { margin-bottom: 6px; }
 
-    /* 정규식 오버레이 span */
-    .cdh-overlay {
-      pointer-events: none;
-      user-select: none;
-    }
+    /* 정규식 오버레이 span
+       — 형광펜이 치환된 텍스트를 드래그·선택해서 형광펜을 칠할 수 있도록
+         pointer-events / user-select 제한을 의도적으로 두지 않음.
+       — 클래스 자체는 식별용으로 유지. */
+    .cdh-overlay { /* 의도적으로 빈 룰 */ }
 
     /* ── 버튼 ── */
     .cdh-btn {
