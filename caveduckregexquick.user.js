@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         케덕 정규식과 퀵입력
 // @namespace    https://caveduck.io/
-// @version      15.3.0
+// @version      15.2.4
 // @description  케이브덕: 정규식 + 퀵입력 (형광펜 호환 + React #418 회피 패치)
 // @author       레몬파이
 // @match        https://caveduck.io/*
@@ -58,91 +58,62 @@
 
   let _patching = false;
 
+  // 형광펜 스크립트 MutationObserver와의 충돌 방지
+  // patchAll/restoreAll이 DOM을 건드리는 동안 window.__cdhlpObserver 를 잠시 끊음
+  function _hlpPause()  { try { window.__cdhlpObserver?.disconnect(); } catch {} }
+  function _hlpResume() {
+    try {
+      if (window.__cdhlpObserver) window.__cdhlpObserver.observe(document.body, { childList: true, subtree: true });
+    } catch {}
+  }
+
   function patchAll() {
     if (_patching) return;
     _patching = true;
+    _hlpPause();
     try {
       const wrap = document.getElementById('cdh-wrap');
-      document.querySelectorAll('[class*="contain"] span').forEach(sp => {
+      document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span').forEach(sp => {
         if (wrap && wrap.contains(sp)) return;
         if (sp.classList.contains('cdh-overlay')) return;
         if (sp.childElementCount > 0) return;
         const raw = sp.textContent;
         if (!raw.trim()) return;
-
-        // 이미 숨겨진 원본 span이면 → 다음 형제가 cdh-overlay인지 확인 후 처리
-        const alreadyHidden = sp.style.visibility === 'hidden';
+        if (sp.style.visibility === 'hidden') return; // restoreAll 후에도 hidden이면 건너뜀
 
         const next = applyRules(raw);
+        if (next === raw) return; // 치환 없음
 
-        if (next === raw) {
-          // 치환 없음
-          if (alreadyHidden) {
-            // 원본을 복원하고 오버레이 제거 (형광펜 mark 있으면 보존)
-            const ov = sp.nextElementSibling;
-            if (ov && ov.classList?.contains('cdh-overlay')) {
-              if (!ov.querySelector?.('mark.custom-cdhlp')) {
-                ov.remove();
-                sp.style.visibility = '';
-                sp.style.position   = '';
-              }
-            } else {
-              // 오버레이가 없어진 경우 원본 복원
-              sp.style.visibility = '';
-              sp.style.position   = '';
-            }
-          }
-          return;
-        }
-
-        if (alreadyHidden) {
-          // 이미 처리된 span — nextElementSibling이 cdh-overlay이면 텍스트만 갱신
-          const ov = sp.nextElementSibling;
-          if (ov && ov.classList?.contains('cdh-overlay')) {
-            const hasHl = ov.querySelector?.('mark.custom-cdhlp');
-            if (!hasHl && ov.textContent !== next) ov.textContent = next;
-          } else {
-            // 오버레이가 사라진 경우 재삽입
-            const ov2 = document.createElement('span');
-            ov2.className = 'cdh-overlay';
-            ov2.textContent = next;
-            const cs = getComputedStyle(sp);
-            ov2.style.cssText = `font-style:${cs.fontStyle};font-weight:${cs.fontWeight};font-family:${cs.fontFamily};font-size:${cs.fontSize};line-height:${cs.lineHeight};letter-spacing:${cs.letterSpacing};color:${cs.color};`;
-            ov2.setAttribute('aria-hidden', 'true');
-            sp.after(ov2);
-          }
-          return;
-        }
-
-        // 아직 처리 안 된 span — 오버레이 새로 삽입
+        // 오버레이 삽입
         const ov = document.createElement('span');
         ov.className = 'cdh-overlay';
         ov.textContent = next;
         const cs = getComputedStyle(sp);
-        ov.style.cssText = `
-          font-style:${cs.fontStyle};
-          font-weight:${cs.fontWeight};
-          font-family:${cs.fontFamily};
-          font-size:${cs.fontSize};
-          line-height:${cs.lineHeight};
-          letter-spacing:${cs.letterSpacing};
-          color:${cs.color};
-        `;
+        ov.style.cssText = `font-style:${cs.fontStyle};font-weight:${cs.fontWeight};font-family:${cs.fontFamily};font-size:${cs.fontSize};line-height:${cs.lineHeight};letter-spacing:${cs.letterSpacing};color:${cs.color};`;
         ov.setAttribute('aria-hidden', 'true');
-        sp.after(ov);
-        sp.style.visibility = 'hidden';
-        sp.style.position   = 'absolute';
+        // 형광펜 mark 보존: 기존 오버레이가 있고 안에 mark 있으면 텍스트만 갱신
+        const existOv = sp.nextElementSibling;
+        if (existOv?.classList?.contains('cdh-overlay')) {
+          if (existOv.querySelector?.('mark.custom-cdhlp')) return; // 형광펜 있으면 건드리지 않음
+          existOv.textContent = next;
+        } else {
+          sp.after(ov);
+          sp.style.visibility = 'hidden';
+          sp.style.position   = 'absolute';
+        }
       });
     } finally {
       _patching = false;
+      _hlpResume();
     }
   }
 
   function restoreAll() {
     _patching = true;
+    _hlpPause();
     try {
       document.querySelectorAll('.cdh-overlay').forEach(ov => ov.remove());
-      document.querySelectorAll('[class*="contain"] span').forEach(sp => {
+      document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span').forEach(sp => {
         if (sp.style.visibility === 'hidden') {
           sp.style.visibility = '';
           sp.style.position   = '';
@@ -150,6 +121,7 @@
       });
     } finally {
       _patching = false;
+      _hlpResume();
     }
   }
 
@@ -570,7 +542,7 @@
   regDD.querySelector('.reg-tog').addEventListener('change', e => {
     regOn = e.target.checked; save();
     syncRBtn();
-    if (regOn) patchAll(); else restoreAll();
+    if (regOn) { restoreAll(); patchAll(); } else restoreAll();
   });
 
   // 규칙 추가
@@ -585,7 +557,7 @@
     regDD.querySelector('.rf-to').value   = '';
     renderRList();
     ddRepos();           // 내용 늘어났으니 위치 재계산
-    if (regOn) patchAll();
+    if (regOn) { restoreAll(); patchAll(); }
   }
   regDD.querySelector('.rf-add').addEventListener('click', e => { e.stopPropagation(); submitRule(); });
   regDD.querySelector('.cdh-rdd-form').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitRule(); } });
@@ -618,7 +590,7 @@
       e.stopPropagation();
       const anyOn = rules.some(r => r.on);
       rules.forEach(r => r.on = !anyOn); save(); renderRList(); ddRepos();
-      if (regOn) patchAll();
+      if (regOn) { restoreAll(); patchAll(); }
     });
     wrap.querySelectorAll('.cdh-rule').forEach(card => {
       // 카드 클릭 → ON/OFF 토글 (✕ 버튼 클릭은 제외)
@@ -628,7 +600,7 @@
         const r = rules.find(r => r.id === card.dataset.id);
         if (r) { r.on = !r.on; save(); }
         renderRList(); ddRepos();
-        if (regOn) patchAll();
+        if (regOn) { restoreAll(); patchAll(); }
       });
     });
     wrap.querySelectorAll('.cdh-rule-x').forEach(btn => {
@@ -636,7 +608,7 @@
         e.stopPropagation();
         rules = rules.filter(r => r.id !== btn.dataset.id);
         save(); renderRList(); ddRepos();
-        if (regOn) patchAll();
+        if (regOn) { restoreAll(); patchAll(); }
       });
     });
   }
@@ -667,6 +639,16 @@
     const bar  = document.querySelector(SEL_BTNBAR);
     const form = document.querySelector(SEL_FORM);
     if (!bar || !form || bar.querySelector('.cdh-btn')) return;
+
+    // SPA 전환 시 body가 교체되면 드롭다운들이 사라짐 — 없으면 다시 붙임
+    if (!document.body.contains(addDD))  document.body.appendChild(addDD);
+    if (!document.body.contains(editDD)) document.body.appendChild(editDD);
+    if (!document.body.contains(regDD))  {
+      document.body.appendChild(regDD);
+      // 토글 상태를 regOn에 맞게 동기화
+      const tog = regDD.querySelector('.reg-tog');
+      if (tog) tog.checked = regOn;
+    }
 
     /* 퀵입력 버튼 */
     const qBtn = document.createElement('button');
@@ -713,7 +695,7 @@
       e.stopPropagation();
       regOn = !regOn; save();
       syncRBtn();
-      if (regOn) patchAll(); else restoreAll();
+      if (regOn) { restoreAll(); patchAll(); } else restoreAll();
     });
 
     /* 정규식 버튼: 우클릭 = 드롭다운 */
@@ -852,8 +834,16 @@
       )
     );
     if (ignore) return;
-    // UI 주입은 즉시
-    if (!document.getElementById('cdh-wrap')) injectUI();
+    // UI 주입은 즉시 — cdh-wrap 없으면 재주입 (채팅방 이동 시 포함)
+    if (!document.getElementById('cdh-wrap')) {
+      injectUI();
+      // 채팅방 이동으로 새로 주입된 경우 기존 오버레이 초기화 후 재적용
+      if (regOn) {
+        clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(() => { restoreAll(); patchAll(); }, 400);
+      }
+      return;
+    }
     // 정규식 치환은 스트리밍이 멈춘 후 300ms 뒤에 실행 (누적 중복 방지)
     if (!regOn) return;
     clearTimeout(_debounceTimer);
@@ -865,5 +855,18 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', injectUI);
   else injectUI();
+
+  // SPA 채팅방 이동 감지 — URL 바뀌면 patchAll 재실행
+  let _lastPath = location.pathname;
+  setInterval(() => {
+    if (location.pathname !== _lastPath) {
+      _lastPath = location.pathname;
+      // 새 방 DOM이 안정될 때까지 잠시 기다린 후 재적용
+      setTimeout(() => {
+        if (!document.getElementById('cdh-wrap')) injectUI();
+        if (regOn) { restoreAll(); patchAll(); }
+      }, 600);
+    }
+  }, 300);
 
 })();
