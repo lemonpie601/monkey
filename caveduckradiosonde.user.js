@@ -1,8 +1,9 @@
 // ==UserScript==
-// @name         케이브덕 라디오존데 팝업창📡
+// @name         케덕 라디오존데
 // @namespace    igx-radiosonde-live
 // @version      3.8.1
-// @description  케이브덕(caveduck.io)에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
+// @description  케이브덕에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
+// @author       레몬파이
 // @match        https://caveduck.io/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
