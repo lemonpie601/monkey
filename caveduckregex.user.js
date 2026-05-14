@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         케덕 정규식
 // @namespace    https://caveduck.io/
-// @version      2.0.0
+// @version      2.1.0
 // @description  케이브덕 정규식 치환 전용 | 형광펜 호환
 // @author       레몬파이 베이스 / Claude 정리
 // @match        https://caveduck.io/*
@@ -57,67 +57,90 @@
     } catch {}
   }
 
-  /* ── 텍스트노드 직접 교체 방식 ───────────────────────────
-     설계 원칙:
-     - 형광펜이 없는 span: 내부 텍스트 노드를 직접 치환
-       data-cdhr-orig 에 원본 저장 → restoreAll 시 정확히 복원
-     - 형광펜 mark 가 있는 span: mark 바깥의 텍스트 노드만 치환
-       mark 자체는 건드리지 않음 → 형광펜이 보임
-     - React 우회: textNode.nodeValue 직접 교체 (React state 는 변경 안 함)
-       React re-render 시 원본으로 돌아가지만, MutationObserver 가 재적용
-     - _patching: true 인 동안 observer 재진입 차단
-     - _hlpResume: 반드시 _patching=false 후 호출
+  /* ── span 단위 원본 저장 방식 ─────────────────────────────
+     핵심 설계:
+     형광펜은 span 안의 텍스트노드를 쪼개서 mark 를 삽입하므로
+     텍스트노드 단위 추적은 mark 삽입 후 노드가 바뀌어 복원이 깨짐.
+
+     해결: span 자체에 원본 textContent 를 저장(_cdhrOrig)하고
+     restoreAll 에서 span.textContent 를 원본으로 한 번에 덮어씀.
+     → mark 가 있어도 span 전체를 원본 텍스트로 교체하므로 중복 없음.
+     → 단, restoreAll 후 형광펜 mark 는 사라짐 (형광펜 스크립트가 재적용)
+
+     patchAll:
+       1. span._cdhrOrig 가 없으면: textContent 전체를 읽어 치환값 계산
+          치환값이 원본과 다르면 span._cdhrOrig = 원본 저장
+          span 안 텍스트노드들을 직접 교체 (React 우회)
+       2. span._cdhrOrig 가 있으면(이미 치환됨): 스킵
+
+     restoreAll:
+       span._cdhrOrig 가 있는 span 만 찾아서
+       textContent 를 원본으로 복원 후 _cdhrOrig 삭제
+
+     _patching = false 는 반드시 _hlpResume() 전에 세팅
   ─────────────────────────────────────────────────────── */
 
-  // 텍스트노드 치환 — 원본 저장 포함
-  function _patchNode(tn) {
-    // 이미 치환된 노드
-    if (tn._cdhrOrig !== undefined) return;
-    const orig = tn.nodeValue;
-    if (!orig || !orig.trim()) return;
-    const next = applyRules(orig);
-    if (next === orig) return;
-    tn._cdhrOrig = orig;
-    tn.nodeValue = next;
-  }
-
-  // 텍스트노드 복원
-  function _restoreNode(tn) {
-    if (tn._cdhrOrig === undefined) return;
-    tn.nodeValue = tn._cdhrOrig;
-    delete tn._cdhrOrig;
-  }
-
-  // span 안의 처리 대상 텍스트 노드 수집
-  // — mark.custom-cdhlp 안의 노드도 포함 (형광펜 텍스트도 치환)
-  // — cdhr-* 자체 노드는 제외
-  function _textNodesIn(sp) {
-    const walker = document.createTreeWalker(sp, NodeFilter.SHOW_TEXT, {
-      acceptNode(tn) {
-        const p = tn.parentNode;
-        if (!p) return NodeFilter.FILTER_REJECT;
-        // 자체 UI 안 텍스트 제외
-        if (p.closest && p.closest('[id^="cdhr"]')) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-    const nodes = [];
-    let n;
-    while ((n = walker.nextNode())) nodes.push(n);
-    return nodes;
-  }
-
-  // 대상 span 수집
+  // 대상 span 수집 — 자체 UI / mark 내부 span 제외
   function _getTargetSpans() {
     const wrap = document.getElementById('cdhr-wrap');
     return Array.from(
       document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span')
     ).filter(sp => {
       if (wrap && wrap.contains(sp)) return false;
-      // 자체 UI 안은 제외
       if (sp.closest('[id^="cdhr"]')) return false;
+      // mark 안의 span 은 mark 가 속한 부모 span 에서 일괄 처리
+      if (sp.closest('mark.custom-cdhlp')) return false;
       return true;
     });
+  }
+
+  // span 안 모든 텍스트노드를 주어진 평문으로 교체
+  // mark 가 있으면 mark 와 그 주변 텍스트노드를 전부 제거하고 새 텍스트노드 하나로 대체
+  function _setSpanText(sp, text) {
+    // 자식을 모두 지우고 텍스트노드 하나로 교체
+    // (mark 포함 전체 교체 — restoreAll 전용)
+    while (sp.firstChild) sp.removeChild(sp.firstChild);
+    sp.appendChild(document.createTextNode(text));
+  }
+
+  // span 안 텍스트노드만 치환값으로 교체 (mark 는 보존)
+  function _patchSpanNodes(sp, origText) {
+    // mark 가 없는 경우: 텍스트노드 직접 교체
+    if (!sp.querySelector('mark.custom-cdhlp')) {
+      const walker = document.createTreeWalker(sp, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let n;
+      while ((n = walker.nextNode())) nodes.push(n);
+      // 모든 텍스트를 이어 붙인 뒤 치환
+      const combined = nodes.map(tn => tn.nodeValue).join('');
+      const next = applyRules(combined);
+      if (next === combined) return false; // 치환 없음
+      // 첫 텍스트노드에 치환값 넣고 나머지 비움
+      if (nodes.length > 0) {
+        nodes[0].nodeValue = next;
+        for (let i = 1; i < nodes.length; i++) nodes[i].nodeValue = '';
+      }
+      return true;
+    }
+
+    // mark 가 있는 경우: mark 안/밖 텍스트노드 각각 치환
+    // mark 바깥 텍스트노드
+    let changed = false;
+    sp.childNodes.forEach(child => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const next = applyRules(child.nodeValue);
+        if (next !== child.nodeValue) { child.nodeValue = next; changed = true; }
+      } else if (child.tagName === 'MARK' && child.classList.contains('custom-cdhlp')) {
+        // mark 안 텍스트노드
+        child.childNodes.forEach(mc => {
+          if (mc.nodeType === Node.TEXT_NODE) {
+            const next = applyRules(mc.nodeValue);
+            if (next !== mc.nodeValue) { mc.nodeValue = next; changed = true; }
+          }
+        });
+      }
+    });
+    return changed;
   }
 
   function patchAll() {
@@ -126,7 +149,12 @@
     _hlpPause();
     try {
       _getTargetSpans().forEach(sp => {
-        _textNodesIn(sp).forEach(_patchNode);
+        // 이미 치환됨
+        if (sp._cdhrOrig !== undefined) return;
+        const orig = sp.textContent;
+        if (!orig || !orig.trim()) return;
+        const changed = _patchSpanNodes(sp, orig);
+        if (changed) sp._cdhrOrig = orig;
       });
     } finally {
       _patching = false;
@@ -139,7 +167,11 @@
     _hlpPause();
     try {
       _getTargetSpans().forEach(sp => {
-        _textNodesIn(sp).forEach(_restoreNode);
+        if (sp._cdhrOrig === undefined) return;
+        // span 전체를 원본 텍스트로 교체 (mark 포함 제거)
+        // 형광펜 스크립트의 MutationObserver 가 재적용함
+        _setSpanText(sp, sp._cdhrOrig);
+        delete sp._cdhrOrig;
       });
     } finally {
       _patching = false;
