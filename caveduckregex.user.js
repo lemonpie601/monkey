@@ -2,8 +2,8 @@
 // @name         케덕 정규식
 // @namespace    https://caveduck.io/
 // @version      2.1.0
-// @description  케이브덕 정규식 치환 전용 | 형광펜 호환
-// @author       레몬파이 베이스 / Claude 정리
+// @description  케이브덕 정규식
+// @author       레몬파이
 // @match        https://caveduck.io/*
 // @grant        GM_setValue
 // @grant        GM_getValue
