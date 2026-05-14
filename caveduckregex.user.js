@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         케덕 정규식
 // @namespace    https://caveduck.io/
-// @version      1.0.0
+// @version      2.0.0
 // @description  케이브덕 정규식 치환 전용 | 형광펜 호환
 // @author       레몬파이 베이스 / Claude 정리
 // @match        https://caveduck.io/*
@@ -57,51 +57,76 @@
     } catch {}
   }
 
-  /* ── 오버레이 삽입 방식 치환 ──
-     React 관리 텍스트 노드를 건드리지 않고,
-     원본 span 을 visibility:hidden 한 뒤
-     치환 텍스트를 담은 <span class="cdhr-overlay"> 를 바로 뒤에 삽입 */
+  /* ── 텍스트노드 직접 교체 방식 ───────────────────────────
+     설계 원칙:
+     - 형광펜이 없는 span: 내부 텍스트 노드를 직접 치환
+       data-cdhr-orig 에 원본 저장 → restoreAll 시 정확히 복원
+     - 형광펜 mark 가 있는 span: mark 바깥의 텍스트 노드만 치환
+       mark 자체는 건드리지 않음 → 형광펜이 보임
+     - React 우회: textNode.nodeValue 직접 교체 (React state 는 변경 안 함)
+       React re-render 시 원본으로 돌아가지만, MutationObserver 가 재적용
+     - _patching: true 인 동안 observer 재진입 차단
+     - _hlpResume: 반드시 _patching=false 후 호출
+  ─────────────────────────────────────────────────────── */
+
+  // 텍스트노드 치환 — 원본 저장 포함
+  function _patchNode(tn) {
+    // 이미 치환된 노드
+    if (tn._cdhrOrig !== undefined) return;
+    const orig = tn.nodeValue;
+    if (!orig || !orig.trim()) return;
+    const next = applyRules(orig);
+    if (next === orig) return;
+    tn._cdhrOrig = orig;
+    tn.nodeValue = next;
+  }
+
+  // 텍스트노드 복원
+  function _restoreNode(tn) {
+    if (tn._cdhrOrig === undefined) return;
+    tn.nodeValue = tn._cdhrOrig;
+    delete tn._cdhrOrig;
+  }
+
+  // span 안의 처리 대상 텍스트 노드 수집
+  // — mark.custom-cdhlp 안의 노드도 포함 (형광펜 텍스트도 치환)
+  // — cdhr-* 자체 노드는 제외
+  function _textNodesIn(sp) {
+    const walker = document.createTreeWalker(sp, NodeFilter.SHOW_TEXT, {
+      acceptNode(tn) {
+        const p = tn.parentNode;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        // 자체 UI 안 텍스트 제외
+        if (p.closest && p.closest('[id^="cdhr"]')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    return nodes;
+  }
+
+  // 대상 span 수집
+  function _getTargetSpans() {
+    const wrap = document.getElementById('cdhr-wrap');
+    return Array.from(
+      document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span')
+    ).filter(sp => {
+      if (wrap && wrap.contains(sp)) return false;
+      // 자체 UI 안은 제외
+      if (sp.closest('[id^="cdhr"]')) return false;
+      return true;
+    });
+  }
+
   function patchAll() {
     if (_patching) return;
     _patching = true;
     _hlpPause();
     try {
-      const wrap = document.getElementById('cdhr-wrap');
-      document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span').forEach(sp => {
-        if (wrap && wrap.contains(sp)) return;
-        if (sp.classList.contains('cdhr-overlay')) return;
-        if (sp.childElementCount > 0) return;
-        const raw = sp.textContent;
-        if (!raw.trim()) return;
-        if (sp.style.visibility === 'hidden') return;
-
-        const next = applyRules(raw);
-        if (next === raw) return;
-
-        const existOv = sp.nextElementSibling;
-        if (existOv?.classList?.contains('cdhr-overlay')) {
-          // 형광펜 mark 있으면 건드리지 않음
-          if (existOv.querySelector?.('mark.custom-cdhlp')) return;
-          existOv.textContent = next;
-        } else {
-          const ov = document.createElement('span');
-          ov.className = 'cdhr-overlay';
-          ov.textContent = next;
-          const cs = getComputedStyle(sp);
-          ov.style.cssText = [
-            'font-style:'    + cs.fontStyle,
-            'font-weight:'   + cs.fontWeight,
-            'font-family:'   + cs.fontFamily,
-            'font-size:'     + cs.fontSize,
-            'line-height:'   + cs.lineHeight,
-            'letter-spacing:'+ cs.letterSpacing,
-            'color:'         + cs.color,
-          ].join(';');
-          ov.setAttribute('aria-hidden', 'true');
-          sp.after(ov);
-          sp.style.visibility = 'hidden';
-          sp.style.position   = 'absolute';
-        }
+      _getTargetSpans().forEach(sp => {
+        _textNodesIn(sp).forEach(_patchNode);
       });
     } finally {
       _patching = false;
@@ -113,12 +138,8 @@
     _patching = true;
     _hlpPause();
     try {
-      document.querySelectorAll('.cdhr-overlay').forEach(ov => ov.remove());
-      document.querySelectorAll('[class*="contain"] span, [class="[contain:paint]"] span').forEach(sp => {
-        if (sp.style.visibility === 'hidden') {
-          sp.style.visibility = '';
-          sp.style.position   = '';
-        }
+      _getTargetSpans().forEach(sp => {
+        _textNodesIn(sp).forEach(_restoreNode);
       });
     } finally {
       _patching = false;
@@ -176,9 +197,6 @@
       --cdhr-acc: #bc1e51;
       --cdhr-bg:  #1e1e1e;
     }
-
-    /* 오버레이 span — 형광펜 드래그 가능하도록 제한 없음 */
-    .cdhr-overlay { /* intentionally empty */ }
 
     /* ── 툴바 버튼 ── */
     .cdhr-btn {
@@ -515,12 +533,16 @@
      _patching 중엔 patchAll 재진입 차단
   ──────────────────────────────────────── */
   function _isSafe(n) {
+    // 텍스트노드 변경은 patchAll/_restoreNode 가 직접 처리 — observer 재진입 차단
     if (n.nodeType === Node.TEXT_NODE) return true;
     if (n.nodeType !== Node.ELEMENT_NODE) return true;
     const id  = n.id  || '';
     const cls = n.classList ? [...n.classList] : [];
+    // 자체 UI 노드
     if (id.startsWith('cdhr')  || cls.some(c => c.startsWith('cdhr')))  return true;
+    // 퀵입력 노드
     if (id.startsWith('cdhq')  || cls.some(c => c.startsWith('cdhq')))  return true;
+    // 형광펜 노드 — mark 삽입/삭제는 형광펜이 관리
     if (id.startsWith('cdhlp') || cls.some(c => c.startsWith('cdhlp'))) return true;
     if (n.tagName === 'MARK'   && cls.includes('custom-cdhlp'))          return true;
     return false;
