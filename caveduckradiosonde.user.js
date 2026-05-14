@@ -1,8 +1,9 @@
 // ==UserScript==
-// @name         케이브덕 라디오존데 팝업창📡
+// @name         케이브덕 라디오존데
 // @namespace    igx-radiosonde-live
-// @version      3.7.4
-// @description  케이브덕(caveduck.io)에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
+// @version      3.8.0
+// @description  케이브덕에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
+// @author       레몬파이
 // @match        https://caveduck.io/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
@@ -30,23 +31,29 @@
   const STORE_KEY_VISIBILITY = "igx_rs_popup_vis_v3";
 
   GM_addStyle(`
+    /* ======================================================
+       케이브덕 라디오존데 — v3.8.0
+       케이브덕 디자인 시스템 참고 (dgray, rounded-sm, etc.)
+    ====================================================== */
+
     #igx-live-popup {
-      --bg-main: rgba(20, 20, 20, .92);
-      --border-main: rgba(255, 255, 255, .12);
-      --text-title: rgba(255, 255, 255, .85);
-      --bg-head: rgba(255, 255, 255, .03);
-      --border-head: rgba(255, 255, 255, .10);
-      --btn-border: rgba(255, 255, 255, .14);
-      --btn-bg: rgba(255, 255, 255, .06);
-      --btn-bg-hover: rgba(255, 255, 255, .10);
-      --text-name: rgba(255, 255, 255, .88);
-      --border-row: rgba(255, 255, 255, .08);
-      --text-metric: rgba(255, 255, 255, .70);
-      --text-unknown: rgba(255, 255, 255, .80);
-      --text-foot: rgba(255, 255, 255, .55);
-      --bg-set-row: rgba(255, 255, 255, .05);
-      --bg-bitem: rgba(255, 255, 255, .04);
-      --bg-settings: rgba(0, 0, 0, 0.2);
+      /* 다크 모드 색상 변수 */
+      --igx-bg: rgba(18, 18, 20, 0.94);
+      --igx-bg-head: rgba(255, 255, 255, 0.04);
+      --igx-bg-settings: rgba(0, 0, 0, 0.22);
+      --igx-bg-bitem: rgba(255, 255, 255, 0.05);
+      --igx-border: rgba(255, 255, 255, 0.10);
+      --igx-border-head: rgba(255, 255, 255, 0.08);
+      --igx-border-row: rgba(255, 255, 255, 0.07);
+      --igx-btn-border: rgba(255, 255, 255, 0.13);
+      --igx-btn-bg: rgba(255, 255, 255, 0.07);
+      --igx-btn-bg-hover: rgba(255, 255, 255, 0.13);
+      --igx-text-title: rgba(255, 255, 255, 0.90);
+      --igx-text-name: rgba(255, 255, 255, 0.85);
+      --igx-text-metric: rgba(255, 255, 255, 0.60);
+      --igx-text-unknown: rgba(255, 255, 255, 0.50);
+      --igx-text-foot: rgba(255, 255, 255, 0.40);
+      --igx-badge-bg: rgba(0, 0, 0, 0.85);
 
       --c-active: #3ddc84;
       --c-degraded: #ffd54a;
@@ -56,22 +63,22 @@
     }
 
     #igx-live-popup.igx-light {
-      --bg-main: rgba(250, 250, 250, .92);
-      --border-main: rgba(0, 0, 0, .12);
-      --text-title: rgba(0, 0, 0, .85);
-      --bg-head: rgba(0, 0, 0, .03);
-      --border-head: rgba(0, 0, 0, .10);
-      --btn-border: rgba(0, 0, 0, .14);
-      --btn-bg: rgba(0, 0, 0, .06);
-      --btn-bg-hover: rgba(0, 0, 0, .10);
-      --text-name: rgba(0, 0, 0, .88);
-      --border-row: rgba(0, 0, 0, .08);
-      --text-metric: rgba(0, 0, 0, .70);
-      --text-unknown: rgba(0, 0, 0, .60);
-      --text-foot: rgba(0, 0, 0, .55);
-      --bg-set-row: rgba(0, 0, 0, .05);
-      --bg-bitem: rgba(0, 0, 0, .04);
-      --bg-settings: rgba(0, 0, 0, 0.05);
+      --igx-bg: rgba(248, 248, 250, 0.96);
+      --igx-bg-head: rgba(0, 0, 0, 0.03);
+      --igx-bg-settings: rgba(0, 0, 0, 0.04);
+      --igx-bg-bitem: rgba(0, 0, 0, 0.04);
+      --igx-border: rgba(0, 0, 0, 0.10);
+      --igx-border-head: rgba(0, 0, 0, 0.08);
+      --igx-border-row: rgba(0, 0, 0, 0.07);
+      --igx-btn-border: rgba(0, 0, 0, 0.13);
+      --igx-btn-bg: rgba(0, 0, 0, 0.06);
+      --igx-btn-bg-hover: rgba(0, 0, 0, 0.11);
+      --igx-text-title: rgba(0, 0, 0, 0.88);
+      --igx-text-name: rgba(0, 0, 0, 0.80);
+      --igx-text-metric: rgba(0, 0, 0, 0.60);
+      --igx-text-unknown: rgba(0, 0, 0, 0.45);
+      --igx-text-foot: rgba(0, 0, 0, 0.40);
+      --igx-badge-bg: rgba(0, 0, 0, 0.80);
 
       --c-active: #1da851;
       --c-degraded: #d49500;
@@ -80,70 +87,102 @@
       --c-fail: #e03535;
     }
 
+    /* ── 팝업 베이스 ── */
     #igx-live-popup {
       position: fixed;
-      width: 220px;
-      background: var(--bg-main);
-      border: 1px solid var(--border-main);
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+      width: 230px;
+      background: var(--igx-bg);
+      border: 1px solid var(--igx-border);
+      border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.38), 0 2px 8px rgba(0,0,0,.22);
       z-index: 999999;
       overflow: hidden;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", Arial;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", Arial, sans-serif;
+      font-size: 13px;
       user-select: none;
-      backdrop-filter: blur(6px);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       cursor: grab;
-      color: var(--text-title);
-      transition: background 0.3s, border-color 0.3s, color 0.3s;
+      color: var(--igx-text-title);
+      transition: background 0.25s, border-color 0.25s, color 0.25s, box-shadow 0.25s;
     }
     #igx-live-popup:active { cursor: grabbing; }
     #igx-live-popup * { box-sizing: border-box; }
 
+    /* ── 헤더 ── */
     #igx-live-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       width: 100%;
-      padding: 8px;
-      background: var(--bg-head);
-      border-bottom: 1px solid var(--border-head);
+      padding: 7px 8px;
+      background: var(--igx-bg-head);
+      border-bottom: 1px solid var(--igx-border-head);
       gap: 6px;
     }
     #igx-live-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
       flex: 1;
       overflow: hidden;
     }
-    #igx-live-title { font-size: 12px; white-space: nowrap; }
+    #igx-live-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+      white-space: nowrap;
+      opacity: 0.75;
+    }
     #igx-live-actions {
       display: flex;
-      gap: 4px;
+      gap: 3px;
       align-items: center;
       flex: 0 0 auto;
     }
 
+    /* ── 버튼 (케이브덕 rounded-sm 스타일 참고) ── */
     .igx-btn {
-      width: 22px;
-      height: 22px;
-      border-radius: 8px;
-      border: 1px solid var(--btn-border);
-      background: var(--btn-bg);
-      color: var(--text-title);
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--igx-btn-border);
+      background: var(--igx-btn-bg);
+      color: var(--igx-text-title);
       cursor: pointer;
       display: flex;
       justify-content: center;
       align-items: center;
       font-size: 13px;
-      line-height: 0;
+      line-height: 1;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      /* 모바일 터치 타겟 확보 */
+      position: relative;
     }
-    .igx-btn:hover { background: var(--btn-bg-hover); }
+    .igx-btn::after {
+      content: '';
+      position: absolute;
+      inset: -6px;
+    }
+    .igx-btn:hover {
+      background: var(--igx-btn-bg-hover);
+      border-color: rgba(255,255,255,0.22);
+    }
+    #igx-live-popup.igx-light .igx-btn:hover {
+      border-color: rgba(0,0,0,0.22);
+    }
+    .igx-btn:active { opacity: 0.7; }
 
-    #igx-live-body { padding: 8px; }
-    .igx-row { padding: 5px 0; border-bottom: 1px solid var(--border-row); }
-    .igx-row:last-child { border-bottom: none; }
+    /* ── 바디 ── */
+    #igx-live-body { padding: 8px 8px 6px; }
+
+    .igx-row {
+      padding: 6px 0;
+      border-bottom: 1px solid var(--igx-border-row);
+    }
+    .igx-row:last-of-type { border-bottom: none; }
+
     .igx-top {
       display: flex;
       justify-content: space-between;
@@ -152,8 +191,8 @@
       width: 100%;
     }
     .igx-name {
-      font-size: 11px;
-      color: var(--text-name);
+      font-size: 11.5px;
+      color: var(--igx-text-name);
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
@@ -164,62 +203,72 @@
     }
     .igx-state {
       font-size: 10px;
-      opacity: .95;
-      white-space: nowrap;
       font-weight: 700;
+      white-space: nowrap;
       flex: 0 0 auto;
-      letter-spacing: -0.2px;
+      letter-spacing: -0.1px;
+      opacity: 0.95;
     }
 
     .dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 999px;
       display: inline-block;
-      margin-right: 4px;
+      margin-right: 3px;
       vertical-align: middle;
+      flex-shrink: 0;
     }
     .igx-metric {
       margin-top: 3px;
-      font-size: 10px;
-      color: var(--text-metric);
-      line-height: 1.35;
-      letter-spacing: -0.2px;
+      font-size: 10.5px;
+      color: var(--igx-text-metric);
+      line-height: 1.4;
+      letter-spacing: -0.15px;
     }
     .score { font-weight: 800; }
-    .fail { font-weight: 800; color: var(--c-fail); }
+    .fail  { font-weight: 800; color: var(--c-fail); }
 
+    /* ── 설정 영역 ── */
     #igx-live-settings {
       display: none;
       padding: 8px;
-      background: var(--bg-settings);
+      background: var(--igx-bg-settings);
+    }
+    .igx-set-hint {
+      font-size: 10.5px;
+      color: var(--igx-text-unknown);
+      margin-bottom: 8px;
+      text-align: center;
     }
     .igx-set-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 5px 0;
-      border-bottom: 1px solid var(--bg-set-row);
-      font-size: 11px;
-      color: var(--text-name);
+      padding: 6px 2px;
+      border-bottom: 1px solid var(--igx-border-row);
+      font-size: 11.5px;
+      color: var(--igx-text-name);
       letter-spacing: -0.2px;
     }
     .igx-set-row:last-child { border-bottom: none; }
     .igx-set-label {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       cursor: pointer;
       flex: 1;
       margin: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      /* 모바일 터치 타겟 */
+      min-height: 36px;
     }
     .igx-set-chk {
       margin: 0;
-      width: 13px;
-      height: 13px;
+      width: 14px;
+      height: 14px;
       accent-color: #3ddc84;
       cursor: pointer;
       flex-shrink: 0;
@@ -228,41 +277,44 @@
     #igx-live-popup.show-settings #igx-live-settings { display: block; }
     #igx-live-popup.show-settings #igx-live-body { display: none; }
 
-    .s-active .dot { background: var(--c-active); }
-    .s-degraded .dot { background: var(--c-degraded); }
-    .s-impacted .dot { background: var(--c-impacted); }
-    .s-unknown .dot { background: var(--c-unknown); }
+    /* ── 상태 색상 ── */
+    .s-active   .dot  { background: var(--c-active); }
+    .s-degraded .dot  { background: var(--c-degraded); }
+    .s-impacted .dot  { background: var(--c-impacted); }
+    .s-unknown  .dot  { background: var(--c-unknown); }
 
-    .s-active .igx-state .stxt { color: var(--c-active); }
+    .s-active   .igx-state .stxt { color: var(--c-active); }
     .s-degraded .igx-state .stxt { color: var(--c-degraded); }
     .s-impacted .igx-state .stxt { color: var(--c-impacted); }
-    .s-unknown .igx-state .stxt { color: var(--c-unknown); }
+    .s-unknown  .igx-state .stxt { color: var(--c-unknown); }
 
-    .s-active .score { color: var(--c-active); }
+    .s-active   .score { color: var(--c-active); }
     .s-degraded .score { color: var(--c-degraded); }
     .s-impacted .score { color: var(--c-impacted); }
-    .s-unknown .score { color: var(--text-unknown); }
+    .s-unknown  .score { color: var(--igx-text-unknown); }
 
+    /* ── 푸터 ── */
     #igx-live-foot {
       margin-top: 6px;
+      padding-top: 5px;
+      border-top: 1px solid var(--igx-border-row);
       font-size: 10px;
-      color: var(--text-foot);
+      color: var(--igx-text-foot);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      letter-spacing: -0.2px;
+      letter-spacing: -0.15px;
     }
     #igx-live-foot a {
-      color: rgba(120, 200, 255, .85);
+      color: rgba(100, 180, 255, .80);
       text-decoration: none;
-      border-bottom: 1px dotted rgba(120, 200, 255, .35);
-      cursor: pointer;
+      border-bottom: 1px dotted rgba(100, 180, 255, .30);
     }
 
-    /* ====== BAR 모드 ====== */
+    /* ── BAR 모드 ── */
     #igx-live-popup.bar {
       width: auto;
-      max-width: calc(100vw - 32px);
+      max-width: calc(100vw - 24px);
       border-radius: 999px;
     }
     #igx-live-popup.bar #igx-live-body,
@@ -272,43 +324,45 @@
       display: none;
     }
 
-    /* ====== INLINE 오버레이 모드 ====== */
-    /* ★ 케이브덕: form[data-tour="chat-input"] 이 호스트가 됨
-       form 자체가 relative 포지션이므로 추가 스타일 불필요 */
+    /* ── INLINE 모드 ── */
+    /* form이 relative라 absolute로 오버레이 */
     .igx-inline-overlay-host {
       position: relative !important;
     }
 
     #igx-live-popup.inline {
-     position: absolute !important;
-     top: 6px !important;
-     left: 0 !important;
-     right: 0 !important;
-     width: auto !important;
-     max-width: none !important;
-     background: transparent !important;
-     border: none !important;
-     box-shadow: none !important;
-     backdrop-filter: none !important;
-     transform: none !important;
-     cursor: default !important;
-     margin: 0 !important;
-     padding: 0 !important;
-     border-radius: 0 !important;
-     z-index: 3 !important;
-     overflow: visible !important;
-     pointer-events: none !important;
+      position: absolute !important;
+      /* 입력창 위 여유 공간: form 안에서 텍스트영역 높이를 고려해 위쪽에 배치 */
+      bottom: calc(100% + 6px) !important;
+      top: auto !important;
+      left: 0 !important;
+      right: 0 !important;
+      width: auto !important;
+      max-width: none !important;
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      transform: none !important;
+      cursor: default !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border-radius: 0 !important;
+      z-index: 3 !important;
+      overflow: visible !important;
+      pointer-events: none !important;
     }
     #igx-live-popup.inline #igx-live-head {
       background: transparent;
       border: none;
-      padding: 0 4px !important;
+      padding: 0 6px 4px !important;
       min-height: 0 !important;
       gap: 4px !important;
       pointer-events: auto;
     }
     #igx-live-popup.inline #igx-live-left {
-      gap: 8px !important;
+      gap: 6px !important;
     }
     #igx-live-popup.inline #igx-live-actions {
       gap: 2px !important;
@@ -321,23 +375,24 @@
       display: none;
     }
     #igx-live-popup.inline .igx-btn {
-      width: 18px !important;
-      height: 18px !important;
-      min-width: 18px !important;
+      width: 20px !important;
+      height: 20px !important;
+      min-width: 20px !important;
       padding: 0 !important;
       background: transparent;
       border-color: transparent;
-      opacity: 0.65;
+      opacity: 0.60;
     }
+    #igx-live-popup.inline .igx-btn::after { inset: -8px; }
     #igx-live-popup.inline .igx-btn:hover {
-      background: var(--btn-bg);
+      background: var(--igx-btn-bg);
       opacity: 1;
     }
     #igx-live-popup.inline .bitem {
       background: transparent;
       border: none;
-      padding: 1px 2px !important;
-      gap: 6px !important;
+      padding: 1px 3px !important;
+      gap: 5px !important;
       min-height: 0 !important;
     }
     #igx-live-popup.inline .bname,
@@ -351,79 +406,89 @@
       height: 6px !important;
     }
 
+    /* ── 바라인 (bar/inline 공통) ── */
     #igx-live-barline {
       display: none;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       min-width: 0;
       flex: 1;
       white-space: nowrap;
-      color: var(--text-unknown);
+      color: var(--igx-text-unknown);
       font-size: 11px;
       overflow-x: auto;
       scrollbar-width: none;
       -ms-overflow-style: none;
     }
     #igx-live-barline::-webkit-scrollbar { display: none; }
-    #igx-live-popup.bar #igx-live-barline,
+    #igx-live-popup.bar    #igx-live-barline,
     #igx-live-popup.inline #igx-live-barline { display: flex; }
 
     .bitem {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 2px 7px;
+      gap: 5px;
+      padding: 3px 8px;
       border-radius: 999px;
-      border: 1px solid var(--btn-border);
-      background: var(--bg-bitem);
+      border: 1px solid var(--igx-btn-border);
+      background: var(--igx-bg-bitem);
+      font-size: 11px;
     }
-    .bname {
-      opacity: .9;
-      font-weight: 700;
-      color: var(--text-title);
-    }
+    .bname  { opacity: .9; font-weight: 700; color: var(--igx-text-title); }
     .bscore { font-weight: 900; }
-    .blat {
-      opacity: .75;
-      color: var(--text-name);
-    }
+    .blat   { opacity: .70; color: var(--igx-text-name); }
     .bdot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 999px;
       display: inline-block;
+      flex-shrink: 0;
     }
 
-    .b-active .bdot { background: var(--c-active); }
+    .b-active   .bdot { background: var(--c-active); }
     .b-degraded .bdot { background: var(--c-degraded); }
     .b-impacted .bdot { background: var(--c-impacted); }
-    .b-unknown .bdot { background: var(--c-unknown); }
+    .b-unknown  .bdot { background: var(--c-unknown); }
 
+    .b-active   .bscore { color: var(--c-active); }
+    .b-degraded .bscore { color: var(--c-degraded); }
+    .b-impacted .bscore { color: var(--c-impacted); }
+    .b-unknown  .bscore { color: var(--igx-text-unknown); }
+
+    /* inline 전용 아이콘 */
     .inline-icon {
       display: none;
-      width: 14px;
-      height: 14px;
-      opacity: 0.6;
-      margin-right: 2px;
-      color: var(--text-title);
+      width: 13px;
+      height: 13px;
+      opacity: 0.55;
+      margin-right: 1px;
+      color: var(--igx-text-title);
+      flex-shrink: 0;
     }
     #igx-live-popup.inline .inline-icon { display: block; }
 
+    /* ── 모바일 (max-width: 600px) ── */
     @media (max-width: 600px) {
+      /* bar 모드: 좌우 꽉 채우기 */
       #igx-live-popup.bar {
         width: auto !important;
         max-width: none !important;
-        left: 2px !important;
-        right: 2px !important;
+        left: 4px !important;
+        right: 4px !important;
+        border-radius: 12px !important;
       }
-      #igx-live-popup.bar #igx-live-head { padding: 7px 6px; gap: 4px; }
+      #igx-live-popup.bar #igx-live-head {
+        padding: 8px 10px;
+        gap: 6px;
+      }
       #igx-live-popup.bar #igx-live-left { gap: 4px; }
       #igx-live-popup.bar #igx-live-barline { gap: 4px; }
       #igx-live-popup.bar .bitem {
         flex: 1 1 0;
         justify-content: center;
-        padding: 5px 2px;
+        padding: 6px 3px;
         min-width: 0;
+        gap: 4px;
       }
       #igx-live-popup.bar .bname,
       #igx-live-popup.bar .bscore,
@@ -433,40 +498,47 @@
       }
       #igx-live-popup.bar .bdot {
         width: 6px;
-        height: 7px;
-        margin-right: -1px;
+        height: 6px;
         flex-shrink: 0;
       }
+      /* 모바일 버튼 터치 타겟 확대 */
       #igx-live-popup.bar .igx-btn {
-        width: 26px;
-        height: 24px;
+        width: 32px;
+        height: 30px;
         flex-shrink: 0;
       }
 
+      /* card 모드: 너비 고정, 오른쪽 여백 */
+      #igx-live-popup.card {
+        width: 210px;
+      }
+
+      /* inline 모드 */
       #igx-live-popup.inline #igx-live-head {
-        padding: 0 4px 2px 4px !important;
+        padding: 0 6px 6px 6px !important;
       }
     }
   `);
 
+  /* ── 유틸 ── */
   function px(v) {
     const n = Number(String(v).replace("px", ""));
     return Number.isFinite(n) ? n : 0;
   }
-
   function clamp(v, min, max) {
     return Math.max(min, Math.min(max, v));
   }
 
+  /* ── 표시 모델 가시성 상태 ── */
   let visibility = {};
   try {
     visibility = JSON.parse(localStorage.getItem(STORE_KEY_VISIBILITY)) || {};
   } catch {}
-
   MODELS.forEach(m => {
     if (visibility[m.slug] === undefined) visibility[m.slug] = true;
   });
 
+  /* ── DOM 구조 생성 ── */
   const popup = document.createElement("div");
   popup.id = "igx-live-popup";
 
@@ -511,7 +583,7 @@
   const btnPin = document.createElement("button");
   btnPin.className = "igx-btn btn-pin";
   btnPin.title = "채팅창에 고정";
-  btnPin.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>';
+  btnPin.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>';
 
   actions.append(btnRefresh, btnSettings, btnLayout, btnPin);
   head.append(left, actions);
@@ -521,7 +593,7 @@
 
   const settingsArea = document.createElement("div");
   settingsArea.id = "igx-live-settings";
-  settingsArea.innerHTML = `<div style="font-size:11px; color:var(--text-unknown); margin-bottom:10px; text-align:center;">표시할 모델을 선택하세요</div>`;
+  settingsArea.innerHTML = `<div class="igx-set-hint">표시할 모델을 선택하세요</div>`;
 
   const rows = new Map();
 
@@ -552,6 +624,7 @@
     body.appendChild(row);
     rows.set(m.slug, { row, state, metric });
 
+    /* 설정 행 */
     const sRow = document.createElement("div");
     sRow.className = "igx-set-row";
 
@@ -584,22 +657,22 @@
 
   popup.append(head, body, settingsArea);
 
+  /* ── 헬퍼 ── */
   function setFooter(text) {
     foot.querySelector(".ts").textContent = text;
   }
 
   function setStateClass(el, status) {
     el.classList.remove("s-active", "s-degraded", "s-impacted", "s-unknown");
-    if (status === "active") el.classList.add("s-active");
+    if (status === "active")        el.classList.add("s-active");
     else if (status === "degraded") el.classList.add("s-degraded");
     else if (status === "impacted") el.classList.add("s-impacted");
-    else el.classList.add("s-unknown");
+    else                            el.classList.add("s-unknown");
   }
 
   function upperStatus(s) {
     const v = String(s || "unknown").toUpperCase();
-    if (v === "ACTIVE" || v === "DEGRADED" || v === "IMPACTED") return v;
-    return "UNKNOWN";
+    return ["ACTIVE", "DEGRADED", "IMPACTED"].includes(v) ? v : "UNKNOWN";
   }
 
   function gmGetJson(url, timeoutMs = 6000) {
@@ -610,11 +683,8 @@
         timeout: timeoutMs,
         headers: { Accept: "application/json" },
         onload: (res) => {
-          try {
-            resolve(JSON.parse(res.responseText));
-          } catch (e) {
-            reject(e);
-          }
+          try { resolve(JSON.parse(res.responseText)); }
+          catch (e) { reject(e); }
         },
         onerror: reject,
         ontimeout: () => reject(new Error("timeout")),
@@ -626,18 +696,17 @@
     const n = Number(x);
     return Number.isFinite(n) ? n.toFixed(2) : null;
   }
-
   function fmt0(x) {
     const n = Number(x);
     return Number.isFinite(n) ? Math.round(n).toString() : null;
   }
-
   function latencySeconds(latencyInt) {
     const n = Number(latencyInt);
     if (!Number.isFinite(n)) return null;
     return (n >= 50 ? n / 1000 : n).toFixed(2);
   }
 
+  /* ── 바라인 렌더 ── */
   const last = new Map();
 
   function renderBarline() {
@@ -646,20 +715,13 @@
       .map((m) => {
         const d = last.get(m.slug) || { status: "unknown", score: "—", lat: "—" };
         const cls = d.status ? `b-${d.status}` : "b-unknown";
-        return `
-          <span class="bitem ${cls}">
-            <span class="bdot"></span>
-            <span class="bname">${m.short}</span>
-            <span class="bscore">${d.score ?? "—"}</span>
-            <span class="blat">${d.lat ?? "—"}s</span>
-          </span>
-        `.trim();
+        return `<span class="bitem ${cls}"><span class="bdot"></span><span class="bname">${m.short}</span><span class="bscore">${d.score ?? "—"}</span><span class="blat">${d.lat ?? "—"}s</span></span>`;
       })
       .join("");
-
-    barline.innerHTML = parts || "<span style='opacity:0.6; padding: 0 4px;'>선택된 모델 없음</span>";
+    barline.innerHTML = parts || `<span style="opacity:0.5; padding:0 4px;">선택된 모델 없음</span>`;
   }
 
+  /* ── 데이터 갱신 ── */
   async function refreshAll() {
     setFooter("갱신중…");
     const results = await Promise.allSettled(
@@ -669,8 +731,9 @@
     for (let i = 0; i < MODELS.length; i++) {
       const m = MODELS[i];
       const ui = rows.get(m.slug);
+      const res = results[i];
 
-      if (results[i].status !== "fulfilled" || !results[i].value || results[i].value.success !== true) {
+      if (res.status !== "fulfilled" || !res.value || res.value.success !== true) {
         setStateClass(ui.row, "unknown");
         ui.state.querySelector(".stxt").textContent = "ERROR";
         ui.metric.textContent = "요청 실패";
@@ -678,22 +741,22 @@
         continue;
       }
 
-      const d = results[i].value.data;
+      const d = res.value.data;
       const status = d.status || "unknown";
       setStateClass(ui.row, status);
       ui.state.querySelector(".stxt").textContent = upperStatus(status);
 
-      const lat = latencySeconds(d.latency);
-      const tps = fmt2(d.tps);
+      const lat   = latencySeconds(d.latency);
+      const tps   = fmt2(d.tps);
       const score = fmt0(d.score);
-      const fail = Number.isFinite(Number(d.failureCount)) ? Number(d.failureCount) : 0;
+      const fail  = Number.isFinite(Number(d.failureCount)) ? Number(d.failureCount) : 0;
 
       last.set(m.slug, { status, score: score ?? "—", lat: lat ?? "—" });
 
-      const scoreHtml = (score != null)
+      const scoreHtml = score != null
         ? `<span class="score">${score}점</span>`
         : `<span class="score">—점</span>`;
-      const failHtml = (fail > 0)
+      const failHtml = fail > 0
         ? ` · <span class="fail">실패 ${fail}</span>`
         : "";
 
@@ -704,17 +767,17 @@
     setFooter(`수신 ${new Date().toLocaleTimeString()}`);
   }
 
+  /* ── 위치 관리 ── */
   const EDGE = 8;
 
   function loadPos() {
-    let t = localStorage.getItem(STORE_KEY_POS_TOP);
-    let r = localStorage.getItem(STORE_KEY_POS_RIGHT);
+    const t = localStorage.getItem(STORE_KEY_POS_TOP);
+    const r = localStorage.getItem(STORE_KEY_POS_RIGHT);
     return {
-      top: t ? parseInt(t, 10) : 120,
-      right: r ? parseInt(r, 10) : 16
+      top:   t ? parseInt(t, 10) : 120,
+      right: r ? parseInt(r, 10) : 16,
     };
   }
-
   function savePos(t, r) {
     localStorage.setItem(STORE_KEY_POS_TOP, t);
     localStorage.setItem(STORE_KEY_POS_RIGHT, r);
@@ -722,56 +785,57 @@
 
   function applyClampedPosition(targetTop, targetRight) {
     if (popup.classList.contains("inline")) return;
-
-    const rect = popup.getBoundingClientRect();
+    const rect   = popup.getBoundingClientRect();
     const maxTop = Math.max(0, window.innerHeight - rect.height - EDGE);
     const maxRight = Math.max(0, window.innerWidth - rect.width - EDGE);
-    const t = clamp(targetTop, EDGE, maxTop);
-    const r = clamp(targetRight, 0, maxRight);
-
-    popup.style.top = `${t}px`;
-    if (window.innerWidth > 600 || !popup.classList.contains("bar")) {
-      popup.style.right = `${r}px`;
-    }
+    const t = clamp(targetTop,   EDGE, maxTop);
+    const r = clamp(targetRight, 0,    maxRight);
+    popup.style.top    = `${t}px`;
+    popup.style.right  = `${r}px`;
     popup.style.bottom = "auto";
     savePos(t, r);
   }
 
   function clampNow() {
-    applyClampedPosition(px(getComputedStyle(popup).top), px(getComputedStyle(popup).right));
+    applyClampedPosition(
+      px(getComputedStyle(popup).top),
+      px(getComputedStyle(popup).right)
+    );
   }
 
   const initPos = loadPos();
-  popup.style.top = `${initPos.top}px`;
+  popup.style.top   = `${initPos.top}px`;
   popup.style.right = `${initPos.right}px`;
 
+  /* ── 설정 토글 ── */
   btnSettings.addEventListener("click", (e) => {
     e.stopPropagation();
     popup.classList.toggle("show-settings");
     requestAnimationFrame(() => clampNow());
   });
 
+  /* ── 인라인(고정) 모드 위치 관리 ── */
   function cleanupInlineOverlayHosts() {
     document.querySelectorAll(".igx-inline-overlay-host").forEach(el => {
       el.classList.remove("igx-inline-overlay-host");
     });
   }
 
-  // ★★★ 케이브덕 전용 인라인 위치 설정 ★★★
-  // 케이브덕 채팅 form: <form data-tour="chat-input" class="... relative ...">
-  // form 자체가 relative 포지션이므로 그 안에 absolute로 overlay
   function ensureInlinePosition() {
+    // 케이브덕 채팅 form: <form data-tour="chat-input" class="... relative ...">
     const form = document.querySelector('form[data-tour="chat-input"]');
     if (!form) return;
-
+    // 이미 올바른 위치에 있으면 스킵
+    if (popup.parentNode === form && form.classList.contains("igx-inline-overlay-host")) return;
     cleanupInlineOverlayHosts();
     form.classList.add("igx-inline-overlay-host");
-    if (popup.parentNode !== form) form.appendChild(popup);
+    form.appendChild(popup);
   }
 
+  /* ── 레이아웃 전환 ── */
   function updateLayout() {
-    const isInline = localStorage.getItem(STORE_KEY_INLINE) === "1";
-    const baseLayout = localStorage.getItem(STORE_KEY_LAYOUT) === "bar" ? "bar" : "card";
+    const isInline    = localStorage.getItem(STORE_KEY_INLINE) === "1";
+    const baseLayout  = localStorage.getItem(STORE_KEY_LAYOUT) === "bar" ? "bar" : "card";
 
     popup.classList.remove("card", "bar", "inline", "show-settings");
 
@@ -783,9 +847,8 @@
     } else {
       cleanupInlineOverlayHosts();
       popup.classList.add(baseLayout);
-      btnPin.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>';
+      btnPin.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>';
       btnPin.title = "채팅창에 고정";
-
       if (popup.parentNode !== document.documentElement) {
         document.documentElement.appendChild(popup);
       }
@@ -800,8 +863,8 @@
 
   btnLayout.addEventListener("click", (e) => {
     e.stopPropagation();
-    const current = localStorage.getItem(STORE_KEY_LAYOUT) === "bar" ? "card" : "bar";
-    localStorage.setItem(STORE_KEY_LAYOUT, current);
+    const next = localStorage.getItem(STORE_KEY_LAYOUT) === "bar" ? "card" : "bar";
+    localStorage.setItem(STORE_KEY_LAYOUT, next);
     updateLayout();
   });
 
@@ -817,17 +880,21 @@
     refreshAll();
   });
 
+  /* ── 폴링 / 리사이즈 ── */
   setInterval(refreshAll, POLL_MS);
   setTimeout(refreshAll, 800);
   window.addEventListener("resize", () => clampNow(), { passive: true });
 
-  // ★★★ 케이브덕 인라인 재부착 인터벌
-  // 케이브덕은 SPA라 페이지 전환 시 채팅 form이 새로 렌더될 수 있음
+  // SPA 대응: 1초마다 인라인 위치 유지 확인
   setInterval(() => {
     if (popup.classList.contains("inline")) ensureInlinePosition();
   }, 1000);
 
-  let dragging = false, sx = 0, sy = 0, st = 0, sr = 0;
+  /* ── 드래그 (pointer 이벤트 단일화, touch/mouse 중복 방지) ── */
+  let dragging = false;
+  let dragSX = 0, dragSY = 0, dragST = 0, dragSR = 0;
+  // pointer 캡처 사용 중이면 mouse 이벤트 무시
+  let usingPointer = false;
 
   function isInteractive(target) {
     if (!target || !target.closest) return false;
@@ -837,50 +904,48 @@
   function startDrag(clientX, clientY) {
     if (popup.classList.contains("inline")) return;
     dragging = true;
-    sx = clientX;
-    sy = clientY;
-    st = px(getComputedStyle(popup).top);
-    sr = px(getComputedStyle(popup).right);
+    dragSX = clientX;
+    dragSY = clientY;
+    dragST = px(getComputedStyle(popup).top);
+    dragSR = px(getComputedStyle(popup).right);
   }
 
   function moveDrag(clientX, clientY) {
     if (!dragging) return;
-    applyClampedPosition(st + (clientY - sy), sr - (clientX - sx));
+    applyClampedPosition(dragST + (clientY - dragSY), dragSR - (clientX - dragSX));
   }
 
   function endDrag() {
     dragging = false;
   }
 
+  // ── Pointer 이벤트 (가장 우선, 터치+마우스 통합) ──
   popup.addEventListener("pointerdown", (e) => {
     if (isInteractive(e.target)) return;
     try { popup.setPointerCapture(e.pointerId); } catch {}
+    usingPointer = true;
     startDrag(e.clientX, e.clientY);
     e.preventDefault();
   });
 
-  popup.addEventListener("pointermove", (e) => moveDrag(e.clientX, e.clientY));
-  popup.addEventListener("pointerup", () => endDrag());
-  popup.addEventListener("pointercancel", () => endDrag());
+  popup.addEventListener("pointermove", (e) => {
+    if (!usingPointer) return;
+    moveDrag(e.clientX, e.clientY);
+  });
 
-  popup.addEventListener("touchstart", (e) => {
-    if (isInteractive(e.target)) return;
-    const t = e.touches && e.touches[0];
-    if (!t) return;
-    startDrag(t.clientX, t.clientY);
-    e.preventDefault();
-  }, { passive: false });
+  popup.addEventListener("pointerup", (e) => {
+    usingPointer = false;
+    endDrag();
+  });
 
-  popup.addEventListener("touchmove", (e) => {
-    const t = e.touches && e.touches[0];
-    if (!t) return;
-    moveDrag(t.clientX, t.clientY);
-    e.preventDefault();
-  }, { passive: false });
+  popup.addEventListener("pointercancel", () => {
+    usingPointer = false;
+    endDrag();
+  });
 
-  popup.addEventListener("touchend", () => endDrag());
-
+  // ── Mouse 이벤트 (pointer 미지원 폴백) ──
   popup.addEventListener("mousedown", (e) => {
+    if (usingPointer) return; // pointer 이벤트가 처리 중이면 스킵
     if (isInteractive(e.target)) return;
     startDrag(e.clientX, e.clientY);
     document.addEventListener("mousemove", onMouseMove);
@@ -888,24 +953,23 @@
     e.preventDefault();
   });
 
-  function onMouseMove(e) { moveDrag(e.clientX, e.clientY); }
+  function onMouseMove(e) {
+    if (usingPointer) return;
+    moveDrag(e.clientX, e.clientY);
+  }
   function onMouseUp() {
     endDrag();
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);
   }
 
-  // ★★★ 케이브덕 테마 감지
-  // 케이브덕은 next-themes 방식: <html class="light"> 또는 <html class="dark">
+  /* ── 테마 감지 (케이브덕: <html class="light"> / "dark") ── */
   function applyTheme() {
     const isLight = document.documentElement.classList.contains("light");
-    if (isLight) popup.classList.add("igx-light");
-    else popup.classList.remove("igx-light");
+    popup.classList.toggle("igx-light", isLight);
   }
 
   applyTheme();
-
-  // html 엘리먼트의 class 변경 감지 (다크/라이트 토글)
   const themeObserver = new MutationObserver(() => applyTheme());
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
