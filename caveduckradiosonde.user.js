@@ -1,9 +1,8 @@
 // ==UserScript==
-// @name         케이브덕 라디오존데
+// @name         케이브덕 라디오존데 팝업창📡
 // @namespace    igx-radiosonde-live
-// @version      3.8.0
-// @description  케이브덕에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
-// @author       레몬파이
+// @version      3.8.1
+// @description  케이브덕(caveduck.io)에서 라디오존데 수치를 팝업 또는 채팅창 인라인으로 표시
 // @match        https://caveduck.io/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
@@ -90,21 +89,34 @@
     /* ── 팝업 베이스 ── */
     #igx-live-popup {
       position: fixed;
-      width: 230px;
+      width: 256px;
       background: var(--igx-bg);
       border: 1px solid var(--igx-border);
       border-radius: 10px;
       box-shadow: 0 8px 28px rgba(0,0,0,.38), 0 2px 8px rgba(0,0,0,.22);
       z-index: 999999;
-      overflow: hidden;
+      /* overflow: visible — 내용이 많아도 잘리지 않도록 */
+      overflow: visible;
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", Arial, sans-serif;
-      font-size: 13px;
+      font-size: 14px;
       user-select: none;
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
       cursor: grab;
       color: var(--igx-text-title);
       transition: background 0.25s, border-color 0.25s, color 0.25s, box-shadow 0.25s;
+    }
+    /* 팝업 내부 스크롤 래퍼 — 내용이 길어지면 세로 스크롤 */
+    #igx-live-inner {
+      border-radius: 10px;
+      overflow: hidden;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.15) transparent;
+    }
+    #igx-live-popup.igx-light #igx-live-inner {
+      scrollbar-color: rgba(0,0,0,.15) transparent;
     }
     #igx-live-popup:active { cursor: grabbing; }
     #igx-live-popup * { box-sizing: border-box; }
@@ -129,7 +141,7 @@
       overflow: hidden;
     }
     #igx-live-title {
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 600;
       letter-spacing: -0.2px;
       white-space: nowrap;
@@ -191,7 +203,7 @@
       width: 100%;
     }
     .igx-name {
-      font-size: 11.5px;
+      font-size: 13px;
       color: var(--igx-text-name);
       font-weight: 600;
       white-space: nowrap;
@@ -202,7 +214,7 @@
       letter-spacing: -0.2px;
     }
     .igx-state {
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 700;
       white-space: nowrap;
       flex: 0 0 auto;
@@ -221,7 +233,7 @@
     }
     .igx-metric {
       margin-top: 3px;
-      font-size: 10.5px;
+      font-size: 12px;
       color: var(--igx-text-metric);
       line-height: 1.4;
       letter-spacing: -0.15px;
@@ -236,7 +248,7 @@
       background: var(--igx-bg-settings);
     }
     .igx-set-hint {
-      font-size: 10.5px;
+      font-size: 12px;
       color: var(--igx-text-unknown);
       margin-bottom: 8px;
       text-align: center;
@@ -247,7 +259,7 @@
       justify-content: space-between;
       padding: 6px 2px;
       border-bottom: 1px solid var(--igx-border-row);
-      font-size: 11.5px;
+      font-size: 13px;
       color: var(--igx-text-name);
       letter-spacing: -0.2px;
     }
@@ -298,7 +310,7 @@
       margin-top: 6px;
       padding-top: 5px;
       border-top: 1px solid var(--igx-border-row);
-      font-size: 10px;
+      font-size: 11px;
       color: var(--igx-text-foot);
       display: flex;
       justify-content: space-between;
@@ -432,7 +444,7 @@
       border-radius: 999px;
       border: 1px solid var(--igx-btn-border);
       background: var(--igx-bg-bitem);
-      font-size: 11px;
+      font-size: 12px;
     }
     .bname  { opacity: .9; font-weight: 700; color: var(--igx-text-title); }
     .bscore { font-weight: 900; }
@@ -493,7 +505,7 @@
       #igx-live-popup.bar .bname,
       #igx-live-popup.bar .bscore,
       #igx-live-popup.bar .blat {
-        font-size: 11px;
+        font-size: 12px;
         letter-spacing: -0.3px;
       }
       #igx-live-popup.bar .bdot {
@@ -655,7 +667,11 @@
   foot.innerHTML = `<span class="ts">—</span><a href="https://rs.igx.kr/" target="_blank" rel="noreferrer">rs.igx.kr</a>`;
   body.appendChild(foot);
 
-  popup.append(head, body, settingsArea);
+  // 내용 래퍼 — overflow: hidden + 스크롤을 popup이 아닌 inner에서 처리
+  const inner = document.createElement("div");
+  inner.id = "igx-live-inner";
+  inner.append(head, body, settingsArea);
+  popup.append(inner);
 
   /* ── 헬퍼 ── */
   function setFooter(text) {
