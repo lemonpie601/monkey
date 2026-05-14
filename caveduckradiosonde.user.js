@@ -117,7 +117,7 @@
       flex: 1;
       overflow: hidden;
     }
-    #igx-live-title { font-size: var(--text-base); white-space: nowrap; }
+    #igx-live-title { font-size: 12px; white-space: nowrap; }
     #igx-live-actions {
       display: flex;
       gap: 4px;
@@ -136,7 +136,7 @@
       display: flex;
       justify-content: center;
       align-items: center;
-      font-size: var(--text-base);
+      font-size: 13px;
       line-height: 0;
     }
     .igx-btn:hover { background: var(--btn-bg-hover); }
@@ -152,7 +152,7 @@
       width: 100%;
     }
     .igx-name {
-      font-size: var(--text-sm);
+      font-size: 11px;
       color: var(--text-name);
       font-weight: 600;
       white-space: nowrap;
@@ -163,7 +163,7 @@
       letter-spacing: -0.2px;
     }
     .igx-state {
-      font-size: var(--text-xs);
+      font-size: 10px;
       opacity: .95;
       white-space: nowrap;
       font-weight: 700;
@@ -181,7 +181,7 @@
     }
     .igx-metric {
       margin-top: 3px;
-      font-size: var(--text-xs);
+      font-size: 10px;
       color: var(--text-metric);
       line-height: 1.35;
       letter-spacing: -0.2px;
@@ -200,7 +200,7 @@
       justify-content: space-between;
       padding: 5px 0;
       border-bottom: 1px solid var(--bg-set-row);
-      font-size: var(--text-sm);
+      font-size: 11px;
       color: var(--text-name);
       letter-spacing: -0.2px;
     }
@@ -245,7 +245,7 @@
 
     #igx-live-foot {
       margin-top: 6px;
-      font-size: var(--text-xs);
+      font-size: 10px;
       color: var(--text-foot);
       display: flex;
       justify-content: space-between;
@@ -359,7 +359,7 @@
       flex: 1;
       white-space: nowrap;
       color: var(--text-unknown);
-      font-size: var(--text-sm);
+      font-size: 11px;
       overflow-x: auto;
       scrollbar-width: none;
       -ms-overflow-style: none;
