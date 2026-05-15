@@ -632,26 +632,54 @@
     ]);
 
     // ─────────────────────────────────────────────
-    //  한국어 형태소 분리 (간이)
+    //  한국어 어절 → 어근 추출 (접미 조사/어미 제거)
     // ─────────────────────────────────────────────
+
+    // 제거할 접미 패턴 (긴 것 우선 — 앞에서부터 매칭)
+    const SUFFIXES = [
+        // 어미 (긴 것 먼저)
+        '하겠습니다','하겠어요','했습니다','합니다','해요','했어','하는데','하면서','하면','하니까','하니','하고','해서','해도','하자','하지','하네','하냐','하든',
+        '이겠습니다','이겠어요','였습니다','입니다','이에요','이었어','인데','이면서','이면','이니까','이니','이고','이어서','이어도',
+        '았습니다','었습니다','았어요','었어요','았어','었어','겠어','겠지','겠냐',
+        '는데','는지','는가','는건','는게','는걸','는거','느냐','니까',
+        '다고','다는','다면','다며','다가',
+        '에서','한테','에게','이랑',
+        '이라고','이라는','이라며','이라면','라고','라는','라며','라면',
+        '으로서','으로써','으로','로서','로써',
+        '까지도','까지','부터','마저','조차','이나마','나마',
+        '이었다','이었는','였다','였는',
+        '스럽','스러운','스러워','스럽게',
+        // 조사 (2자)
+        '이다','이야','이여','에도','에만','에는','에를',
+        // 조사 (1자) — 마지막에
+        '가','이','을','를','은','는','의','와','과','도','만','야','아','여','서','로','랑',
+    ];
+
+    function stemWord(word) {
+        if (/[a-zA-Z0-9]/.test(word)) return word; // 영숫자 혼합이면 그대로
+        for (const sfx of SUFFIXES) {
+            if (word.endsWith(sfx) && word.length - sfx.length >= 2) {
+                return word.slice(0, word.length - sfx.length);
+            }
+        }
+        return word;
+    }
+
     function tokenize(text) {
-        // 한글(완성형+자음+모음), 영숫자 보존 / 나머지 공백 처리
-        // ㄱ-ㅎ(U+3131-U+314E): 초성 조합 단어 (ㅂㄴㅇ, ㅈㄴ 등) 수집 가능하도록 포함
         const cleaned = text
             .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣa-zA-Z0-9\s]/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
 
-        return cleaned.split(' ').filter(w => {
-            if (!w) return false;
-            // 순수 자음 조합(ㅂㄴㅇ 등)은 2글자 이상이면 허용
-            const isConsonantOnly = /^[ㄱ-ㅎ]+$/.test(w);
-            if (isConsonantOnly && w.length < 2) return false;
-            // 일반 단어: 1글자 제외
-            if (!isConsonantOnly && w.length < 2) return false;
-            if (/^\d+$/.test(w)) return false; // 숫자만 제외
-            if (DEFAULT_STOPWORDS.has(w)) return false;
-            return true;
+        return cleaned.split(' ').flatMap(w => {
+            if (!w) return [];
+            const stem = stemWord(w);
+            const isConsonantOnly = /^[ㄱ-ㅎ]+$/.test(stem);
+            if (isConsonantOnly && stem.length < 2) return [];
+            if (!isConsonantOnly && stem.length < 2) return [];
+            if (/^\d+$/.test(stem)) return [];
+            if (DEFAULT_STOPWORDS.has(stem)) return [];
+            return [stem];
         });
     }
 
@@ -1717,4 +1745,5 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
 })();
+
 
