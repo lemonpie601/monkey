@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.1.5
+// @version      5.1.7
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
+// @match        https://m.dcinside.com/*
+// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -123,18 +125,13 @@
         .dc-ctrl-row {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             flex-wrap: wrap;
         }
         .dc-ctrl-group {
             display: flex;
             align-items: center;
             gap: 6px;
-        }
-        .dc-ctrl-sep {
-            color: #3a3a5a;
-            font-size: 12px;
-            font-weight: 600;
         }
         #dc-tracker-controls label {
             color: #6b6b9a;
@@ -144,19 +141,46 @@
             letter-spacing: 0.5px;
             white-space: nowrap;
         }
-        .dc-range-input {
-            width: 44px;
-            padding: 4px 6px;
-            border-radius: 6px;
-            border: 1px solid rgba(255,255,255,0.08);
+
+        /* ── 날짜 버튼 ── */
+        .dc-day-btn {
+            padding: 5px 12px;
+            border-radius: 20px;
+            border: 1.5px solid rgba(255,255,255,0.08);
             background: #1e1e30;
-            color: #e2e4f0;
+            color: #6b6b9a;
             font-size: 12px;
-            text-align: center;
-            outline: none;
-            transition: border-color 0.15s;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
         }
-        .dc-range-input:focus { border-color: #6366f1; }
+        .dc-day-btn:hover { border-color: #6366f1; color: #a5b4fc; }
+        .dc-day-btn.active {
+            background: rgba(99,102,241,0.2);
+            border-color: #6366f1;
+            color: #a78bfa;
+        }
+
+        /* ── 시간대 버튼 ── */
+        .dc-time-btn {
+            padding: 5px 14px;
+            border-radius: 20px;
+            border: 1.5px solid rgba(255,255,255,0.08);
+            background: #1e1e30;
+            color: #6b6b9a;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .dc-time-btn:hover { border-color: #6366f1; color: #a5b4fc; }
+        .dc-time-btn.active {
+            background: rgba(99,102,241,0.2);
+            border-color: #6366f1;
+            color: #a78bfa;
+        }
         #dc-blacklist-input {
             flex: 1;
             min-width: 140px;
@@ -503,6 +527,95 @@
             text-align: center;
         }
 
+        /* ── 모바일 탭 UI ── */
+        #dc-mob-tabs {
+            display: none;
+        }
+        @media (max-width: 640px) {
+            #dc-tracker-overlay {
+                align-items: flex-end;
+            }
+            #dc-tracker-panel {
+                width: 100vw;
+                max-width: 100vw;
+                height: 92vh;
+                max-height: 92vh;
+                border-radius: 16px 16px 0 0;
+            }
+            /* 컨트롤 바 한 줄로 압축 */
+            #dc-tracker-controls {
+                padding: 8px 12px;
+                gap: 6px;
+            }
+            .dc-ctrl-row { gap: 6px; }
+            #dc-tracker-controls label { font-size: 10px; }
+            .dc-day-btn, .dc-time-btn { font-size: 11px; padding: 4px 10px; }
+            #dc-blacklist-input { min-width: 80px; font-size: 11px; padding: 3px 6px; }
+            #dc-collect-btn { padding: 4px 10px; font-size: 11px; }
+            .dc-toggle-label { font-size: 10px; }
+
+            /* 탭 버튼 표시 */
+            #dc-mob-tabs {
+                display: flex;
+                border-bottom: 1px solid rgba(255,255,255,0.06);
+                background: #0f0f1a;
+                flex-shrink: 0;
+            }
+            .dc-mob-tab {
+                flex: 1;
+                padding: 9px 0;
+                text-align: center;
+                font-size: 12px;
+                font-weight: 600;
+                color: #3a3a5a;
+                cursor: pointer;
+                border-bottom: 2px solid transparent;
+                transition: color 0.15s, border-color 0.15s;
+                letter-spacing: 0.2px;
+            }
+            .dc-mob-tab.active {
+                color: #a78bfa;
+                border-bottom-color: #a78bfa;
+            }
+
+            /* 바디를 탭 전환으로 */
+            #dc-tracker-body {
+                flex-direction: column;
+                position: relative;
+            }
+            #dc-word-list-wrap {
+                width: 100%;
+                border-right: none;
+                flex: 1;
+                min-height: 0;
+            }
+            #dc-detail-wrap {
+                width: 100%;
+                position: absolute;
+                inset: 0;
+                background: #13131a;
+            }
+            /* 탭 숨김/표시 */
+            #dc-word-list-wrap.dc-tab-hidden { display: none; }
+            #dc-detail-wrap.dc-tab-hidden { display: none; }
+
+            /* 차트 크기 줄임 */
+            #dc-chart-area { padding: 10px 14px 8px; }
+            #dc-bar-chart { height: 70px; }
+            /* 많은 시간대면 라벨 생략 */
+            .dc-bar-label { font-size: 7px; }
+
+            /* 게시글 패딩 줄임 */
+            #dc-post-area { padding: 6px 12px 12px; }
+            .dc-post-item { padding: 7px 10px; }
+            .dc-post-title { font-size: 13px; }
+
+            /* 단어 목록 아이템 크게 */
+            .dc-word-item { padding: 10px 14px; }
+            .dc-word-name { font-size: 14px; }
+            .dc-word-count { font-size: 11px; padding: 2px 8px; }
+        }
+
         /* ── 닫기 버튼 ── */
         #dc-close-btn {
             width: 28px;
@@ -559,9 +672,23 @@
     }
 
     // ─────────────────────────────────────────────
+    //  PC / 모바일 판별
+    // ─────────────────────────────────────────────
+    const isMobile = location.hostname === 'm.dcinside.com';
+
+    // ─────────────────────────────────────────────
     //  현재 갤러리 ID/타입 감지
     // ─────────────────────────────────────────────
     function getGalleryInfo() {
+        if (isMobile) {
+            // m.dcinside.com/{type}/{id}  예) /mini/coxldwpwkrwk
+            const parts = location.pathname.split('/').filter(Boolean);
+            // parts[0] = 'mini'|'mgallery'|'board' 등, parts[1] = id
+            if (parts.length < 2) return null;
+            const type = parts[0] === 'board' ? 'board' : parts[0]; // mini, mgallery, board
+            const id   = parts[1];
+            return { id, type, mobile: true };
+        }
         const url = new URL(location.href);
         const id = url.searchParams.get('id');
         if (!id) return null;
@@ -570,10 +697,14 @@
         if (location.pathname.includes('/mgallery/')) type = 'mgallery';
         else if (location.pathname.includes('/mini/')) type = 'mini';
 
-        return { id, type };
+        return { id, type, mobile: false };
     }
 
     function buildListUrl(gallInfo, page) {
+        if (gallInfo.mobile) {
+            // m.dcinside.com/{type}/{id}?page=N
+            return `https://m.dcinside.com/${gallInfo.type}/${gallInfo.id}?page=${page}`;
+        }
         const base = `https://gall.dcinside.com`;
         if (gallInfo.type === 'mgallery') {
             return `${base}/mgallery/board/lists/?id=${gallInfo.id}&page=${page}`;
@@ -596,7 +727,56 @@
         return doc;
     }
 
+    function parseDate(dateStr) {
+        const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+        const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
+        const m3 = dateStr.match(/^(\d{2}):(\d{2})$/); // 오늘 글 시간만
+        if (m1) return new Date(`${m1[1]}-${m1[2]}-${m1[3]}T${m1[4]}:${m1[5]}:00`);
+        if (m2) return new Date(`20${m2[1]}-${m2[2]}-${m2[3]}T${m2[4]}:${m2[5]}:00`);
+        if (m3) {
+            const now = new Date();
+            return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m3[1]), parseInt(m3[2]));
+        }
+        return null;
+    }
+
     function parsePosts(doc) {
+        // ── 모바일 파서 ──
+        if (isMobile) {
+            const posts = [];
+            const items = doc.querySelectorAll('li');
+            items.forEach(li => {
+                const a = li.querySelector('a.lt');
+                if (!a) return;
+                const titleEl = li.querySelector('.subjectin');
+                if (!titleEl) return;
+                const title = titleEl.textContent.trim();
+                const href  = a.getAttribute('href') || '';
+
+                // 시간: ginfo 안 li 중 HH:MM 패턴
+                const allLi = [...li.querySelectorAll('li')];
+                const timeLi = allLi.find(l => /^\d{2}:\d{2}$/.test(l.textContent.trim()));
+                // 날짜: MM.DD 패턴 (오래된 글)
+                const dateLi = allLi.find(l => /^\d{2}\.\d{2}$/.test(l.textContent.trim()));
+
+                let dateStr = '';
+                if (timeLi) dateStr = timeLi.textContent.trim();
+                else if (dateLi) {
+                    // MM.DD → 올해 날짜로
+                    const [mm, dd] = dateLi.textContent.trim().split('.');
+                    const now = new Date();
+                    dateStr = `${now.getFullYear()}.${mm}.${dd} 00:00`;
+                }
+
+                const dateObj = parseDate(dateStr);
+                if (title && dateObj) {
+                    posts.push({ title, date: dateObj, href, dateStr });
+                }
+            });
+            return posts;
+        }
+
+        // ── PC 파서 ──
         const rows = doc.querySelectorAll('.gall_list tbody tr.ub-content');
         const posts = [];
         rows.forEach(row => {
@@ -604,23 +784,10 @@
             const dateEl  = row.querySelector('.gall_date');
             if (!titleEl || !dateEl) return;
 
-            const title    = titleEl.textContent.trim();
-            const dateStr  = dateEl.getAttribute('title') || dateEl.textContent.trim();
-            const href     = titleEl.getAttribute('href') || '';
-
-            // 날짜 파싱: "2026-05-15 12:28:53" 또는 "26.05.15" 등
-            let dateObj = null;
-            const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-            const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
-            const m3 = dateStr.match(/(\d{2}):(\d{2})/); // 오늘 글이면 시간만
-            if (m1) {
-                dateObj = new Date(`${m1[1]}-${m1[2]}-${m1[3]}T${m1[4]}:${m1[5]}:00`);
-            } else if (m2) {
-                dateObj = new Date(`20${m2[1]}-${m2[2]}-${m2[3]}T${m2[4]}:${m2[5]}:00`);
-            } else if (m3) {
-                const now = new Date();
-                dateObj = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m3[1]), parseInt(m3[2]));
-            }
+            const title   = titleEl.textContent.trim();
+            const dateStr = dateEl.getAttribute('title') || dateEl.textContent.trim();
+            const href    = titleEl.getAttribute('href') || '';
+            const dateObj = parseDate(dateStr);
 
             if (title && dateObj) {
                 posts.push({ title, date: dateObj, href, dateStr });
@@ -637,10 +804,10 @@
         try {
             const url = post.href.startsWith('http')
                 ? post.href
-                : 'https://gall.dcinside.com' + post.href;
+                : (isMobile ? 'https://m.dcinside.com' : 'https://gall.dcinside.com') + post.href;
             const doc = await fetchPage(url);
-            // 본문 텍스트 추출 (.write_div 또는 .thum_txt)
-            const bodyEl = doc.querySelector('.write_div') || doc.querySelector('.thum_txt') || doc.querySelector('.gall_content');
+            // PC: .write_div / 모바일: .write-content, .thum_txt
+            const bodyEl = doc.querySelector('.write_div') || doc.querySelector('.write-content') || doc.querySelector('.thum_txt') || doc.querySelector('.gall_content');
             post.body = bodyEl ? bodyEl.textContent.trim() : '';
         } catch (e) {
             post.body = '';
@@ -696,8 +863,8 @@
         selectedWord: null,
         selectedHour: null,
         allPosts: [],
-        hourFrom: 0,
-        hourTo: 23,
+        dtFrom: null,
+        dtTo: null,
     };
 
     function openPanel() {
@@ -715,19 +882,20 @@
                 </div>
                 <div id="dc-tracker-controls">
                     <div class="dc-ctrl-row">
-                        <div class="dc-ctrl-group">
-                            <label>페이지</label>
-                            <input class="dc-range-input" id="dc-page-from" type="number" min="1" max="999" value="1" title="시작 페이지" />
-                            <span class="dc-ctrl-sep">~</span>
-                            <input class="dc-range-input" id="dc-page-to" type="number" min="1" max="999" value="5" title="끝 페이지" />
-                        </div>
-                        <div class="dc-ctrl-group">
-                            <label>시간</label>
-                            <input class="dc-range-input" id="dc-hour-from" type="number" min="0" max="23" value="0" title="시작 시각 (0~23)" />
-                            <span class="dc-ctrl-sep">~</span>
-                            <input class="dc-range-input" id="dc-hour-to" type="number" min="0" max="23" value="23" title="끝 시각 (0~23)" />
-                            <span style="font-size:10px;color:#3a3a5a;">시</span>
-                        </div>
+                        <label>날짜</label>
+                        <button class="dc-day-btn active" data-day="today">오늘</button>
+                        <button class="dc-day-btn" data-day="yesterday">어제</button>
+                        <button class="dc-day-btn" data-day="2daysago">그저께</button>
+                    </div>
+                    <div class="dc-ctrl-row">
+                        <label>시간대</label>
+                        <button class="dc-time-btn active" data-time="all">전체</button>
+                        <button class="dc-time-btn" data-time="dawn">새벽 21~5시</button>
+                        <button class="dc-time-btn" data-time="morning">오전 6~12시</button>
+                        <button class="dc-time-btn" data-time="afternoon">오후 13~18시</button>
+                        <button class="dc-time-btn" data-time="night">저녁 19~20시</button>
+                    </div>
+                    <div class="dc-ctrl-row">
                         <div class="dc-ctrl-group" style="flex:1">
                             <label>제외</label>
                             <input id="dc-blacklist-input" type="text" placeholder="쉼표로 구분  예) 긔, 띠니" />
@@ -742,6 +910,10 @@
                 </div>
                 <div id="dc-progress-bar-wrap"><div id="dc-progress-bar"></div></div>
                 <div id="dc-tracker-status">수집 버튼을 눌러 분석을 시작하세요.</div>
+                <div id="dc-mob-tabs">
+                    <div class="dc-mob-tab active" data-tab="words">단어 목록</div>
+                    <div class="dc-mob-tab" data-tab="detail">차트 &amp; 게시글</div>
+                </div>
                 <div id="dc-tracker-body">
                     <div id="dc-word-list-wrap">
                         <div id="dc-word-list-header">Top 50 단어</div>
@@ -771,6 +943,20 @@
         const savedBL = GM_getValue('blacklist', '');
         document.getElementById('dc-blacklist-input').value = savedBL;
 
+        // 날짜/시간대 버튼 토글
+        document.querySelectorAll('.dc-day-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.dc-day-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+        document.querySelectorAll('.dc-time-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.dc-time-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+
         // 닫기
         document.getElementById('dc-close-btn').addEventListener('click', closePanel);
         overlay.addEventListener('click', e => { if (e.target === overlay) closePanel(); });
@@ -781,6 +967,11 @@
         // 단어 검색창
         document.getElementById('dc-word-search').addEventListener('input', e => {
             filterWordList(e.target.value.trim());
+        });
+
+        // 모바일 탭 전환
+        document.querySelectorAll('.dc-mob-tab').forEach(tab => {
+            tab.addEventListener('click', () => switchMobTab(tab.dataset.tab));
         });
     }
 
@@ -800,17 +991,57 @@
         if (el) el.style.width = pct + '%';
     }
 
+    // 날짜 키 → 해당 날 Date 객체 (자정 기준)
+    function getBaseDay(dayKey) {
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        if (dayKey === 'today')     return today;
+        if (dayKey === 'yesterday') return new Date(today.getTime() - 86400000);
+        return new Date(today.getTime() - 86400000 * 2); // 그저께
+    }
+
+    // 시간대 키 + 기준일 → { dtFrom, dtTo }
+    // 새벽(dawn)은 전날 21시 ~ 당일 5시 (날짜 넘김)
+    function getTimeRange(timeKey, base) {
+        const Y = base.getFullYear(), M = base.getMonth(), D = base.getDate();
+        if (timeKey === 'dawn') {
+            const prevDay = new Date(base.getTime() - 86400000);
+            return {
+                dtFrom: new Date(prevDay.getFullYear(), prevDay.getMonth(), prevDay.getDate(), 21, 0, 0),
+                dtTo:   new Date(Y, M, D, 5, 59, 59),
+                label:  '새벽',
+            };
+        }
+        const ranges = {
+            all:       { h1: 0,  h2: 23, label: '전체' },
+            morning:   { h1: 6,  h2: 12, label: '오전' },
+            afternoon: { h1: 13, h2: 18, label: '오후' },
+            night:     { h1: 19, h2: 20, label: '저녁' },
+        };
+        const r = ranges[timeKey] || ranges.all;
+        return {
+            dtFrom: new Date(Y, M, D, r.h1, 0, 0),
+            dtTo:   new Date(Y, M, D, r.h2, 59, 59),
+            label:  r.label,
+        };
+    }
+
     async function startCollect() {
         const btn = document.getElementById('dc-collect-btn');
         btn.disabled = true;
 
-        const pageFrom  = Math.max(1, parseInt(document.getElementById('dc-page-from').value) || 1);
-        const pageTo    = Math.max(pageFrom, parseInt(document.getElementById('dc-page-to').value) || 5);
-        const hourFrom  = Math.min(23, Math.max(0, parseInt(document.getElementById('dc-hour-from').value) ?? 0));
-        const hourTo    = Math.min(23, Math.max(hourFrom, parseInt(document.getElementById('dc-hour-to').value) ?? 23));
+        // 선택된 날짜/시간대 버튼 읽기
+        const activeDayBtn  = document.querySelector('.dc-day-btn.active');
+        const activeTimeBtn = document.querySelector('.dc-time-btn.active');
+        const dayKey  = activeDayBtn  ? activeDayBtn.dataset.day   : 'today';
+        const timeKey = activeTimeBtn ? activeTimeBtn.dataset.time : 'all';
+
+        const base = getBaseDay(dayKey);
+        const { dtFrom, dtTo, label: timeLabel } = getTimeRange(timeKey, base);
+
         const blStr     = document.getElementById('dc-blacklist-input').value;
         const includeBody = document.getElementById('dc-include-body').checked;
-        const totalPages  = pageTo - pageFrom + 1;
+        const MAX_PAGES = 100;
 
         GM_setValue('blacklist', blStr);
         const extraStopwords = new Set(blStr.split(',').map(s => s.trim()).filter(Boolean));
@@ -826,67 +1057,78 @@
         state.words = [];
         state.selectedWord = null;
         state.selectedHour = null;
-        state.hourFrom = hourFrom;
-        state.hourTo   = hourTo;
+        state.dtFrom = dtFrom;
+        state.dtTo   = dtTo;
 
         setProgress(0);
-        setStatus(`${pageFrom} ~ ${pageTo} 페이지 수집 중...`);
 
-        // 1단계: 목록 페이지 수집
-        let collected = 0;
-        for (let p = pageFrom; p <= pageTo; p++) {
+        const dayLabel  = activeDayBtn ? activeDayBtn.textContent : '오늘';
+        setStatus(`${dayLabel} ${timeLabel} 수집 중...`);
+
+        // 1단계: 페이지를 1부터 순서대로 수집, dtFrom 이전 글이 나오면 중단
+        let page = 1;
+        let stopped = false;
+
+        while (!stopped && page <= MAX_PAGES) {
             try {
-                const url = buildListUrl(gallInfo, p);
+                const url = buildListUrl(gallInfo, page);
                 const doc = await fetchPage(url);
                 const posts = parsePosts(doc);
-                state.allPosts.push(...posts);
-                collected++;
-                setProgress(Math.round((collected / totalPages) * (includeBody ? 40 : 80)));
-                setStatus(`${p} / ${pageTo} 페이지 수집 중... (누적 ${state.allPosts.length}개)`);
-                await sleep(200);
+
+                if (posts.length === 0) break;
+
+                const oldest = posts.reduce((m, p) => p.date < m ? p.date : m, posts[0].date);
+
+                const inRange = posts.filter(p => p.date >= dtFrom && p.date <= dtTo);
+                state.allPosts.push(...inRange);
+
+                const progressEst = Math.min(75, Math.round((page / (page + 3)) * 75));
+                setProgress(progressEst);
+                setStatus(`${page} 페이지 수집 중... (${state.allPosts.length}개)`);
+
+                if (oldest < dtFrom) { stopped = true; break; }
+
+                page++;
+                await sleep(250);
             } catch (e) {
-                setStatus(`⚠️ ${p}페이지 수집 실패: ${e.message}`);
+                setStatus(`⚠️ ${page}페이지 수집 실패: ${e.message}`);
+                page++;
+                await sleep(300);
             }
         }
 
-        // 시간 필터 적용
-        const hourFiltered = (hourFrom === 0 && hourTo === 23)
-            ? state.allPosts
-            : state.allPosts.filter(p => {
-                const h = p.date.getHours();
-                return h >= hourFrom && h <= hourTo;
-            });
+        if (state.allPosts.length === 0) {
+            setStatus(`"${dayLabel} ${timeLabel}"에 게시글이 없습니다.`);
+            setProgress(0);
+            btn.disabled = false;
+            return;
+        }
 
-        // 2단계: 본문 수집 (선택 시, 시간 필터 적용 후 대상만)
-        const targets = includeBody ? hourFiltered : [];
-        if (targets.length > 0) {
-            setStatus(`본문 수집 중... (0 / ${targets.length})`);
+        // 2단계: 본문 수집 (선택 시)
+        if (includeBody) {
+            setStatus(`본문 수집 중... (0 / ${state.allPosts.length})`);
             const CHUNK = 3;
-            for (let i = 0; i < targets.length; i += CHUNK) {
-                const chunk = targets.slice(i, i + CHUNK);
+            for (let i = 0; i < state.allPosts.length; i += CHUNK) {
+                const chunk = state.allPosts.slice(i, i + CHUNK);
                 await Promise.all(chunk.map(post => fetchPostBody(post)));
-                const done = Math.min(i + CHUNK, targets.length);
-                setProgress(40 + Math.round((done / targets.length) * 40));
-                setStatus(`본문 수집 중... (${done} / ${targets.length})`);
+                const done = Math.min(i + CHUNK, state.allPosts.length);
+                setProgress(75 + Math.round((done / state.allPosts.length) * 20));
+                setStatus(`본문 수집 중... (${done} / ${state.allPosts.length})`);
                 await sleep(400);
             }
         }
 
         setStatus('분석 중...');
-        state.words = analyzeWords(hourFiltered, extraStopwords);
+        state.words = analyzeWords(state.allPosts, extraStopwords);
         setProgress(100);
 
-        const mode     = includeBody ? '제목+본문' : '제목';
-        const timeNote = (hourFrom === 0 && hourTo === 23) ? '' : ` · ${hourFrom}~${hourTo}시`;
-        setStatus(`✅ 완료! ${hourFiltered.length}개 게시글 / ${state.words.length}개 단어 (${mode}${timeNote})`);
+        const mode = includeBody ? '제목+본문' : '제목';
+        setStatus(`✅ ${dayLabel} ${timeLabel} · ${state.allPosts.length}개 게시글 · ${state.words.length}개 단어 (${mode})`);
 
         renderWordList();
         btn.disabled = false;
 
-        // 첫 단어 자동 선택
-        if (state.words.length > 0) {
-            selectWord(state.words[0][0]);
-        }
+        if (state.words.length > 0) selectWord(state.words[0][0]);
     }
 
     function renderWordList() {
@@ -905,6 +1147,17 @@
             item.addEventListener('click', () => selectWord(word));
             container.appendChild(item);
         });
+    }
+
+    function switchMobTab(tab) {
+        const wordWrap   = document.getElementById('dc-word-list-wrap');
+        const detailWrap = document.getElementById('dc-detail-wrap');
+        if (!wordWrap || !detailWrap) return;
+        document.querySelectorAll('.dc-mob-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.tab === tab);
+        });
+        wordWrap.classList.toggle('dc-tab-hidden', tab !== 'words');
+        detailWrap.classList.toggle('dc-tab-hidden', tab !== 'detail');
     }
 
     function filterWordList(query) {
@@ -943,6 +1196,8 @@
 
         renderChart(word, posts);
         renderPosts(word, posts);
+        // 모바일이면 차트+게시글 탭으로 자동 전환
+        if (window.innerWidth <= 640) switchMobTab('detail');
     }
 
     function renderChart(word, posts) {
@@ -953,8 +1208,8 @@
         if (wordLabel) wordLabel.textContent = `"${word}" 시간대별 분포`;
 
         const hourly = getHourlyStats(posts);
-        // 시간 필터 범위만 표시
-        const visibleHourly = hourly.filter(h => h.hour >= state.hourFrom && h.hour <= state.hourTo);
+        // 해당 단어 게시글이 분포한 시간대만 표시 (0건도 포함해서 전체 24시간 보여줌)
+        const visibleHourly = hourly;
         const maxCount = Math.max(...visibleHourly.map(h => h.count), 1);
 
         chartArea.innerHTML = '';
@@ -1045,6 +1300,16 @@
     // ─────────────────────────────────────────────
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+    // datetime-local input용 포맷 (YYYY-MM-DDTHH:MM)
+    function toDatetimeLocal(d) {
+        const yyyy = d.getFullYear();
+        const mm   = String(d.getMonth() + 1).padStart(2, '0');
+        const dd   = String(d.getDate()).padStart(2, '0');
+        const hh   = String(d.getHours()).padStart(2, '0');
+        const min  = String(d.getMinutes()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    }
+
     function escHtml(str) {
         return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
@@ -1081,21 +1346,35 @@
         btn.title = '이 갤러리의 단어 빈도를 시간대별로 분석합니다';
         btn.addEventListener('click', openPanel);
 
-        // 1순위: 글쓰기 버튼 영역(.switch_btnbox) 맨 앞에 삽입
+        if (isMobile) {
+            // 모바일: 하단 글쓰기 버튼 영역 앞 or 목록 상단
+            const mWriteBtn = document.querySelector('.btn-write-wrap, .write-btn, a[href*="write"]');
+            const mListWrap = document.querySelector('.gall-detail-lst, .listwrap, .list-wrap, ul.wr-list');
+            if (mWriteBtn) {
+                mWriteBtn.insertAdjacentElement('beforebegin', btn);
+            } else if (mListWrap) {
+                mListWrap.insertAdjacentElement('beforebegin', btn);
+            } else {
+                document.body.prepend(btn);
+            }
+            return;
+        }
+
+        // PC 1순위: 글쓰기 버튼 영역(.switch_btnbox) 맨 앞에 삽입
         const switchBox = document.querySelector('.switch_btnbox');
         if (switchBox) {
             switchBox.insertBefore(btn, switchBox.firstChild);
             return;
         }
 
-        // 2순위: 글쓰기 링크 바로 앞
+        // PC 2순위: 글쓰기 링크 바로 앞
         const writeLink = document.querySelector('a.btn_write');
         if (writeLink) {
             writeLink.insertAdjacentElement('beforebegin', btn);
             return;
         }
 
-        // 3순위: 검색창 영역 뒤
+        // PC 3순위: 검색창 영역 뒤
         const searchWrap = document.querySelector('.top_search') || document.querySelector('.inner_search');
         if (searchWrap) {
             searchWrap.insertAdjacentElement('afterend', btn);
