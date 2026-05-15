@@ -900,7 +900,7 @@
                     <div class="dc-ctrl-row">
                         <label>시간대</label>
                         <button class="dc-time-btn active" data-time="all">전체</button>
-                        <button class="dc-time-btn" data-time="dawn">새벽 23~5시</button>
+                        <button class="dc-time-btn" data-time="dawn">새벽 21~5시</button>
                         <button class="dc-time-btn" data-time="morning">오전 6~12시</button>
                         <button class="dc-time-btn" data-time="afternoon">오후 13~18시</button>
                         <button class="dc-time-btn" data-time="night">저녁 19~20시</button>
@@ -1023,12 +1023,12 @@
 
         // 오늘 새벽: 어제 23시 ~ 오늘 5시
         const todayDawn = {
-            dtFrom: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 0, 0),
+            dtFrom: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 21, 0, 0),
             dtTo:   new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     5, 59, 59),
         };
         // 어제 새벽: 그저께 23시 ~ 어제 5시
         const yesterdayDawn = {
-            dtFrom: new Date(twoDaysAgo.getFullYear(), twoDaysAgo.getMonth(), twoDaysAgo.getDate(), 23, 0, 0),
+            dtFrom: new Date(twoDaysAgo.getFullYear(), twoDaysAgo.getMonth(), twoDaysAgo.getDate(), 21, 0, 0),
             dtTo:   new Date(yesterday.getFullYear(),  yesterday.getMonth(),  yesterday.getDate(),  5, 59, 59),
         };
 
@@ -1250,13 +1250,13 @@
     }
 
     // 시간대 키 + 기준일 → { dtFrom, dtTo }
-    // 새벽(dawn)은 전날 23시 ~ 당일 5시 (날짜 넘김)
+    // 새벽(dawn)은 전날 21시 ~ 당일 5시 (날짜 넘김)
     function getTimeRange(timeKey, base) {
         const Y = base.getFullYear(), M = base.getMonth(), D = base.getDate();
         if (timeKey === 'dawn') {
             const prevDay = new Date(base.getTime() - 86400000);
             return {
-                dtFrom: new Date(prevDay.getFullYear(), prevDay.getMonth(), prevDay.getDate(), 23, 0, 0),
+                dtFrom: new Date(prevDay.getFullYear(), prevDay.getMonth(), prevDay.getDate(), 21, 0, 0),
                 dtTo:   new Date(Y, M, D, 5, 59, 59),
                 label:  '새벽',
             };
