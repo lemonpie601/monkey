@@ -142,25 +142,23 @@
             white-space: nowrap;
         }
 
-        /* ── 날짜·시간대 버튼 공통 ── */
-        .dc-day-btn, .dc-time-btn {
-            padding: 5px 12px;
-            border-radius: 20px;
-            border: 1.5px solid rgba(255,255,255,0.08);
+        /* ── 공통 select ── */
+        .dc-select {
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.10);
             background: #1e1e30;
-            color: #6b6b9a;
+            color: #c4c6e0;
             font-size: 12px;
-            font-weight: 600;
+            outline: none;
             cursor: pointer;
-            transition: all 0.15s;
-            white-space: nowrap;
+            transition: border-color 0.15s;
         }
-        .dc-day-btn:hover, .dc-time-btn:hover { border-color: #6366f1; color: #a5b4fc; }
-        .dc-day-btn.active, .dc-time-btn.active {
-            background: rgba(99,102,241,0.2);
-            border-color: #6366f1;
-            color: #a78bfa;
-        }
+        .dc-select:focus, .dc-select:hover { border-color: #6366f1; }
+        .dc-select option { background: #1e1e30; }
+
+        /* 새벽 비교 토글 체크 시 레이블 색 강조 */
+        #dc-dawn-compare-chk:checked ~ .dc-toggle-label { color: #a78bfa; }
         #dc-blacklist-input {
             flex: 1;
             min-width: 140px;
@@ -529,7 +527,7 @@
             }
             .dc-ctrl-row { gap: 6px; }
             #dc-tracker-controls label { font-size: 10px; }
-            .dc-day-btn, .dc-time-btn { font-size: 11px; padding: 4px 10px; }
+            .dc-select { font-size: 11px; padding: 3px 6px; }
             #dc-blacklist-input { min-width: 80px; font-size: 11px; padding: 3px 6px; }
             #dc-collect-btn { padding: 4px 10px; font-size: 11px; }
             .dc-toggle-label { font-size: 10px; }
@@ -713,24 +711,28 @@
         return doc;
     }
 
-    function parseDate(dateStr) {
-        const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-        const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
-        const m3 = dateStr.match(/^(\d{2}):(\d{2})$/); // 오늘 글 시간만
+    // baseDate: HH:MM 만 있는 글을 어느 날 기준으로 파싱할지 (기본 오늘)
+    function parseDate(dateStr, baseDate) {
+        const ref = baseDate || new Date();
+        const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/); // YYYY-MM-DD HH:MM
+        const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/); // YY.MM.DD HH:MM
+        const m4 = dateStr.match(/^(\d{2})\.(\d{2})$/); // MM.DD (날짜만, 시간 없음)
+        const m3 = dateStr.match(/^(\d{2}):(\d{2})$/);  // HH:MM (당일 글)
         if (m1) return new Date(`${m1[1]}-${m1[2]}-${m1[3]}T${m1[4]}:${m1[5]}:00`);
         if (m2) return new Date(`20${m2[1]}-${m2[2]}-${m2[3]}T${m2[4]}:${m2[5]}:00`);
-        if (m3) {
-            const now = new Date();
-            return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m3[1]), parseInt(m3[2]));
-        }
+        if (m4) return new Date(ref.getFullYear(), parseInt(m4[1]) - 1, parseInt(m4[2]), 0, 0, 0);
+        if (m3) return new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), parseInt(m3[1]), parseInt(m3[2]));
         return null;
     }
 
-    function parsePosts(doc) {
+    // baseDate: HH:MM만 있는 글을 어느 날 기준으로 파싱할지.
+    // 목록 페이지에서 날짜가 명시된 글(YY.MM.DD)이 나오면 그 날짜를 이후 HH:MM 글의 기준으로 씀.
+    function parsePosts(doc, baseDate) {
         // ── 모바일 파서 ──
         if (isMobile) {
             const posts = [];
             const items = doc.querySelectorAll('li');
+            let lastKnownDate = baseDate || null;
             items.forEach(li => {
                 const a = li.querySelector('a.lt');
                 if (!a) return;
@@ -739,22 +741,22 @@
                 const title = titleEl.textContent.trim();
                 const href  = a.getAttribute('href') || '';
 
-                // 시간: ginfo 안 li 중 HH:MM 패턴
                 const allLi = [...li.querySelectorAll('li')];
                 const timeLi = allLi.find(l => /^\d{2}:\d{2}$/.test(l.textContent.trim()));
-                // 날짜: MM.DD 패턴 (오래된 글)
                 const dateLi = allLi.find(l => /^\d{2}\.\d{2}$/.test(l.textContent.trim()));
 
                 let dateStr = '';
-                if (timeLi) dateStr = timeLi.textContent.trim();
-                else if (dateLi) {
-                    // MM.DD → 올해 날짜로
+                if (timeLi) {
+                    dateStr = timeLi.textContent.trim();
+                } else if (dateLi) {
                     const [mm, dd] = dateLi.textContent.trim().split('.');
-                    const now = new Date();
-                    dateStr = `${now.getFullYear()}.${mm}.${dd} 00:00`;
+                    const refYear = (baseDate || new Date()).getFullYear();
+                    dateStr = `${refYear}.${mm}.${dd} 00:00`;
+                    // 날짜 명시된 글이 나오면 lastKnownDate 갱신
+                    lastKnownDate = new Date(refYear, parseInt(mm) - 1, parseInt(dd));
                 }
 
-                const dateObj = parseDate(dateStr);
+                const dateObj = parseDate(dateStr, lastKnownDate);
                 if (title && dateObj) {
                     posts.push({ title, date: dateObj, href, dateStr });
                 }
@@ -765,16 +767,28 @@
         // ── PC 파서 ──
         const rows = doc.querySelectorAll('.gall_list tbody tr.ub-content');
         const posts = [];
+        let lastKnownDate = baseDate || null;
         rows.forEach(row => {
             const titleEl = row.querySelector('.gall_tit a:not(.reply_num)');
             const dateEl  = row.querySelector('.gall_date');
             if (!titleEl || !dateEl) return;
 
             const title   = titleEl.textContent.trim();
+            // title 속성에 전체 날짜(YYYY-MM-DD HH:MM:SS)가 있으면 우선 사용
             const dateStr = dateEl.getAttribute('title') || dateEl.textContent.trim();
             const href    = titleEl.getAttribute('href') || '';
-            const dateObj = parseDate(dateStr);
 
+            // 날짜가 명시된 경우 lastKnownDate 갱신 (이후 HH:MM 글들의 기준이 됨)
+            const fullMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+            const shortMatch = dateStr.match(/^(\d{2})\.(\d{2})$/); // MM.DD
+            if (fullMatch) {
+                lastKnownDate = new Date(parseInt(fullMatch[1]), parseInt(fullMatch[2]) - 1, parseInt(fullMatch[3]));
+            } else if (shortMatch) {
+                const refYear = (baseDate || new Date()).getFullYear();
+                lastKnownDate = new Date(refYear, parseInt(shortMatch[1]) - 1, parseInt(shortMatch[2]));
+            }
+
+            const dateObj = parseDate(dateStr, lastKnownDate);
             if (title && dateObj) {
                 posts.push({ title, date: dateObj, href, dateStr });
             }
@@ -869,33 +883,46 @@
                 </div>
                 <div id="dc-tracker-controls">
                     <div class="dc-ctrl-row">
-                        <label>날짜</label>
-                        <button class="dc-day-btn active" data-day="today">오늘</button>
-                        <button class="dc-day-btn" data-day="yesterday">어제</button>
-                        <button class="dc-day-btn" data-day="2daysago">그저께</button>
-                        <button class="dc-day-btn" data-day="dawn-compare" id="dc-dawn-compare-btn" style="background:rgba(99,102,241,0.08);border-color:rgba(99,102,241,0.3);color:#a5b4fc;">🌙 새벽 비교</button>
-                    </div>
-                    <div class="dc-ctrl-row">
-                        <label>시간대</label>
-                        <button class="dc-time-btn active" data-time="all">전체</button>
-                        <button class="dc-time-btn" data-time="dawn">새벽 21~5시</button>
-                        <button class="dc-time-btn" data-time="morning">오전 6~12시</button>
-                        <button class="dc-time-btn" data-time="afternoon">오후 13~18시</button>
-                        <button class="dc-time-btn" data-time="night">저녁 19~20시</button>
-                    </div>
-                    <div class="dc-ctrl-row">
-                        <div class="dc-ctrl-group" style="flex:1">
-                            <label>제외</label>
-                            <input id="dc-blacklist-input" type="text" placeholder="쉼표로 구분  예) 긔, 띠니" />
+                        <div class="dc-ctrl-group">
+                            <label>날짜</label>
+                            <select id="dc-day-select" class="dc-select">
+                                <option value="today">오늘</option>
+                                <option value="yesterday">어제</option>
+                                <option value="2daysago">그저께</option>
+                            </select>
                         </div>
                         <div class="dc-ctrl-group">
+                            <label>시간대</label>
+                            <select id="dc-time-select" class="dc-select">
+                                <option value="all">전체</option>
+                                <option value="dawn">새벽 0~5시</option>
+                                <option value="morning">오전 6~12시</option>
+                                <option value="afternoon">오후 13~18시</option>
+                                <option value="night">저녁 19~23시</option>
+                            </select>
+                        </div>
+                        <div class="dc-ctrl-group" style="margin-left:4px;">
+                            <label class="dc-toggle-wrap" id="dc-dawn-compare-wrap" title="오늘 새벽 vs 어제 새벽 비교">
+                                <input type="checkbox" id="dc-dawn-compare-chk" />
+                                <span class="dc-toggle-track"><span class="dc-toggle-thumb"></span></span>
+                                <span class="dc-toggle-label">🌙 새벽 비교</span>
+                            </label>
+                        </div>
+                        <div style="flex:1"></div>
+                        <div class="dc-ctrl-group">
                             <label>상위</label>
-                            <select id="dc-top-n" style="padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);background:#1e1e30;color:#e2e4f0;font-size:12px;outline:none;cursor:pointer;">
+                            <select id="dc-top-n" class="dc-select">
                                 <option value="30">30개</option>
                                 <option value="50" selected>50개</option>
                                 <option value="100">100개</option>
                                 <option value="200">200개</option>
                             </select>
+                        </div>
+                    </div>
+                    <div class="dc-ctrl-row">
+                        <div class="dc-ctrl-group" style="flex:1">
+                            <label>제외</label>
+                            <input id="dc-blacklist-input" type="text" placeholder="쉼표로 구분  예) 긔, 띠니" />
                         </div>
                         <label class="dc-toggle-wrap" title="각 게시글 본문을 추가로 수집합니다.">
                             <input type="checkbox" id="dc-include-body" />
@@ -940,26 +967,25 @@
         const savedBL = GM_getValue('blacklist', '');
         document.getElementById('dc-blacklist-input').value = savedBL;
 
-        // 날짜/시간대 버튼 토글
-        document.querySelectorAll('.dc-day-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.dc-day-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-            });
-        });
-        document.querySelectorAll('.dc-time-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.dc-time-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-            });
-        });
-
         // 닫기
         document.getElementById('dc-close-btn').addEventListener('click', closePanel);
         overlay.addEventListener('click', e => { if (e.target === overlay) closePanel(); });
 
         // 수집 버튼
         document.getElementById('dc-collect-btn').addEventListener('click', startCollect);
+
+        // 새벽 비교 체크 시 날짜/시간 select 흐리게
+        const dawnChk = document.getElementById('dc-dawn-compare-chk');
+        const daySelEl  = document.getElementById('dc-day-select');
+        const timeSelEl = document.getElementById('dc-time-select');
+        const toggleSelectState = () => {
+            const on = dawnChk.checked;
+            daySelEl.disabled  = on;
+            timeSelEl.disabled = on;
+            daySelEl.style.opacity  = on ? '0.35' : '';
+            timeSelEl.style.opacity = on ? '0.35' : '';
+        };
+        dawnChk.addEventListener('change', toggleSelectState);
 
         // 단어 검색창
         document.getElementById('dc-word-search').addEventListener('input', e => {
@@ -997,17 +1023,16 @@
 
         const today      = getBaseDay('today');
         const yesterday  = getBaseDay('yesterday');
-        const twoDaysAgo = getBaseDay('2daysago');
 
-        // 오늘 새벽: 어제 23시 ~ 오늘 5시
+        // 오늘 새벽: 오늘 0시 ~ 오늘 5시
         const todayDawn = {
-            dtFrom: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 21, 0, 0),
+            dtFrom: new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     0, 0, 0),
             dtTo:   new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     5, 59, 59),
         };
-        // 어제 새벽: 그저께 23시 ~ 어제 5시
+        // 어제 새벽: 어제 0시 ~ 어제 5시
         const yesterdayDawn = {
-            dtFrom: new Date(twoDaysAgo.getFullYear(), twoDaysAgo.getMonth(), twoDaysAgo.getDate(), 21, 0, 0),
-            dtTo:   new Date(yesterday.getFullYear(),  yesterday.getMonth(),  yesterday.getDate(),  5, 59, 59),
+            dtFrom: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0),
+            dtTo:   new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 5, 59, 59),
         };
 
         // 날짜 표기 헬퍼: MM/DD
@@ -1018,22 +1043,23 @@
 
         setProgress(0);
 
-        const collectRange = async (range, progressBase, label) => {
+        const collectRange = async (range, progressBase, label, baseDate) => {
             const posts = [];
             let page = 1;
             while (page <= MAX_PAGES) {
                 try {
                     const url = buildListUrl(gallInfo, page);
                     const doc = await fetchPage(url);
-                    const pagePosts = parsePosts(doc);
+                    const pagePosts = parsePosts(doc, baseDate);
                     if (pagePosts.length === 0) break;
                     const oldest = pagePosts.reduce((m, p) => p.date < m ? p.date : m, pagePosts[0].date);
+                    const newest = pagePosts.reduce((m, p) => p.date > m ? p.date : m, pagePosts[0].date);
                     const inRange = pagePosts.filter(p => p.date >= range.dtFrom && p.date <= range.dtTo);
                     posts.push(...inRange);
                     const prog = progressBase + Math.min(40, Math.round((page / (page + 3)) * 40));
                     setProgress(prog);
                     setStatus(`${label} ${page}p… ${posts.length}개`);
-                    if (oldest < range.dtFrom) break;
+                    if (oldest < range.dtFrom && newest < range.dtFrom) break;
                     page++;
                     await sleep(250);
                 } catch (e) { page++; await sleep(300); }
@@ -1041,8 +1067,8 @@
             return posts;
         };
 
-        const todayPosts     = await collectRange(todayDawn,     0,  `🌙 ${todayDawnLabel}`);
-        const yesterdayPosts = await collectRange(yesterdayDawn, 45, `🌙 ${yesterdayDawnLabel}`);
+        const todayPosts     = await collectRange(todayDawn,     0,  `🌙 ${todayDawnLabel}`,     today);
+        const yesterdayPosts = await collectRange(yesterdayDawn, 45, `🌙 ${yesterdayDawnLabel}`, yesterday);
 
         if (includeBody) {
             const allToFetch = [...todayPosts, ...yesterdayPosts];
@@ -1218,10 +1244,9 @@
     function getTimeRange(timeKey, base) {
         const Y = base.getFullYear(), M = base.getMonth(), D = base.getDate();
         if (timeKey === 'dawn') {
-            const prevDay = new Date(base.getTime() - 86400000);
             return {
-                dtFrom: new Date(prevDay.getFullYear(), prevDay.getMonth(), prevDay.getDate(), 21, 0, 0),
-                dtTo:   new Date(Y, M, D, 5, 59, 59),
+                dtFrom: new Date(Y, M, D,  0, 0, 0),
+                dtTo:   new Date(Y, M, D,  5, 59, 59),
                 label:  '새벽',
             };
         }
@@ -1229,7 +1254,7 @@
             all:       { h1: 0,  h2: 23, label: '전체' },
             morning:   { h1: 6,  h2: 12, label: '오전' },
             afternoon: { h1: 13, h2: 18, label: '오후' },
-            night:     { h1: 19, h2: 20, label: '저녁' },
+            night:     { h1: 19, h2: 23, label: '저녁' },
         };
         const r = ranges[timeKey] || ranges.all;
         return {
@@ -1243,14 +1268,15 @@
         const btn = document.getElementById('dc-collect-btn');
         btn.disabled = true;
 
-        // 선택된 날짜/시간대 버튼 읽기
-        const activeDayBtn  = document.querySelector('.dc-day-btn.active');
-        const activeTimeBtn = document.querySelector('.dc-time-btn.active');
-        const dayKey  = activeDayBtn  ? activeDayBtn.dataset.day   : 'today';
-        const timeKey = activeTimeBtn ? activeTimeBtn.dataset.time : 'all';
+        // 선택된 날짜/시간대 드롭다운 읽기
+        const daySelect  = document.getElementById('dc-day-select');
+        const timeSelect = document.getElementById('dc-time-select');
+        const dawnCompareChk = document.getElementById('dc-dawn-compare-chk');
+        const dayKey  = daySelect  ? daySelect.value  : 'today';
+        const timeKey = timeSelect ? timeSelect.value : 'all';
 
         // ── 새벽 비교 모드 ──
-        if (dayKey === 'dawn-compare') {
+        if (dawnCompareChk && dawnCompareChk.checked) {
             await startDawnCompare(btn);
             return;
         }
@@ -1284,7 +1310,7 @@
 
         setProgress(0);
 
-        const dayLabel  = activeDayBtn ? activeDayBtn.textContent : '오늘';
+        const dayLabel  = daySelect ? daySelect.options[daySelect.selectedIndex].text : '오늘';
         setStatus(`${dayLabel} ${timeLabel} 수집 중...`);
 
         // 1단계: 페이지를 1부터 순서대로 수집, dtFrom 이전 글이 나오면 중단
@@ -1295,7 +1321,7 @@
             try {
                 const url = buildListUrl(gallInfo, page);
                 const doc = await fetchPage(url);
-                const posts = parsePosts(doc);
+                const posts = parsePosts(doc, base); // base = 해당 날짜(어제/그제 등)
 
                 if (posts.length === 0) break;
 
