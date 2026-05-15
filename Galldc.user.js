@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.2.7
+// @version      5.2.8
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -1745,5 +1745,4 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
 })();
-
 
