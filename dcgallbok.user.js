@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.2.3
+// @version      5.2.5
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -645,7 +645,7 @@
         '하다','이다','있다','없다','되다','하다','이다','것','수','더','좀','그','이','저',
         '걸','거','건','게','뭐','왜','어떻게','어디','누가','언제','어떤','아','오','으',
         '음','응','예','네','아니','아니요','네네','그냥','진짜','정말','너무','다','좀',
-        '근데','그리고','그러면','근머','긔','로이','존아','좋긔','없','같긔','아니긔',
+        '근데','그리고','그러면','근머','긔','로이',
         '내','내가','나','나는','우리','여기','저기','거기','지금','이제','그냥',
         '못','안','잘','더','제일','가장','많이','조금','약간','완전','엄청','되게',
         '하는','하면','하면서','하는데','하는게','해서','해도','하고','해요','합니다',
@@ -873,6 +873,7 @@
         dtTo: null,
         compareMode: false,     // 새벽 비교 모드
         compareWords: [],       // [[word, todayPosts[], yesterdayPosts[]], ...]
+        compareLabels: { today: '오늘 새벽', yesterday: '어제 새벽' },
     };
 
     function openPanel() {
@@ -1031,6 +1032,12 @@
             dtTo:   new Date(yesterday.getFullYear(),  yesterday.getMonth(),  yesterday.getDate(),  5, 59, 59),
         };
 
+        // 날짜 표기 헬퍼: MM/DD
+        const fmtDay = (d) => `${d.getMonth()+1}/${d.getDate()}`;
+        // 각 새벽의 "주인 날짜"는 5시가 속한 날 (dtTo 기준)
+        const todayDawnLabel     = `오늘 새벽 (${fmtDay(todayDawn.dtTo)})`;
+        const yesterdayDawnLabel = `어제 새벽 (${fmtDay(yesterdayDawn.dtTo)})`;
+
         setProgress(0);
 
         const collectRange = async (range, progressBase, label) => {
@@ -1056,8 +1063,8 @@
             return posts;
         };
 
-        const todayPosts     = await collectRange(todayDawn,     0,  '🌙 오늘 새벽');
-        const yesterdayPosts = await collectRange(yesterdayDawn, 45, '🌙 어제 새벽');
+        const todayPosts     = await collectRange(todayDawn,     0,  `🌙 ${todayDawnLabel}`);
+        const yesterdayPosts = await collectRange(yesterdayDawn, 45, `🌙 ${yesterdayDawnLabel}`);
 
         if (includeBody) {
             const allToFetch = [...todayPosts, ...yesterdayPosts];
@@ -1098,7 +1105,8 @@
             .slice(0, topN);
 
         setProgress(100);
-        setStatus(`✅ 새벽 비교 완료 · 오늘 ${todayPosts.length}개 / 어제 ${yesterdayPosts.length}개 게시글`);
+        state.compareLabels = { today: todayDawnLabel, yesterday: yesterdayDawnLabel };
+        setStatus(`✅ 새벽 비교 완료 · ${todayDawnLabel} ${todayPosts.length}개 / ${yesterdayDawnLabel} ${yesterdayPosts.length}개`);
         renderCompareWordList();
         btn.disabled = false;
     }
@@ -1107,7 +1115,7 @@
         const container = document.getElementById('dc-word-list');
         const header    = document.getElementById('dc-word-list-header');
         if (!container) return;
-        if (header) header.textContent = '오늘↔어제 새벽 비교';
+        if (header) header.textContent = `${state.compareLabels.today} ↔ ${state.compareLabels.yesterday}`;
 
         container.innerHTML = '';
         state.compareWords.forEach(({ word, today, yesterday }, idx) => {
@@ -1134,7 +1142,7 @@
                     <span style="font-size:10px;color:#60a5fa;">${yc}</span>
                 </span>
             `;
-            item.title = `오늘 새벽 ${tc}개 / 어제 새벽 ${yc}개`;
+            item.title = `${state.compareLabels.today} ${tc}개 / ${state.compareLabels.yesterday} ${yc}개`;
             item.addEventListener('click', () => {
                 state.selectedWord = word;
                 state.selectedHour = null;
@@ -1159,7 +1167,7 @@
         const chartArea = document.getElementById('dc-bar-chart');
         const wordLabel = document.getElementById('dc-chart-word-label');
 
-        if (wordLabel) wordLabel.textContent = `"${word}" 오늘↔어제 새벽 비교`;
+        if (wordLabel) wordLabel.textContent = `"${word}" ${state.compareLabels.today} ↔ ${state.compareLabels.yesterday}`;
 
         if (chartArea) {
             chartArea.innerHTML = '';
@@ -1182,12 +1190,12 @@
                 wrap.appendChild(barWrap); wrap.appendChild(countEl); wrap.appendChild(labelEl);
                 return wrap;
             };
-            chartArea.appendChild(makeBar(todayPosts.length,     '오늘 새벽 (보라)', '#a78bfa'));
-            chartArea.appendChild(makeBar(yesterdayPosts.length, '어제 새벽 (파랑)', '#60a5fa'));
+            chartArea.appendChild(makeBar(todayPosts.length,     state.compareLabels.today,     '#a78bfa'));
+            chartArea.appendChild(makeBar(yesterdayPosts.length, state.compareLabels.yesterday, '#60a5fa'));
         }
 
         if (!container) return;
-        if (titleEl) titleEl.textContent = `오늘 새벽 ${todayPosts.length}개 / 어제 새벽 ${yesterdayPosts.length}개`;
+        if (titleEl) titleEl.textContent = `${state.compareLabels.today} ${todayPosts.length}개 / ${state.compareLabels.yesterday} ${yesterdayPosts.length}개`;
 
         container.innerHTML = '';
         const makeSection = (posts, sectionLabel, color) => {
@@ -1209,8 +1217,8 @@
                 container.appendChild(item);
             });
         };
-        makeSection(todayPosts,     `🌙 오늘 새벽 (${todayPosts.length}건)`,     '#a78bfa');
-        makeSection(yesterdayPosts, `🌙 어제 새벽 (${yesterdayPosts.length}건)`, '#60a5fa');
+        makeSection(todayPosts,     `🌙 ${state.compareLabels.today} (${todayPosts.length}건)`,     '#a78bfa');
+        makeSection(yesterdayPosts, `🌙 ${state.compareLabels.yesterday} (${yesterdayPosts.length}건)`, '#60a5fa');
         if (!todayPosts.length && !yesterdayPosts.length) {
             container.innerHTML = '<p class="dc-empty">두 시간대 모두 게시글이 없습니다.</p>';
         }
