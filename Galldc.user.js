@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.2.9
+// @version      5.3.0
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
 // @match        https://m.dcinside.com/*
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @license      MIT
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -16,10 +16,40 @@
     'use strict';
 
     // ─────────────────────────────────────────────
+    //  디시인사이드 야간모드 감지
+    //
+    //  darkmode() 함수는 html 태그에 'darkmode' 클래스를 토글합니다.
+    //  (html.className === "darkmode" 이면 야간모드 ON)
+    // ─────────────────────────────────────────────
+    function isDarkMode() {
+        return document.documentElement.classList.contains('darkmode');
+    }
+
+    function applyTheme() {
+        const dark = isDarkMode();
+        // 패널: 기본이 라이트, 야간모드일 때만 dc-dark 추가
+        const panel = document.getElementById('dc-tracker-panel');
+        if (panel) {
+            if (dark) panel.classList.add('dc-dark');
+            else       panel.classList.remove('dc-dark');
+        }
+        // 트리거 버튼
+        const btn = document.getElementById('dc-tracker-btn');
+        if (btn) {
+            if (dark) btn.classList.add('dc-btn-dark');
+            else       btn.classList.remove('dc-btn-dark');
+        }
+    }
+
+    // html 태그 클래스 변경 감지 (darkmode() 호출 시 html.darkmode 토글)
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+    // ─────────────────────────────────────────────
     //  스타일
     // ─────────────────────────────────────────────
     GM_addStyle(`
-        /* ── 트리거 버튼 ── */
+        /* ── 트리거 버튼 (라이트 기본) ── */
         #dc-tracker-btn {
             display: inline-flex;
             align-items: center;
@@ -39,579 +69,313 @@
             transition: background 0.12s, border-color 0.12s, color 0.12s;
             white-space: nowrap;
         }
-        #dc-tracker-btn:hover {
-            background: #eef2ff;
-            border-color: #818cf8;
-            color: #4338ca;
-        }
+        #dc-tracker-btn:hover { background: #eef2ff; border-color: #818cf8; color: #4338ca; }
         #dc-tracker-btn:active { background: #e0e7ff; }
         #dc-tracker-btn.loading { opacity: 0.5; cursor: wait; }
         #dc-tracker-btn svg { flex-shrink: 0; }
 
+        /* ── 트리거 버튼 (야간모드) ── */
+        #dc-tracker-btn.dc-btn-dark {
+            background: #1e1e30;
+            color: #a78bfa;
+            border-color: #4338ca;
+        }
+        #dc-tracker-btn.dc-btn-dark:hover { background: #2a2a45; border-color: #818cf8; color: #c4b5fd; }
+        #dc-tracker-btn.dc-btn-dark:active { background: #16162a; }
+
         /* ── 오버레이 ── */
         #dc-tracker-overlay {
-            position: fixed;
-            inset: 0;
+            position: fixed; inset: 0;
             background: rgba(0,0,0,0.6);
             backdrop-filter: blur(3px);
             z-index: 999998;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
             animation: dc-fadein 0.18s ease;
         }
         @keyframes dc-fadein { from { opacity: 0 } to { opacity: 1 } }
 
-        /* ── 패널 ── */
+        /* ══════════════════════════════
+           패널 — 기본값: 라이트 모드
+        ══════════════════════════════ */
         #dc-tracker-panel {
-            background: #13131a;
-            color: #e2e4f0;
-            width: 860px;
-            max-width: 96vw;
-            max-height: 88vh;
+            background: #f8f8fc;
+            color: #1e1e2e;
+            width: 860px; max-width: 96vw; max-height: 88vh;
             border-radius: 16px;
-            border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 24px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(99,102,241,0.15);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-            font-size: 13px;
+            border: 1px solid rgba(0,0,0,0.1);
+            box-shadow: 0 24px 60px rgba(0,0,0,0.18), 0 0 0 1px rgba(99,102,241,0.15);
+            display: flex; flex-direction: column; overflow: hidden;
+            font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; font-size: 13px;
             animation: dc-slidein 0.2s cubic-bezier(0.34,1.56,0.64,1);
+            transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
         }
         @keyframes dc-slidein { from { transform: scale(0.94) translateY(10px); opacity:0 } to { transform: scale(1) translateY(0); opacity:1 } }
 
-        /* ── 헤더 ── */
         #dc-tracker-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+            display: flex; align-items: center; justify-content: space-between;
             padding: 16px 20px 14px;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16162a 100%);
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-            flex-shrink: 0;
+            background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+            border-bottom: 1px solid rgba(0,0,0,0.07);
+            flex-shrink: 0; transition: background 0.2s, border-color 0.2s;
         }
-        #dc-tracker-header-left {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        #dc-tracker-header-left { display: flex; align-items: center; gap: 10px; }
         #dc-tracker-header h2 {
-            margin: 0;
-            font-size: 15px;
-            font-weight: 700;
+            margin: 0; font-size: 15px; font-weight: 700;
             background: linear-gradient(90deg, #a78bfa, #60a5fa);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            letter-spacing: -0.3px;
-        }
-        #dc-tracker-header-sub {
-            font-size: 11px;
-            color: #4a4a6a;
-            margin-top: 1px;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text; letter-spacing: -0.3px;
         }
 
-        /* ── 컨트롤 바 ── */
         #dc-tracker-controls {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+            display: flex; flex-direction: column; gap: 8px;
             padding: 10px 20px;
-            background: #0f0f1a;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            flex-shrink: 0;
+            background: #f0f0f8;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+            flex-shrink: 0; transition: background 0.2s, border-color 0.2s;
         }
-        .dc-ctrl-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .dc-ctrl-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
+        .dc-ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .dc-ctrl-group { display: flex; align-items: center; gap: 6px; }
         #dc-tracker-controls label {
-            color: #6b6b9a;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            white-space: nowrap;
+            color: #6366f1; font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
         }
 
-        /* ── 공통 select ── */
         .dc-select {
-            padding: 4px 8px;
-            border-radius: 6px;
-            border: 1px solid rgba(255,255,255,0.10);
-            background: #1e1e30;
-            color: #c4c6e0;
-            font-size: 12px;
-            outline: none;
-            cursor: pointer;
-            transition: border-color 0.15s;
+            padding: 4px 8px; border-radius: 6px;
+            border: 1px solid #c7d2fe;
+            background: #fff; color: #1e1e2e;
+            font-size: 12px; outline: none; cursor: pointer;
+            transition: border-color 0.15s, background 0.2s, color 0.2s;
         }
         .dc-select:focus, .dc-select:hover { border-color: #6366f1; }
-        .dc-select option { background: #1e1e30; }
+        .dc-select option { background: #fff; }
 
-        /* 새벽 비교 토글 체크 시 레이블 색 강조 */
         #dc-dawn-compare-chk:checked ~ .dc-toggle-label { color: #a78bfa; }
         #dc-blacklist-input {
-            flex: 1;
-            min-width: 140px;
-            padding: 4px 10px;
-            border-radius: 6px;
-            border: 1px solid rgba(255,255,255,0.08);
-            background: #1e1e30;
-            color: #e2e4f0;
-            font-size: 12px;
-            outline: none;
-            transition: border-color 0.15s;
+            flex: 1; min-width: 140px; padding: 4px 10px;
+            border-radius: 6px; border: 1px solid #c7d2fe;
+            background: #fff; color: #1e1e2e;
+            font-size: 12px; outline: none;
+            transition: border-color 0.15s, background 0.2s, color 0.2s;
         }
         #dc-blacklist-input:focus { border-color: #6366f1; }
-        #dc-blacklist-input::placeholder { color: #3a3a5a; }
+        #dc-blacklist-input::placeholder { color: #a5b4fc; }
+
         #dc-collect-btn {
             padding: 6px 16px;
             background: linear-gradient(135deg, #6366f1, #8b5cf6);
-            color: #fff;
-            border: none;
-            border-radius: 7px;
-            cursor: pointer;
-            font-weight: 700;
-            font-size: 12px;
-            letter-spacing: 0.2px;
+            color: #fff; border: none; border-radius: 7px;
+            cursor: pointer; font-weight: 700; font-size: 12px;
             transition: opacity 0.15s, transform 0.1s;
-            box-shadow: 0 2px 8px rgba(99,102,241,0.35);
-            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(99,102,241,0.35); white-space: nowrap;
         }
         #dc-collect-btn:hover { opacity: 0.85; transform: translateY(-1px); }
         #dc-collect-btn:active { transform: translateY(0); }
-        #dc-collect-btn:disabled { background: #2a2a40; box-shadow: none; cursor: wait; color: #444; }
+        #dc-collect-btn:disabled { background: #e0e7ff; box-shadow: none; cursor: wait; color: #a5b4fc; }
 
-        /* ── 본문 포함 토글 ── */
-        .dc-toggle-wrap {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            cursor: pointer;
-            user-select: none;
-            white-space: nowrap;
-        }
+        .dc-toggle-wrap { display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; white-space: nowrap; }
         .dc-toggle-wrap input[type=checkbox] { display: none; }
         .dc-toggle-track {
-            width: 30px;
-            height: 16px;
-            background: #2a2a40;
-            border-radius: 20px;
-            position: relative;
-            transition: background 0.2s;
-            flex-shrink: 0;
-            border: 1px solid rgba(255,255,255,0.07);
+            width: 30px; height: 16px; background: #c7d2fe;
+            border-radius: 20px; position: relative;
+            transition: background 0.2s; flex-shrink: 0; border: 1px solid #a5b4fc;
         }
         .dc-toggle-thumb {
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 10px;
-            height: 10px;
-            background: #4a4a6a;
-            border-radius: 50%;
-            transition: transform 0.2s, background 0.2s;
+            position: absolute; top: 2px; left: 2px;
+            width: 10px; height: 10px; background: #818cf8;
+            border-radius: 50%; transition: transform 0.2s, background 0.2s;
         }
         .dc-toggle-wrap input:checked + .dc-toggle-track { background: #6366f1; border-color: #6366f1; }
-        .dc-toggle-wrap input:checked + .dc-toggle-track .dc-toggle-thumb {
-            transform: translateX(14px);
-            background: #fff;
-        }
-        .dc-toggle-label {
-            font-size: 11px;
-            color: #6b6b9a;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .dc-toggle-warn {
-            font-size: 10px;
-            color: #f59e0b;
-            display: none;
-        }
+        .dc-toggle-wrap input:checked + .dc-toggle-track .dc-toggle-thumb { transform: translateX(14px); background: #fff; }
+        .dc-toggle-label { font-size: 11px; color: #6366f1; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        .dc-toggle-warn { font-size: 10px; color: #f59e0b; display: none; }
         #dc-include-body:checked ~ .dc-toggle-warn { display: inline; }
 
-        /* ── 프로그레스 바 ── */
-        #dc-progress-bar-wrap {
-            height: 2px;
-            background: #1a1a2e;
-            flex-shrink: 0;
-        }
+        #dc-progress-bar-wrap { height: 2px; background: #e0e7ff; flex-shrink: 0; transition: background 0.2s; }
         #dc-progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #6366f1, #a78bfa);
-            width: 0%;
-            transition: width 0.25s ease;
-            border-radius: 0 2px 2px 0;
+            height: 100%; background: linear-gradient(90deg, #6366f1, #a78bfa);
+            width: 0%; transition: width 0.25s ease; border-radius: 0 2px 2px 0;
         }
 
-        /* ── 상태 텍스트 ── */
         #dc-tracker-status {
-            padding: 5px 20px;
-            font-size: 11px;
-            color: #4a4a6a;
-            flex-shrink: 0;
-            min-height: 22px;
-            letter-spacing: 0.1px;
+            padding: 5px 20px; font-size: 11px; color: #6366f1;
+            flex-shrink: 0; min-height: 22px; letter-spacing: 0.1px; transition: color 0.2s;
         }
 
-        /* ── 바디 ── */
-        #dc-tracker-body {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
+        #dc-tracker-body { display: flex; flex: 1; overflow: hidden; }
 
-        /* ── 왼쪽: 단어 목록 ── */
         #dc-word-list-wrap {
-            width: 200px;
-            min-width: 160px;
-            border-right: 1px solid rgba(255,255,255,0.05);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            background: #0f0f1a;
+            width: 200px; min-width: 160px;
+            border-right: 1px solid rgba(0,0,0,0.07);
+            display: flex; flex-direction: column; overflow: hidden;
+            background: #f0f0f8; transition: background 0.2s, border-color 0.2s;
         }
         #dc-word-list-header {
-            padding: 10px 14px 8px;
-            font-size: 10px;
-            font-weight: 700;
-            color: #3a3a5a;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
-            flex-shrink: 0;
+            padding: 10px 14px 8px; font-size: 10px; font-weight: 700;
+            color: #818cf8; text-transform: uppercase; letter-spacing: 0.8px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            flex-shrink: 0; transition: color 0.2s, border-color 0.2s;
         }
-        #dc-word-search-wrap {
-            padding: 7px 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
-            flex-shrink: 0;
-        }
+        #dc-word-search-wrap { padding: 7px 10px; border-bottom: 1px solid rgba(0,0,0,0.05); flex-shrink: 0; transition: border-color 0.2s; }
         #dc-word-search {
-            width: 100%;
-            box-sizing: border-box;
-            padding: 5px 8px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.07);
-            border-radius: 6px;
-            color: #c4c6e0;
-            font-size: 11px;
-            outline: none;
-            transition: border-color 0.15s;
+            width: 100%; box-sizing: border-box; padding: 5px 8px;
+            background: #fff; border: 1px solid #c7d2fe;
+            border-radius: 6px; color: #1e1e2e; font-size: 11px; outline: none;
+            transition: border-color 0.15s, background 0.2s, color 0.2s;
         }
         #dc-word-search:focus { border-color: #6366f1; }
-        #dc-word-search::placeholder { color: #2e2e4a; }
-        #dc-word-list {
-            overflow-y: auto;
-            flex: 1;
-            padding: 4px 0;
-        }
-        /* 커스텀 스크롤바 */
-        #dc-word-list::-webkit-scrollbar,
-        #dc-post-area::-webkit-scrollbar { width: 4px; }
-        #dc-word-list::-webkit-scrollbar-track,
-        #dc-post-area::-webkit-scrollbar-track { background: transparent; }
-        #dc-word-list::-webkit-scrollbar-thumb,
-        #dc-post-area::-webkit-scrollbar-thumb {
-            background: #2a2a42;
-            border-radius: 4px;
-        }
-        #dc-word-list::-webkit-scrollbar-thumb:hover,
-        #dc-post-area::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+        #dc-word-search::placeholder { color: #a5b4fc; }
+        #dc-word-list { overflow-y: auto; flex: 1; padding: 4px 0; }
+
+        #dc-word-list::-webkit-scrollbar, #dc-post-area::-webkit-scrollbar { width: 4px; }
+        #dc-word-list::-webkit-scrollbar-track, #dc-post-area::-webkit-scrollbar-track { background: transparent; }
+        #dc-word-list::-webkit-scrollbar-thumb, #dc-post-area::-webkit-scrollbar-thumb { background: #c7d2fe; border-radius: 4px; }
+        #dc-word-list::-webkit-scrollbar-thumb:hover, #dc-post-area::-webkit-scrollbar-thumb:hover { background: #6366f1; }
 
         .dc-word-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 7px 14px;
-            cursor: pointer;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 7px 14px; cursor: pointer;
             border-left: 2px solid transparent;
-            transition: background 0.1s, border-color 0.1s;
-            gap: 6px;
+            transition: background 0.1s, border-color 0.1s; gap: 6px;
         }
-        .dc-word-item:hover { background: rgba(99,102,241,0.08); }
-        .dc-word-item.active {
-            background: rgba(99,102,241,0.14);
-            border-left-color: #a78bfa;
-        }
-        .dc-word-rank {
-            font-size: 10px;
-            color: #3a3a5a;
-            width: 16px;
-            flex-shrink: 0;
-            text-align: right;
-        }
-        .dc-word-item.active .dc-word-rank { color: #7c7cb8; }
-        .dc-word-name {
-            font-weight: 600;
-            color: #c4c6e0;
-            font-size: 13px;
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .dc-word-item.active .dc-word-name { color: #e2e4f0; }
-        .dc-word-count {
-            font-size: 10px;
-            font-weight: 700;
-            color: #3a3a5a;
-            background: rgba(255,255,255,0.04);
-            padding: 2px 7px;
-            border-radius: 20px;
-            flex-shrink: 0;
-        }
-        .dc-word-item.active .dc-word-count {
-            background: rgba(99,102,241,0.3);
-            color: #a78bfa;
-        }
+        .dc-word-item:hover { background: rgba(99,102,241,0.07); }
+        .dc-word-item.active { background: rgba(99,102,241,0.12); border-left-color: #a78bfa; }
+        .dc-word-rank { font-size: 10px; color: #a5b4fc; width: 16px; flex-shrink: 0; text-align: right; transition: color 0.2s; }
+        .dc-word-item.active .dc-word-rank { color: #6366f1; }
+        .dc-word-name { font-weight: 600; color: #1e1e2e; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.2s; }
+        .dc-word-item.active .dc-word-name { color: #3730a3; }
+        .dc-word-count { font-size: 10px; font-weight: 700; color: #818cf8; background: rgba(99,102,241,0.08); padding: 2px 7px; border-radius: 20px; flex-shrink: 0; transition: color 0.2s, background 0.2s; }
+        .dc-word-item.active .dc-word-count { background: rgba(99,102,241,0.18); color: #4338ca; }
 
-        /* ── 오른쪽 ── */
-        #dc-detail-wrap {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
+        #dc-detail-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
-        /* ── 차트 ── */
-        #dc-chart-area {
-            padding: 16px 20px 12px;
-            flex-shrink: 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        #dc-chart-title {
-            font-size: 11px;
-            color: #4a4a6a;
-            margin-bottom: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        #dc-chart-word-label {
-            display: inline;
-            color: #a78bfa;
-            font-weight: 700;
-            text-transform: none;
-            letter-spacing: 0;
-        }
-        #dc-bar-chart {
-            display: flex;
-            align-items: flex-end;
-            gap: 3px;
-            height: 90px;
-        }
-        .dc-bar-col {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            flex: 1;
-            min-width: 0;
-        }
+        #dc-chart-area { padding: 16px 20px 12px; flex-shrink: 0; border-bottom: 1px solid rgba(0,0,0,0.06); transition: border-color 0.2s; }
+        #dc-chart-title { font-size: 11px; color: #818cf8; margin-bottom: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; transition: color 0.2s; }
+        #dc-chart-word-label { display: inline; color: #a78bfa; font-weight: 700; text-transform: none; letter-spacing: 0; }
+        #dc-bar-chart { display: flex; align-items: flex-end; gap: 3px; height: 90px; }
+        .dc-bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }
         .dc-bar {
-            width: 100%;
-            background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
-            border-radius: 4px 4px 0 0;
-            min-height: 2px;
-            transition: height 0.35s cubic-bezier(0.34,1.2,0.64,1);
-            cursor: pointer;
+            width: 100%; background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
+            border-radius: 4px 4px 0 0; min-height: 2px;
+            transition: height 0.35s cubic-bezier(0.34,1.2,0.64,1); cursor: pointer;
         }
         .dc-bar:hover { filter: brightness(1.3); }
-        .dc-bar.selected {
-            background: linear-gradient(180deg, #f472b6 0%, #ec4899 100%);
-            box-shadow: 0 0 10px rgba(236,72,153,0.4);
-        }
-        .dc-bar-label {
-            font-size: 8px;
-            color: #3a3a5a;
-            margin-top: 4px;
-            white-space: nowrap;
-            font-weight: 600;
-        }
-        .dc-bar-val {
-            font-size: 9px;
-            color: #6366f1;
-            margin-bottom: 2px;
-            font-weight: 700;
-            min-height: 12px;
-        }
-        .dc-bar.selected ~ .dc-bar-label,
-        .dc-bar-col:has(.dc-bar.selected) .dc-bar-val { color: #f472b6; }
+        .dc-bar.selected { background: linear-gradient(180deg, #f472b6 0%, #ec4899 100%); box-shadow: 0 0 10px rgba(236,72,153,0.4); }
+        .dc-bar-label { font-size: 8px; color: #a5b4fc; margin-top: 4px; white-space: nowrap; font-weight: 600; transition: color 0.2s; }
+        .dc-bar-val { font-size: 9px; color: #6366f1; margin-bottom: 2px; font-weight: 700; min-height: 12px; }
+        .dc-bar.selected ~ .dc-bar-label, .dc-bar-col:has(.dc-bar.selected) .dc-bar-val { color: #f472b6; }
 
-        /* ── 게시글 목록 ── */
-        #dc-post-area {
-            flex: 1;
-            overflow-y: auto;
-            padding: 10px 16px 16px;
-        }
-        #dc-post-area-title {
-            font-size: 10px;
-            font-weight: 700;
-            color: #3a3a5a;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            margin: 8px 0 8px 2px;
-        }
+        #dc-post-area { flex: 1; overflow-y: auto; padding: 10px 16px 16px; }
+        #dc-post-area-title { font-size: 10px; font-weight: 700; color: #818cf8; text-transform: uppercase; letter-spacing: 0.8px; margin: 8px 0 8px 2px; transition: color 0.2s; }
         #dc-post-list { display: flex; flex-direction: column; gap: 4px; }
         .dc-post-item {
-            padding: 8px 12px;
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.04);
-            border-radius: 8px;
-            display: flex;
-            align-items: baseline;
-            gap: 10px;
-            cursor: pointer;
-            transition: background 0.12s, border-color 0.12s, transform 0.1s;
+            padding: 8px 12px; background: #fff; border: 1px solid #e0e7ff;
+            border-radius: 8px; display: flex; align-items: baseline; gap: 10px;
+            cursor: pointer; transition: background 0.12s, border-color 0.12s, transform 0.1s;
         }
-        .dc-post-item:hover {
-            background: rgba(99,102,241,0.1);
-            border-color: rgba(99,102,241,0.25);
-            transform: translateX(2px);
-        }
-        .dc-post-time {
-            font-size: 10px;
-            color: #4a4a6a;
-            white-space: nowrap;
-            flex-shrink: 0;
-            font-variant-numeric: tabular-nums;
-            font-weight: 600;
-        }
-        .dc-post-title {
-            font-size: 12px;
-            color: #c4c6e0;
-            line-height: 1.45;
-        }
-        .dc-post-title mark {
-            background: rgba(167,139,250,0.25);
-            color: #c4b5fd;
-            border-radius: 3px;
-            padding: 0 2px;
-            font-weight: 700;
-        }
-        .dc-empty {
-            color: #2e2e4a;
-            font-size: 12px;
-            padding: 20px 0;
-            text-align: center;
-        }
+        .dc-post-item:hover { background: #eef2ff; border-color: #a5b4fc; transform: translateX(2px); }
+        .dc-post-time { font-size: 10px; color: #818cf8; white-space: nowrap; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; transition: color 0.2s; }
+        .dc-post-title { font-size: 12px; color: #1e1e2e; line-height: 1.45; transition: color 0.2s; }
+        .dc-post-title mark { background: rgba(99,102,241,0.15); color: #4338ca; border-radius: 3px; padding: 0 2px; font-weight: 700; }
+        .dc-empty { color: #c7d2fe; font-size: 12px; padding: 20px 0; text-align: center; transition: color 0.2s; }
 
-        /* ── 모바일 탭 UI ── */
-        #dc-mob-tabs {
-            display: none;
-        }
+        #dc-mob-tabs { display: none; }
         @media (max-width: 640px) {
-            #dc-tracker-overlay {
-                align-items: flex-end;
-            }
-            #dc-tracker-panel {
-                width: 100vw;
-                max-width: 100vw;
-                height: 92vh;
-                max-height: 92vh;
-                border-radius: 16px 16px 0 0;
-            }
-            /* 컨트롤 바 한 줄로 압축 */
-            #dc-tracker-controls {
-                padding: 8px 12px;
-                gap: 6px;
-            }
+            #dc-tracker-overlay { align-items: flex-end; }
+            #dc-tracker-panel { width: 100vw; max-width: 100vw; height: 92vh; max-height: 92vh; border-radius: 16px 16px 0 0; }
+            #dc-tracker-controls { padding: 8px 12px; gap: 6px; }
             .dc-ctrl-row { gap: 6px; }
             #dc-tracker-controls label { font-size: 10px; }
             .dc-select { font-size: 11px; padding: 3px 6px; }
             #dc-blacklist-input { min-width: 80px; font-size: 11px; padding: 3px 6px; }
             #dc-collect-btn { padding: 4px 10px; font-size: 11px; }
             .dc-toggle-label { font-size: 10px; }
-
-            /* 탭 버튼 표시 */
-            #dc-mob-tabs {
-                display: flex;
-                border-bottom: 1px solid rgba(255,255,255,0.06);
-                background: #0f0f1a;
-                flex-shrink: 0;
-            }
-            .dc-mob-tab {
-                flex: 1;
-                padding: 9px 0;
-                text-align: center;
-                font-size: 12px;
-                font-weight: 600;
-                color: #3a3a5a;
-                cursor: pointer;
-                border-bottom: 2px solid transparent;
-                transition: color 0.15s, border-color 0.15s;
-                letter-spacing: 0.2px;
-            }
-            .dc-mob-tab.active {
-                color: #a78bfa;
-                border-bottom-color: #a78bfa;
-            }
-
-            /* 바디를 탭 전환으로 */
-            #dc-tracker-body {
-                flex-direction: column;
-                position: relative;
-            }
-            #dc-word-list-wrap {
-                width: 100%;
-                border-right: none;
-                flex: 1;
-                min-height: 0;
-            }
-            #dc-detail-wrap {
-                width: 100%;
-                position: absolute;
-                inset: 0;
-                background: #13131a;
-            }
-            /* 탭 숨김/표시 */
+            #dc-mob-tabs { display: flex; border-bottom: 1px solid rgba(0,0,0,0.06); background: #f0f0f8; flex-shrink: 0; }
+            .dc-mob-tab { flex: 1; padding: 9px 0; text-align: center; font-size: 12px; font-weight: 600; color: #a5b4fc; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s; letter-spacing: 0.2px; }
+            .dc-mob-tab.active { color: #6366f1; border-bottom-color: #6366f1; }
+            #dc-tracker-body { flex-direction: column; position: relative; }
+            #dc-word-list-wrap { width: 100%; border-right: none; flex: 1; min-height: 0; }
+            #dc-detail-wrap { width: 100%; position: absolute; inset: 0; background: #f8f8fc; }
             #dc-word-list-wrap.dc-tab-hidden { display: none; }
             #dc-detail-wrap.dc-tab-hidden { display: none; }
-
-            /* 차트 크기 줄임 */
             #dc-chart-area { padding: 10px 14px 8px; }
             #dc-bar-chart { height: 70px; }
-            /* 많은 시간대면 라벨 생략 */
             .dc-bar-label { font-size: 7px; }
-
-            /* 게시글 패딩 줄임 */
             #dc-post-area { padding: 6px 12px 12px; }
             .dc-post-item { padding: 7px 10px; }
             .dc-post-title { font-size: 13px; }
-
-            /* 단어 목록 아이템 크게 */
             .dc-word-item { padding: 10px 14px; }
             .dc-word-name { font-size: 14px; }
             .dc-word-count { font-size: 11px; padding: 2px 8px; }
         }
 
-        /* ── 닫기 버튼 ── */
         #dc-close-btn {
-            width: 28px;
-            height: 28px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 8px;
-            color: #4a4a6a;
-            font-size: 16px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.12s, color 0.12s;
-            line-height: 1;
-            flex-shrink: 0;
+            width: 28px; height: 28px;
+            background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 8px; color: #818cf8; font-size: 16px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.12s, color 0.12s; line-height: 1; flex-shrink: 0;
         }
-        #dc-close-btn:hover { background: rgba(236,72,153,0.15); color: #f472b6; border-color: rgba(236,72,153,0.3); }
+        #dc-close-btn:hover { background: rgba(236,72,153,0.1); color: #ec4899; border-color: rgba(236,72,153,0.3); }
+
+        /* ══════════════════════════════
+           다크 모드 오버라이드 (.dc-dark)
+           — html.darkmode 일 때 자동 적용
+        ══════════════════════════════ */
+        #dc-tracker-panel.dc-dark {
+            background: #13131a; color: #e2e4f0;
+            border-color: rgba(255,255,255,0.08);
+            box-shadow: 0 24px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(99,102,241,0.15);
+        }
+        #dc-tracker-panel.dc-dark #dc-tracker-header { background: linear-gradient(135deg, #1a1a2e 0%, #16162a 100%); border-bottom-color: rgba(255,255,255,0.06); }
+        #dc-tracker-panel.dc-dark #dc-tracker-controls { background: #0f0f1a; border-bottom-color: rgba(255,255,255,0.05); }
+        #dc-tracker-panel.dc-dark #dc-tracker-controls label { color: #6b6b9a; }
+        #dc-tracker-panel.dc-dark .dc-select { background: #1e1e30; border-color: rgba(255,255,255,0.10); color: #c4c6e0; }
+        #dc-tracker-panel.dc-dark .dc-select option { background: #1e1e30; }
+        #dc-tracker-panel.dc-dark #dc-blacklist-input { background: #1e1e30; border-color: rgba(255,255,255,0.08); color: #e2e4f0; }
+        #dc-tracker-panel.dc-dark #dc-blacklist-input::placeholder { color: #3a3a5a; }
+        #dc-tracker-panel.dc-dark #dc-collect-btn:disabled { background: #2a2a40; color: #444; }
+        #dc-tracker-panel.dc-dark .dc-toggle-track { background: #2a2a40; border-color: rgba(255,255,255,0.07); }
+        #dc-tracker-panel.dc-dark .dc-toggle-thumb { background: #4a4a6a; }
+        #dc-tracker-panel.dc-dark .dc-toggle-label { color: #6b6b9a; }
+        #dc-tracker-panel.dc-dark #dc-progress-bar-wrap { background: #1a1a2e; }
+        #dc-tracker-panel.dc-dark #dc-tracker-status { color: #4a4a6a; }
+        #dc-tracker-panel.dc-dark #dc-word-list-wrap { background: #0f0f1a; border-right-color: rgba(255,255,255,0.05); }
+        #dc-tracker-panel.dc-dark #dc-word-list-header { color: #3a3a5a; border-bottom-color: rgba(255,255,255,0.04); }
+        #dc-tracker-panel.dc-dark #dc-word-search-wrap { border-bottom-color: rgba(255,255,255,0.04); }
+        #dc-tracker-panel.dc-dark #dc-word-search { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.07); color: #c4c6e0; }
+        #dc-tracker-panel.dc-dark #dc-word-search::placeholder { color: #2e2e4a; }
+        #dc-tracker-panel.dc-dark #dc-word-list::-webkit-scrollbar-thumb,
+        #dc-tracker-panel.dc-dark #dc-post-area::-webkit-scrollbar-thumb { background: #2a2a42; }
+        #dc-tracker-panel.dc-dark #dc-word-list::-webkit-scrollbar-thumb:hover,
+        #dc-tracker-panel.dc-dark #dc-post-area::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+        #dc-tracker-panel.dc-dark .dc-word-item:hover { background: rgba(99,102,241,0.08); }
+        #dc-tracker-panel.dc-dark .dc-word-item.active { background: rgba(99,102,241,0.14); }
+        #dc-tracker-panel.dc-dark .dc-word-rank { color: #3a3a5a; }
+        #dc-tracker-panel.dc-dark .dc-word-item.active .dc-word-rank { color: #7c7cb8; }
+        #dc-tracker-panel.dc-dark .dc-word-name { color: #c4c6e0; }
+        #dc-tracker-panel.dc-dark .dc-word-item.active .dc-word-name { color: #e2e4f0; }
+        #dc-tracker-panel.dc-dark .dc-word-count { color: #3a3a5a; background: rgba(255,255,255,0.04); }
+        #dc-tracker-panel.dc-dark .dc-word-item.active .dc-word-count { background: rgba(99,102,241,0.3); color: #a78bfa; }
+        #dc-tracker-panel.dc-dark #dc-chart-area { border-bottom-color: rgba(255,255,255,0.05); }
+        #dc-tracker-panel.dc-dark #dc-chart-title { color: #4a4a6a; }
+        #dc-tracker-panel.dc-dark .dc-bar-label { color: #3a3a5a; }
+        #dc-tracker-panel.dc-dark .dc-bar-val { color: #6366f1; }
+        #dc-tracker-panel.dc-dark #dc-post-area-title { color: #3a3a5a; }
+        #dc-tracker-panel.dc-dark .dc-post-item { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.04); }
+        #dc-tracker-panel.dc-dark .dc-post-item:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.25); }
+        #dc-tracker-panel.dc-dark .dc-post-time { color: #4a4a6a; }
+        #dc-tracker-panel.dc-dark .dc-post-title { color: #c4c6e0; }
+        #dc-tracker-panel.dc-dark .dc-post-title mark { background: rgba(167,139,250,0.25); color: #c4b5fd; }
+        #dc-tracker-panel.dc-dark .dc-empty { color: #2e2e4a; }
+        #dc-tracker-panel.dc-dark #dc-close-btn { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); color: #4a4a6a; }
+        #dc-tracker-panel.dc-dark #dc-close-btn:hover { background: rgba(236,72,153,0.15); color: #f472b6; border-color: rgba(236,72,153,0.3); }
+        @media (max-width: 640px) {
+            #dc-tracker-panel.dc-dark #dc-mob-tabs { background: #0f0f1a; border-bottom-color: rgba(255,255,255,0.06); }
+            #dc-tracker-panel.dc-dark .dc-mob-tab { color: #3a3a5a; }
+            #dc-tracker-panel.dc-dark .dc-mob-tab.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+            #dc-tracker-panel.dc-dark #dc-detail-wrap { background: #13131a; }
+        }
     `);
 
     // ─────────────────────────────────────────────
@@ -635,9 +399,7 @@
     //  한국어 어절 → 어근 추출 (접미 조사/어미 제거)
     // ─────────────────────────────────────────────
 
-    // 제거할 접미 패턴 (긴 것 우선 — 앞에서부터 매칭)
     const SUFFIXES = [
-        // 어미 (긴 것 먼저)
         '하겠습니다','하겠어요','했습니다','합니다','해요','했어','하는데','하면서','하면','하니까','하니','하고','해서','해도','하자','하지','하네','하냐','하든',
         '이겠습니다','이겠어요','였습니다','입니다','이에요','이었어','인데','이면서','이면','이니까','이니','이고','이어서','이어도',
         '았습니다','었습니다','았어요','었어요','았어','었어','겠어','겠지','겠냐',
@@ -649,14 +411,12 @@
         '까지도','까지','부터','마저','조차','이나마','나마',
         '이었다','이었는','였다','였는',
         '스럽','스러운','스러워','스럽게',
-        // 조사 (2자)
         '이다','이야','이여','에도','에만','에는','에를',
-        // 조사 (1자) — 마지막에
         '가','이','을','를','은','는','의','와','과','도','만','야','아','여','서','로','랑',
     ];
 
     function stemWord(word) {
-        if (/[a-zA-Z0-9]/.test(word)) return word; // 영숫자 혼합이면 그대로
+        if (/[a-zA-Z0-9]/.test(word)) return word;
         for (const sfx of SUFFIXES) {
             if (word.endsWith(sfx) && word.length - sfx.length >= 2) {
                 return word.slice(0, word.length - sfx.length);
@@ -693,11 +453,9 @@
     // ─────────────────────────────────────────────
     function getGalleryInfo() {
         if (isMobile) {
-            // m.dcinside.com/{type}/{id}  예) /mini/coxldwpwkrwk
             const parts = location.pathname.split('/').filter(Boolean);
-            // parts[0] = 'mini'|'mgallery'|'board' 등, parts[1] = id
             if (parts.length < 2) return null;
-            const type = parts[0] === 'board' ? 'board' : parts[0]; // mini, mgallery, board
+            const type = parts[0] === 'board' ? 'board' : parts[0];
             const id   = parts[1];
             return { id, type, mobile: true };
         }
@@ -714,7 +472,6 @@
 
     function buildListUrl(gallInfo, page) {
         if (gallInfo.mobile) {
-            // m.dcinside.com/{type}/{id}?page=N
             return `https://m.dcinside.com/${gallInfo.type}/${gallInfo.id}?page=${page}`;
         }
         const base = `https://gall.dcinside.com`;
@@ -739,13 +496,12 @@
         return doc;
     }
 
-    // baseDate: HH:MM 만 있는 글을 어느 날 기준으로 파싱할지 (기본 오늘)
     function parseDate(dateStr, baseDate) {
         const ref = baseDate || new Date();
-        const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/); // YYYY-MM-DD HH:MM
-        const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/); // YY.MM.DD HH:MM
-        const m4 = dateStr.match(/^(\d{2})\.(\d{2})$/); // MM.DD (날짜만, 시간 없음)
-        const m3 = dateStr.match(/^(\d{2}):(\d{2})$/);  // HH:MM (당일 글)
+        const m1 = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+        const m2 = dateStr.match(/(\d{2})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
+        const m4 = dateStr.match(/^(\d{2})\.(\d{2})$/);
+        const m3 = dateStr.match(/^(\d{2}):(\d{2})$/);
         if (m1) return new Date(`${m1[1]}-${m1[2]}-${m1[3]}T${m1[4]}:${m1[5]}:00`);
         if (m2) return new Date(`20${m2[1]}-${m2[2]}-${m2[3]}T${m2[4]}:${m2[5]}:00`);
         if (m4) return new Date(ref.getFullYear(), parseInt(m4[1]) - 1, parseInt(m4[2]), 0, 0, 0);
@@ -753,8 +509,6 @@
         return null;
     }
 
-    // baseDate: HH:MM만 있는 글을 어느 날 기준으로 파싱할지.
-    // 목록 페이지에서 날짜가 명시된 글(YY.MM.DD)이 나오면 그 날짜를 이후 HH:MM 글의 기준으로 씀.
     function parsePosts(doc, baseDate) {
         // ── 모바일 파서 ──
         if (isMobile) {
@@ -780,7 +534,6 @@
                     const [mm, dd] = dateLi.textContent.trim().split('.');
                     const refYear = (baseDate || new Date()).getFullYear();
                     dateStr = `${refYear}.${mm}.${dd} 00:00`;
-                    // 날짜 명시된 글이 나오면 lastKnownDate 갱신
                     lastKnownDate = new Date(refYear, parseInt(mm) - 1, parseInt(dd));
                 }
 
@@ -802,13 +555,11 @@
             if (!titleEl || !dateEl) return;
 
             const title   = titleEl.textContent.trim();
-            // title 속성에 전체 날짜(YYYY-MM-DD HH:MM:SS)가 있으면 우선 사용
             const dateStr = dateEl.getAttribute('title') || dateEl.textContent.trim();
             const href    = titleEl.getAttribute('href') || '';
 
-            // 날짜가 명시된 경우 lastKnownDate 갱신 (이후 HH:MM 글들의 기준이 됨)
             const fullMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-            const shortMatch = dateStr.match(/^(\d{2})\.(\d{2})$/); // MM.DD
+            const shortMatch = dateStr.match(/^(\d{2})\.(\d{2})$/);
             if (fullMatch) {
                 lastKnownDate = new Date(parseInt(fullMatch[1]), parseInt(fullMatch[2]) - 1, parseInt(fullMatch[3]));
             } else if (shortMatch) {
@@ -828,13 +579,12 @@
     //  본문 파싱
     // ─────────────────────────────────────────────
     async function fetchPostBody(post) {
-        if (post.body !== undefined) return; // 이미 수집됨
+        if (post.body !== undefined) return;
         try {
             const url = post.href.startsWith('http')
                 ? post.href
                 : (isMobile ? 'https://m.dcinside.com' : 'https://gall.dcinside.com') + post.href;
             const doc = await fetchPage(url);
-            // PC: .write_div / 모바일: .write-content, .thum_txt
             const bodyEl = doc.querySelector('.write_div') || doc.querySelector('.write-content') || doc.querySelector('.thum_txt') || doc.querySelector('.gall_content');
             post.body = bodyEl ? bodyEl.textContent.trim() : '';
         } catch (e) {
@@ -861,17 +611,13 @@
 
     function analyzeWords(posts, extraStopwords, limit) {
         const wordMap = buildWordMap(posts, extraStopwords);
-
-        // 총 빈도 기준 정렬
         const sorted = [...wordMap.entries()]
             .sort((a, b) => b[1].length - a[1].length)
             .slice(0, limit || 50);
-
-        return sorted; // [[word, [posts]], ...]
+        return sorted;
     }
 
     function getHourlyStats(posts) {
-        // 0~23시 각 시간대별 게시글 수
         const hours = Array(24).fill(0).map((_, i) => ({ hour: i, count: 0 }));
         posts.forEach(p => {
             const h = p.date.getHours();
@@ -885,14 +631,14 @@
     // ─────────────────────────────────────────────
     let panelEl = null;
     let state = {
-        words: [],       // [[word, posts[]], ...]
+        words: [],
         selectedWord: null,
         selectedHour: null,
         allPosts: [],
         dtFrom: null,
         dtTo: null,
-        compareMode: false,     // 새벽 비교 모드
-        compareWords: [],       // [[word, todayPosts[], yesterdayPosts[]], ...]
+        compareMode: false,
+        compareWords: [],
         compareLabels: { today: '오늘 새벽', yesterday: '어제 새벽' },
     };
 
@@ -991,6 +737,9 @@
         document.body.appendChild(overlay);
         panelEl = overlay;
 
+        // 패널 열릴 때 현재 디시 테마에 맞게 즉시 적용
+        applyTheme();
+
         // 블랙리스트 기존값 불러오기
         const savedBL = GM_getValue('blacklist', '');
         document.getElementById('dc-blacklist-input').value = savedBL;
@@ -1052,20 +801,16 @@
         const today      = getBaseDay('today');
         const yesterday  = getBaseDay('yesterday');
 
-        // 오늘 새벽: 오늘 0시 ~ 오늘 5시
         const todayDawn = {
             dtFrom: new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     0, 0, 0),
             dtTo:   new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     5, 59, 59),
         };
-        // 어제 새벽: 어제 0시 ~ 어제 5시
         const yesterdayDawn = {
             dtFrom: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0),
             dtTo:   new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 5, 59, 59),
         };
 
-        // 날짜 표기 헬퍼: MM/DD
         const fmtDay = (d) => `${d.getMonth()+1}/${d.getDate()}`;
-        // 각 새벽의 "주인 날짜"는 5시가 속한 날 (dtTo 기준)
         const todayDawnLabel     = `오늘 새벽 (${fmtDay(todayDawn.dtTo)})`;
         const yesterdayDawnLabel = `어제 새벽 (${fmtDay(yesterdayDawn.dtTo)})`;
 
@@ -1258,17 +1003,14 @@
         if (el) el.style.width = pct + '%';
     }
 
-    // 날짜 키 → 해당 날 Date 객체 (자정 기준)
     function getBaseDay(dayKey) {
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         if (dayKey === 'today')     return today;
         if (dayKey === 'yesterday') return new Date(today.getTime() - 86400000);
-        return new Date(today.getTime() - 86400000 * 2); // 그저께
+        return new Date(today.getTime() - 86400000 * 2);
     }
 
-    // 시간대 키 + 기준일 → { dtFrom, dtTo }
-    // 새벽(dawn)은 전날 21시 ~ 당일 5시 (날짜 넘김)
     function getTimeRange(timeKey, base) {
         const Y = base.getFullYear(), M = base.getMonth(), D = base.getDate();
         if (timeKey === 'dawn') {
@@ -1296,14 +1038,12 @@
         const btn = document.getElementById('dc-collect-btn');
         btn.disabled = true;
 
-        // 선택된 날짜/시간대 드롭다운 읽기
         const daySelect  = document.getElementById('dc-day-select');
         const timeSelect = document.getElementById('dc-time-select');
         const dawnCompareChk = document.getElementById('dc-dawn-compare-chk');
         const dayKey  = daySelect  ? daySelect.value  : 'today';
         const timeKey = timeSelect ? timeSelect.value : 'all';
 
-        // ── 새벽 비교 모드 ──
         if (dawnCompareChk && dawnCompareChk.checked) {
             await startDawnCompare(btn);
             return;
@@ -1341,7 +1081,6 @@
         const dayLabel  = daySelect ? daySelect.options[daySelect.selectedIndex].text : '오늘';
         setStatus(`${dayLabel} ${timeLabel} 수집 중...`);
 
-        // 1단계: 페이지를 1부터 순서대로 수집, dtFrom 이전 글이 나오면 중단
         let page = 1;
         let stopped = false;
 
@@ -1349,7 +1088,7 @@
             try {
                 const url = buildListUrl(gallInfo, page);
                 const doc = await fetchPage(url);
-                const posts = parsePosts(doc, base); // base = 해당 날짜(어제/그제 등)
+                const posts = parsePosts(doc, base);
 
                 if (posts.length === 0) break;
 
@@ -1362,8 +1101,6 @@
                 const progressEst = Math.min(75, Math.round((page / (page + 3)) * 75));
                 setProgress(progressEst);
 
-                // ── 스트리밍: 본문 미포함 모드일 때만 페이지마다 단어 목록 실시간 갱신 ──
-                // 본문 포함 모드면 본문 수집 전 결과는 의미 없으므로 건너뜀
                 if (!includeBody && state.allPosts.length > 0) {
                     const liveWords = analyzeWords(state.allPosts, extraStopwords, topN);
                     const prevTop = state.words.length > 0 ? state.words[0][0] : null;
@@ -1373,8 +1110,6 @@
 
                 setStatus(`📄 ${page}p 수집 중… 게시글 ${state.allPosts.length}개${includeBody ? '' : ` · 단어 ${state.words.length}개`}`);
 
-                // 이 페이지의 모든 글이 범위(dtFrom) 이전이면 더 뒤져도 없음 → 중단
-                // (새벽처럼 dtFrom이 전날인 경우도 올바르게 처리)
                 if (oldest < dtFrom && newest < dtFrom) { stopped = true; break; }
 
                 page++;
@@ -1393,7 +1128,6 @@
             return;
         }
 
-        // 2단계: 본문 수집 → 전체 게시글 대상 (본문에만 있는 키워드도 잡기 위해)
         if (includeBody) {
             setStatus(`본문 수집 중... (0 / ${state.allPosts.length})`);
             const CHUNK = 3;
@@ -1440,24 +1174,21 @@
         });
     }
 
-    // 스트리밍 중 단어 목록 갱신 (순위/카운트 업데이트, 없어진 항목 제거, 새 항목 추가)
     function renderWordListStreaming(prevSelectedWord) {
         const container = document.getElementById('dc-word-list');
         if (!container) return;
 
-        const existing = new Map(); // word -> element
+        const existing = new Map();
         container.querySelectorAll('.dc-word-item').forEach(el => {
             existing.set(el.dataset.word, el);
         });
 
         const newWords = new Set(state.words.map(([w]) => w));
 
-        // 사라진 단어 제거
         existing.forEach((el, word) => {
             if (!newWords.has(word)) el.remove();
         });
 
-        // 순서대로 업데이트 / 추가
         state.words.forEach(([word, posts], idx) => {
             const rank  = idx + 1;
             const count = posts.length;
@@ -1467,7 +1198,6 @@
                 el.querySelector('.dc-word-rank').textContent  = rank;
                 el.querySelector('.dc-word-count').textContent = count;
                 el.classList.toggle('active', word === state.selectedWord);
-                // 올바른 위치로 이동
                 const children = [...container.children];
                 const curIdx   = children.indexOf(el);
                 if (curIdx !== idx) {
@@ -1483,7 +1213,6 @@
                     <span class="dc-word-count">${count}</span>
                 `;
                 item.addEventListener('click', () => selectWord(word));
-                // 새 항목은 잠깐 하이라이트
                 item.style.background = 'rgba(99,102,241,0.22)';
                 setTimeout(() => { item.style.background = ''; }, 800);
                 container.insertBefore(item, container.children[idx] || null);
@@ -1509,7 +1238,6 @@
             const word = (item.dataset.word || '').toLowerCase();
             const show = !q || word.includes(q);
             item.style.display = show ? '' : 'none';
-            // 매칭 단어 하이라이트
             const nameEl = item.querySelector('.dc-word-name');
             if (nameEl) {
                 const original = item.dataset.word || '';
@@ -1527,7 +1255,6 @@
         state.selectedWord = word;
         state.selectedHour = null;
 
-        // active 처리
         document.querySelectorAll('.dc-word-item').forEach(el => {
             el.classList.toggle('active', el.dataset.word === word);
         });
@@ -1538,7 +1265,6 @@
 
         renderChart(word, posts);
         renderPosts(word, posts);
-        // 모바일이면 차트+게시글 탭으로 자동 전환
         if (window.innerWidth <= 640) switchMobTab('detail');
     }
 
@@ -1550,7 +1276,6 @@
         if (wordLabel) wordLabel.textContent = `"${word}" 시간대별 분포`;
 
         const hourly = getHourlyStats(posts);
-        // 해당 단어 게시글이 분포한 시간대만 표시 (0건도 포함해서 전체 24시간 보여줌)
         const visibleHourly = hourly;
         const maxCount = Math.max(...visibleHourly.map(h => h.count), 1);
 
@@ -1568,7 +1293,6 @@
 
             bar.addEventListener('click', () => {
                 state.selectedHour = (state.selectedHour === hour) ? null : hour;
-                // 막대 selected 갱신 (data-hour 기반)
                 document.querySelectorAll('.dc-bar').forEach(b => {
                     b.classList.toggle('selected', parseInt(b.dataset.hour) === state.selectedHour);
                 });
@@ -1608,7 +1332,6 @@
             return;
         }
 
-        // 최신순 정렬
         const sorted = [...filtered].sort((a, b) => b.date - a.date);
 
         container.innerHTML = '';
@@ -1642,7 +1365,6 @@
     // ─────────────────────────────────────────────
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    // datetime-local input용 포맷 (YYYY-MM-DDTHH:MM)
     function toDatetimeLocal(d) {
         const yyyy = d.getFullYear();
         const mm   = String(d.getMonth() + 1).padStart(2, '0');
@@ -1676,10 +1398,7 @@
     //  버튼 삽입
     // ─────────────────────────────────────────────
     function insertButton() {
-        // 이미 삽입되어 있으면 스킵
         if (document.getElementById('dc-tracker-btn')) return;
-
-        // 갤러리 목록 페이지인지 확인
         if (!getGalleryInfo()) return;
 
         const btn = document.createElement('button');
@@ -1687,9 +1406,10 @@
         btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="10" width="4" height="12" rx="1"/><rect x="10" y="6" width="4" height="16" rx="1"/><rect x="18" y="2" width="4" height="20" rx="1"/></svg>단어 분석`;
         btn.title = '이 갤러리의 단어 빈도를 시간대별로 분석합니다';
         btn.addEventListener('click', openPanel);
+        // 버튼 삽입 즉시 현재 테마 적용
+        if (isDarkMode()) btn.classList.add('dc-btn-dark');
 
         if (isMobile) {
-            // 모바일: 하단 글쓰기 버튼 영역 앞 or 목록 상단
             const mWriteBtn = document.querySelector('.btn-write-wrap, .write-btn, a[href*="write"]');
             const mListWrap = document.querySelector('.gall-detail-lst, .listwrap, .list-wrap, ul.wr-list');
             if (mWriteBtn) {
@@ -1702,28 +1422,24 @@
             return;
         }
 
-        // PC 1순위: 글쓰기 버튼 영역(.switch_btnbox) 맨 앞에 삽입
         const switchBox = document.querySelector('.switch_btnbox');
         if (switchBox) {
             switchBox.insertBefore(btn, switchBox.firstChild);
             return;
         }
 
-        // PC 2순위: 글쓰기 링크 바로 앞
         const writeLink = document.querySelector('a.btn_write');
         if (writeLink) {
             writeLink.insertAdjacentElement('beforebegin', btn);
             return;
         }
 
-        // PC 3순위: 검색창 영역 뒤
         const searchWrap = document.querySelector('.top_search') || document.querySelector('.inner_search');
         if (searchWrap) {
             searchWrap.insertAdjacentElement('afterend', btn);
             return;
         }
 
-        // 최후 수단: 갤러리 목록 최상단
         const listWrap = document.querySelector('.gall_listwrap') || document.querySelector('.gall_list');
         if (listWrap) listWrap.prepend(btn);
     }
@@ -1746,4 +1462,3 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
 })();
-
