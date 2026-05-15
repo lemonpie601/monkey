@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.2.8
+// @version      5.2.9
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -1362,15 +1362,16 @@
                 const progressEst = Math.min(75, Math.round((page / (page + 3)) * 75));
                 setProgress(progressEst);
 
-                // ── 스트리밍: 페이지마다 단어 목록 실시간 갱신 ──
-                if (state.allPosts.length > 0) {
+                // ── 스트리밍: 본문 미포함 모드일 때만 페이지마다 단어 목록 실시간 갱신 ──
+                // 본문 포함 모드면 본문 수집 전 결과는 의미 없으므로 건너뜀
+                if (!includeBody && state.allPosts.length > 0) {
                     const liveWords = analyzeWords(state.allPosts, extraStopwords, topN);
                     const prevTop = state.words.length > 0 ? state.words[0][0] : null;
                     state.words = liveWords;
                     renderWordListStreaming(prevTop);
                 }
 
-                setStatus(`📄 ${page}p 수집 중… 게시글 ${state.allPosts.length}개 · 단어 ${state.words.length}개`);
+                setStatus(`📄 ${page}p 수집 중… 게시글 ${state.allPosts.length}개${includeBody ? '' : ` · 단어 ${state.words.length}개`}`);
 
                 // 이 페이지의 모든 글이 범위(dtFrom) 이전이면 더 뒤져도 없음 → 중단
                 // (새벽처럼 dtFrom이 전날인 경우도 올바르게 처리)
@@ -1392,7 +1393,7 @@
             return;
         }
 
-        // 2단계: 본문 수집 (선택 시)
+        // 2단계: 본문 수집 → 전체 게시글 대상 (본문에만 있는 키워드도 잡기 위해)
         if (includeBody) {
             setStatus(`본문 수집 중... (0 / ${state.allPosts.length})`);
             const CHUNK = 3;
@@ -1401,7 +1402,7 @@
                 await Promise.all(chunk.map(post => fetchPostBody(post)));
                 const done = Math.min(i + CHUNK, state.allPosts.length);
                 setProgress(75 + Math.round((done / state.allPosts.length) * 20));
-                setStatus(`본문 수집 중... (${done} / ${state.allPosts.length})`);
+                setStatus(`본문 수집 중... (${done} / ${state.allPosts.length}) — 완료 후 분석 시작`);
                 await sleep(400);
             }
         }
