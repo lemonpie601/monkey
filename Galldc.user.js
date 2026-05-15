@@ -142,8 +142,8 @@
             white-space: nowrap;
         }
 
-        /* ── 날짜 버튼 ── */
-        .dc-day-btn {
+        /* ── 날짜·시간대 버튼 공통 ── */
+        .dc-day-btn, .dc-time-btn {
             padding: 5px 12px;
             border-radius: 20px;
             border: 1.5px solid rgba(255,255,255,0.08);
@@ -155,28 +155,8 @@
             transition: all 0.15s;
             white-space: nowrap;
         }
-        .dc-day-btn:hover { border-color: #6366f1; color: #a5b4fc; }
-        .dc-day-btn.active {
-            background: rgba(99,102,241,0.2);
-            border-color: #6366f1;
-            color: #a78bfa;
-        }
-
-        /* ── 시간대 버튼 ── */
-        .dc-time-btn {
-            padding: 5px 14px;
-            border-radius: 20px;
-            border: 1.5px solid rgba(255,255,255,0.08);
-            background: #1e1e30;
-            color: #6b6b9a;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s;
-            white-space: nowrap;
-        }
-        .dc-time-btn:hover { border-color: #6366f1; color: #a5b4fc; }
-        .dc-time-btn.active {
+        .dc-day-btn:hover, .dc-time-btn:hover { border-color: #6366f1; color: #a5b4fc; }
+        .dc-day-btn.active, .dc-time-btn.active {
             background: rgba(99,102,241,0.2);
             border-color: #6366f1;
             color: #a78bfa;
@@ -823,24 +803,22 @@
     // ─────────────────────────────────────────────
     //  단어 빈도 분석
     // ─────────────────────────────────────────────
-    function analyzeWords(posts, extraStopwords, limit) {
-        const wordMap = new Map(); // word -> [post, ...]
-
-        // 제외 단어: 완전 일치 + 포함 매칭 (예: '띠니' → '띠니는', '띠니가' 모두 제외)
+    function buildWordMap(posts, extraStopwords) {
+        const wm = new Map();
         const extraList = [...extraStopwords];
-        const isBlocked = (word) => extraList.some(bl => bl && word.includes(bl));
-
         posts.forEach(post => {
-            // 제목 + 본문(있으면) 합쳐서 토크나이즈
             const text = post.title + (post.body ? ' ' + post.body : '');
-            const words = tokenize(text);
-            const wordSet = [...new Set(words)]; // 게시글당 1번만 카운트
-            wordSet.forEach(word => {
-                if (isBlocked(word)) return;
-                if (!wordMap.has(word)) wordMap.set(word, []);
-                wordMap.get(word).push(post);
+            [...new Set(tokenize(text))].forEach(word => {
+                if (extraList.some(bl => bl && word.includes(bl))) return;
+                if (!wm.has(word)) wm.set(word, []);
+                wm.get(word).push(post);
             });
         });
+        return wm;
+    }
+
+    function analyzeWords(posts, extraStopwords, limit) {
+        const wordMap = buildWordMap(posts, extraStopwords);
 
         // 총 빈도 기준 정렬
         const sorted = [...wordMap.entries()]
@@ -1081,22 +1059,8 @@
         setStatus('새벽 비교 분석 중...');
         setProgress(99);
 
-        const makeWordMap = (posts) => {
-            const wm = new Map();
-            const extraList = [...extraStopwords];
-            posts.forEach(post => {
-                const text = post.title + (post.body ? ' ' + post.body : '');
-                [...new Set(tokenize(text))].forEach(word => {
-                    if (extraList.some(bl => bl && word.includes(bl))) return;
-                    if (!wm.has(word)) wm.set(word, []);
-                    wm.get(word).push(post);
-                });
-            });
-            return wm;
-        };
-
-        const todayMap     = makeWordMap(todayPosts);
-        const yesterdayMap = makeWordMap(yesterdayPosts);
+        const todayMap     = buildWordMap(todayPosts, extraStopwords);
+        const yesterdayMap = buildWordMap(yesterdayPosts, extraStopwords);
         const allWordSet   = new Set([...todayMap.keys(), ...yesterdayMap.keys()]);
 
         state.compareWords = [...allWordSet]
@@ -1336,6 +1300,7 @@
                 if (posts.length === 0) break;
 
                 const oldest = posts.reduce((m, p) => p.date < m ? p.date : m, posts[0].date);
+                const newest = posts.reduce((m, p) => p.date > m ? p.date : m, posts[0].date);
 
                 const inRange = posts.filter(p => p.date >= dtFrom && p.date <= dtTo);
                 state.allPosts.push(...inRange);
@@ -1353,7 +1318,9 @@
 
                 setStatus(`📄 ${page}p 수집 중… 게시글 ${state.allPosts.length}개 · 단어 ${state.words.length}개`);
 
-                if (oldest < dtFrom) { stopped = true; break; }
+                // 이 페이지의 모든 글이 범위(dtFrom) 이전이면 더 뒤져도 없음 → 중단
+                // (새벽처럼 dtFrom이 전날인 경우도 올바르게 처리)
+                if (oldest < dtFrom && newest < dtFrom) { stopped = true; break; }
 
                 page++;
                 await sleep(250);
