@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.3.0
+// @version      5.3.1
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -22,7 +22,9 @@
     //  (html.className === "darkmode" 이면 야간모드 ON)
     // ─────────────────────────────────────────────
     function isDarkMode() {
-        return document.documentElement.classList.contains('darkmode');
+        // 디시인사이드는 버전에 따라 html 또는 body에 darkmode 클래스를 붙임
+        return document.documentElement.classList.contains('darkmode') ||
+               document.body.classList.contains('darkmode');
     }
 
     function applyTheme() {
@@ -41,9 +43,23 @@
         }
     }
 
-    // html 태그 클래스 변경 감지 (darkmode() 호출 시 html.darkmode 토글)
+    // ── [버그1 수정] html 태그 및 body 태그 클래스 변경 모두 감지
+    //    디시인사이드 버전에 따라 html 또는 body에 darkmode 클래스가 토글됨
     const themeObserver = new MutationObserver(applyTheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    if (document.body) {
+        themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    } else {
+        document.addEventListener('DOMContentLoaded', () => {
+            themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        });
+    }
+    // 스크립트 로드 시점에 이미 야간모드가 적용돼 있을 수 있으므로 즉시 한 번 실행
+    if (document.readyState !== 'loading') {
+        applyTheme();
+    } else {
+        document.addEventListener('DOMContentLoaded', applyTheme);
+    }
 
     // ─────────────────────────────────────────────
     //  스타일
@@ -514,6 +530,9 @@
         if (isMobile) {
             const posts = [];
             const items = doc.querySelectorAll('li');
+            // [버그2 수정] lastKnownDate 초기값을 baseDate로 설정
+            // baseDate = 어제/그저께 등 수집 대상 날짜. 이 값이 없으면 HH:MM 파싱 시
+            // 오늘 날짜로 잘못 파싱되어 시간 필터링에서 탈락하는 문제가 있었음.
             let lastKnownDate = baseDate || null;
             items.forEach(li => {
                 const a = li.querySelector('a.lt');
@@ -528,15 +547,19 @@
                 const dateLi = allLi.find(l => /^\d{2}\.\d{2}$/.test(l.textContent.trim()));
 
                 let dateStr = '';
-                if (timeLi) {
-                    dateStr = timeLi.textContent.trim();
-                } else if (dateLi) {
+                if (dateLi) {
+                    // MM.DD 형식이 있으면 우선 처리하여 lastKnownDate를 갱신
                     const [mm, dd] = dateLi.textContent.trim().split('.');
                     const refYear = (baseDate || new Date()).getFullYear();
                     dateStr = `${refYear}.${mm}.${dd} 00:00`;
                     lastKnownDate = new Date(refYear, parseInt(mm) - 1, parseInt(dd));
+                } else if (timeLi) {
+                    // HH:MM 형식: lastKnownDate(= baseDate 혹은 앞서 파싱한 날짜)를 ref로 사용
+                    dateStr = timeLi.textContent.trim();
                 }
 
+                // [버그2 수정] HH:MM 파싱 시 ref가 lastKnownDate(= baseDate)로 전달되므로
+                // 어제/그저께 게시글도 올바른 날짜로 파싱됨
                 const dateObj = parseDate(dateStr, lastKnownDate);
                 if (title && dateObj) {
                     posts.push({ title, date: dateObj, href, dateStr });
