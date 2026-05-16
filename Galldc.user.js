@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.3.3
+// @version      5.3.4
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -756,14 +756,26 @@
         const dawnChk = document.getElementById('dc-dawn-compare-chk');
         const daySelEl  = document.getElementById('dc-day-select');
         const timeSelEl = document.getElementById('dc-time-select');
+
         const toggleSelectState = () => {
-            const on = dawnChk.checked;
-            daySelEl.disabled  = on;
-            timeSelEl.disabled = on;
-            daySelEl.style.opacity  = on ? '0.35' : '';
-            timeSelEl.style.opacity = on ? '0.35' : '';
+            const dawnOn = dawnChk.checked;
+            // 모바일에서 어제/그저께 선택 시 시간 select 비활성화
+            const mobileNonToday = isMobile && daySelEl.value !== 'today';
+            const timeDisabled = dawnOn || mobileNonToday;
+            daySelEl.disabled  = dawnOn;
+            timeSelEl.disabled = timeDisabled;
+            daySelEl.style.opacity  = dawnOn ? '0.35' : '';
+            timeSelEl.style.opacity = timeDisabled ? '0.35' : '';
+            if (mobileNonToday) {
+                timeSelEl.title = '모바일에서는 오늘 이전 날짜의 시간대 필터를 지원하지 않습니다';
+            } else {
+                timeSelEl.title = '';
+            }
         };
         dawnChk.addEventListener('change', toggleSelectState);
+        daySelEl.addEventListener('change', toggleSelectState);
+        // 패널 열릴 때 초기 상태 적용
+        if (isMobile) toggleSelectState();
 
         // 단어 검색창
         document.getElementById('dc-word-search').addEventListener('input', e => {
