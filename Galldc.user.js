@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         디시인사이드 단어 빈도 트래커
 // @namespace    http://tampermonkey.net/
-// @version      5.3.2
+// @version      5.3.3
 // @description  디시인사이드 갤러리에서 자주 나오는 단어를 시간대별로 분석해주는 확장 프로그램
 // @author       레몬파이
 // @match        https://gall.dcinside.com/*
@@ -16,51 +16,44 @@
     'use strict';
 
     // ─────────────────────────────────────────────
-    //  PC / 모바일 판별 (isDarkMode보다 먼저 선언)
-    // ─────────────────────────────────────────────
-    const isMobile = location.hostname === 'm.dcinside.com';
-
-    // ─────────────────────────────────────────────
     //  디시인사이드 야간모드 감지
     //
-    //  [버그1 수정]
-    //  디시 PC 야간모드는 html.className 을 "darkmode" 로 통째로 교체합니다.
-    //  classList.contains 는 이 경우에도 작동하지만,
-    //  추가로 쿠키 gall_night_mode=Y 를 함께 확인해 누락을 방지합니다.
-    //  모바일은 body 클래스에 darkmode 를 붙입니다.
+    //  darkmode() 함수는 html 태그에 'darkmode' 클래스를 토글합니다.
+    //  (html.className === "darkmode" 이면 야간모드 ON)
     // ─────────────────────────────────────────────
     function isDarkMode() {
         // 1) html 클래스 확인 (PC: className 통째로 "darkmode")
         if (document.documentElement.className.includes('darkmode')) return true;
         // 2) body 클래스 확인 (모바일/일부 PC)
         if (document.body && document.body.className.includes('darkmode')) return true;
-        // 3) 디시 PC 야간모드 쿠키 확인 (가장 신뢰할 수 있는 fallback)
+        // 3) 디시 PC 야간모드 쿠키 확인
         if (document.cookie.split(';').some(c => c.trim().startsWith('gall_night_mode=Y'))) return true;
         return false;
     }
 
     function applyTheme() {
         const dark = isDarkMode();
+        // 패널: 기본이 라이트, 야간모드일 때만 dc-dark 추가
         const panel = document.getElementById('dc-tracker-panel');
         if (panel) {
             if (dark) panel.classList.add('dc-dark');
-            else      panel.classList.remove('dc-dark');
+            else       panel.classList.remove('dc-dark');
         }
+        // 트리거 버튼
         const btn = document.getElementById('dc-tracker-btn');
         if (btn) {
             if (dark) btn.classList.add('dc-btn-dark');
-            else      btn.classList.remove('dc-btn-dark');
+            else       btn.classList.remove('dc-btn-dark');
         }
     }
 
-    // html/body 클래스 변경 감지 — attributeFilter 없이 전체 attribute 변경 감시
+    // html/body 클래스 변경 감지 (darkmode 토글 대응)
     const themeObserver = new MutationObserver(applyTheme);
     themeObserver.observe(document.documentElement, { attributes: true });
     const _observeBody = () => themeObserver.observe(document.body, { attributes: true });
     if (document.body) _observeBody();
     else document.addEventListener('DOMContentLoaded', _observeBody);
 
-    // 로드 시점 즉시 적용
     if (document.readyState !== 'loading') applyTheme();
     else document.addEventListener('DOMContentLoaded', applyTheme);
 
@@ -210,13 +203,6 @@
         .dc-toggle-warn { font-size: 10px; color: #f59e0b; display: none; }
         #dc-include-body:checked ~ .dc-toggle-warn { display: inline; }
 
-        /* 모바일 과거날짜 시간대 비활성 안내 */
-        #dc-time-group.dc-disabled { opacity: 0.35; pointer-events: none; }
-        #dc-time-notice {
-            display: none; font-size: 10px; color: #f59e0b; font-weight: 600; white-space: nowrap;
-        }
-        #dc-time-notice.dc-visible { display: inline; }
-
         #dc-progress-bar-wrap { height: 2px; background: #e0e7ff; flex-shrink: 0; transition: background 0.2s; }
         #dc-progress-bar {
             height: 100%; background: linear-gradient(90deg, #6366f1, #a78bfa);
@@ -346,6 +332,7 @@
 
         /* ══════════════════════════════
            다크 모드 오버라이드 (.dc-dark)
+           — html.darkmode 일 때 자동 적용
         ══════════════════════════════ */
         #dc-tracker-panel.dc-dark {
             background: #13131a; color: #e2e4f0;
@@ -395,7 +382,6 @@
         #dc-tracker-panel.dc-dark .dc-empty { color: #2e2e4a; }
         #dc-tracker-panel.dc-dark #dc-close-btn { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); color: #4a4a6a; }
         #dc-tracker-panel.dc-dark #dc-close-btn:hover { background: rgba(236,72,153,0.15); color: #f472b6; border-color: rgba(236,72,153,0.3); }
-        #dc-tracker-panel.dc-dark #dc-time-notice { color: #a78bfa; }
         @media (max-width: 640px) {
             #dc-tracker-panel.dc-dark #dc-mob-tabs { background: #0f0f1a; border-bottom-color: rgba(255,255,255,0.06); }
             #dc-tracker-panel.dc-dark .dc-mob-tab { color: #3a3a5a; }
@@ -424,6 +410,7 @@
     // ─────────────────────────────────────────────
     //  한국어 어절 → 어근 추출 (접미 조사/어미 제거)
     // ─────────────────────────────────────────────
+
     const SUFFIXES = [
         '하겠습니다','하겠어요','했습니다','합니다','해요','했어','하는데','하면서','하면','하니까','하니','하고','해서','해도','하자','하지','하네','하냐','하든',
         '이겠습니다','이겠어요','였습니다','입니다','이에요','이었어','인데','이면서','이면','이니까','이니','이고','이어서','이어도',
@@ -455,6 +442,7 @@
             .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣa-zA-Z0-9\s]/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
+
         return cleaned.split(' ').flatMap(w => {
             if (!w) return [];
             const stem = stemWord(w);
@@ -466,6 +454,11 @@
             return [stem];
         });
     }
+
+    // ─────────────────────────────────────────────
+    //  PC / 모바일 판별
+    // ─────────────────────────────────────────────
+    const isMobile = location.hostname === 'm.dcinside.com';
 
     // ─────────────────────────────────────────────
     //  현재 갤러리 ID/타입 감지
@@ -481,9 +474,11 @@
         const url = new URL(location.href);
         const id = url.searchParams.get('id');
         if (!id) return null;
+
         let type = 'board';
         if (location.pathname.includes('/mgallery/')) type = 'mgallery';
         else if (location.pathname.includes('/mini/')) type = 'mini';
+
         return { id, type, mobile: false };
     }
 
@@ -492,8 +487,11 @@
             return `https://m.dcinside.com/${gallInfo.type}/${gallInfo.id}?page=${page}`;
         }
         const base = `https://gall.dcinside.com`;
-        if (gallInfo.type === 'mgallery') return `${base}/mgallery/board/lists/?id=${gallInfo.id}&page=${page}`;
-        if (gallInfo.type === 'mini')     return `${base}/mini/board/lists/?id=${gallInfo.id}&page=${page}`;
+        if (gallInfo.type === 'mgallery') {
+            return `${base}/mgallery/board/lists/?id=${gallInfo.id}&page=${page}`;
+        } else if (gallInfo.type === 'mini') {
+            return `${base}/mini/board/lists/?id=${gallInfo.id}&page=${page}`;
+        }
         return `${base}/board/lists/?id=${gallInfo.id}&page=${page}`;
     }
 
@@ -501,9 +499,13 @@
     //  페이지 파싱 (fetch)
     // ─────────────────────────────────────────────
     async function fetchPage(url) {
-        const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'text/html' } });
+        const res = await fetch(url, {
+            credentials: 'include',
+            headers: { 'Accept': 'text/html' }
+        });
         const html = await res.text();
-        return new DOMParser().parseFromString(html, 'text/html');
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return doc;
     }
 
     function parseDate(dateStr, baseDate) {
@@ -520,11 +522,12 @@
     }
 
     function parsePosts(doc, baseDate) {
+        const today = new Date(); // 항상 실제 오늘
+
         // ── 모바일 파서 ──
         if (isMobile) {
             const posts = [];
             const items = doc.querySelectorAll('li');
-            let lastKnownDate = baseDate || null;
             items.forEach(li => {
                 const a = li.querySelector('a.lt');
                 if (!a) return;
@@ -533,39 +536,29 @@
                 const title = titleEl.textContent.trim();
                 const href  = a.getAttribute('href') || '';
 
-                const allLi = [...li.querySelectorAll('li')];
+                const allLi  = [...li.querySelectorAll('li')];
                 const timeLi = allLi.find(l => /^\d{2}:\d{2}$/.test(l.textContent.trim()));
                 const dateLi = allLi.find(l => /^\d{2}\.\d{2}$/.test(l.textContent.trim()));
 
-                let dateObj = null;
-
                 if (dateLi) {
-                    // MM.DD 형식 — 날짜만 있고 시간 정보 없음
-                    // lastKnownDate를 갱신하고, 시간은 00:00으로 파싱
+                    // MM.DD — 오늘 이전 글, 시간 불명이므로 00:00으로
                     const [mm, dd] = dateLi.textContent.trim().split('.');
-                    const refYear = (baseDate || new Date()).getFullYear();
-                    lastKnownDate = new Date(refYear, parseInt(mm) - 1, parseInt(dd));
-                    // 날짜만 있는 게시글은 실제 작성 시간을 알 수 없으므로
-                    // dateObj에 날짜 정보만 담고 시간은 -1로 마킹
-                    dateObj = new Date(refYear, parseInt(mm) - 1, parseInt(dd), -1, 0, 0);
-                    dateObj._timeUnknown = true;
+                    const refYear = (baseDate || today).getFullYear();
+                    const date = new Date(refYear, parseInt(mm) - 1, parseInt(dd), 0, 0, 0);
+                    posts.push({ title, date, href });
                 } else if (timeLi) {
-                    // HH:MM 형식 — 오늘 게시글 (lastKnownDate = baseDate)
-                    const dateStr = timeLi.textContent.trim();
-                    dateObj = parseDate(dateStr, lastKnownDate);
-                }
-
-                if (title && dateObj) {
-                    posts.push({ title, date: dateObj, href, timeUnknown: !!dateObj._timeUnknown });
+                    // HH:MM — 오늘 글, 항상 실제 오늘 날짜 기준
+                    const date = parseDate(timeLi.textContent.trim(), today);
+                    if (date) posts.push({ title, date, href });
                 }
             });
             return posts;
         }
 
         // ── PC 파서 ──
+        // PC는 .gall_date의 title 속성에 "YYYY-MM-DD HH:MM:SS" 형식으로 완전한 날짜+시간이 있음
         const rows = doc.querySelectorAll('.gall_list tbody tr.ub-content');
         const posts = [];
-        let lastKnownDate = baseDate || null;
         rows.forEach(row => {
             const titleEl = row.querySelector('.gall_tit a:not(.reply_num)');
             const dateEl  = row.querySelector('.gall_date');
@@ -575,18 +568,9 @@
             const dateStr = dateEl.getAttribute('title') || dateEl.textContent.trim();
             const href    = titleEl.getAttribute('href') || '';
 
-            const fullMatch  = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-            const shortMatch = dateStr.match(/^(\d{2})\.(\d{2})$/);
-            if (fullMatch) {
-                lastKnownDate = new Date(parseInt(fullMatch[1]), parseInt(fullMatch[2]) - 1, parseInt(fullMatch[3]));
-            } else if (shortMatch) {
-                const refYear = (baseDate || new Date()).getFullYear();
-                lastKnownDate = new Date(refYear, parseInt(shortMatch[1]) - 1, parseInt(shortMatch[2]));
-            }
-
-            const dateObj = parseDate(dateStr, lastKnownDate);
+            const dateObj = parseDate(dateStr, baseDate || today);
             if (title && dateObj) {
-                posts.push({ title, date: dateObj, href });
+                posts.push({ title, date: dateObj, href, dateStr });
             }
         });
         return posts;
@@ -604,7 +588,9 @@
             const doc = await fetchPage(url);
             const bodyEl = doc.querySelector('.write_div') || doc.querySelector('.write-content') || doc.querySelector('.thum_txt') || doc.querySelector('.gall_content');
             post.body = bodyEl ? bodyEl.textContent.trim() : '';
-        } catch (e) { post.body = ''; }
+        } catch (e) {
+            post.body = '';
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -626,14 +612,18 @@
 
     function analyzeWords(posts, extraStopwords, limit) {
         const wordMap = buildWordMap(posts, extraStopwords);
-        return [...wordMap.entries()]
+        const sorted = [...wordMap.entries()]
             .sort((a, b) => b[1].length - a[1].length)
             .slice(0, limit || 50);
+        return sorted;
     }
 
     function getHourlyStats(posts) {
         const hours = Array(24).fill(0).map((_, i) => ({ hour: i, count: 0 }));
-        posts.forEach(p => { if (!p.timeUnknown) hours[p.date.getHours()].count++; });
+        posts.forEach(p => {
+            const h = p.date.getHours();
+            hours[h].count++;
+        });
         return hours;
     }
 
@@ -642,31 +632,16 @@
     // ─────────────────────────────────────────────
     let panelEl = null;
     let state = {
-        words: [], selectedWord: null, selectedHour: null, allPosts: [],
-        dtFrom: null, dtTo: null, compareMode: false, compareWords: [],
+        words: [],
+        selectedWord: null,
+        selectedHour: null,
+        allPosts: [],
+        dtFrom: null,
+        dtTo: null,
+        compareMode: false,
+        compareWords: [],
         compareLabels: { today: '오늘 새벽', yesterday: '어제 새벽' },
     };
-
-    // ── [버그2 수정] 모바일에서 어제/그저께는 HH:MM 시간정보가 없으므로
-    //    시간대 필터 자체가 불가능. 해당 조합이면 시간대 select를 비활성화.
-    function updateTimeSelectState() {
-        const dayVal  = document.getElementById('dc-day-select')?.value;
-        const timeGrp = document.getElementById('dc-time-group');
-        const notice  = document.getElementById('dc-time-notice');
-        const dawnChk = document.getElementById('dc-dawn-compare-chk');
-        if (!timeGrp || !notice) return;
-
-        const isPastDay = isMobile && (dayVal === 'yesterday' || dayVal === '2daysago');
-        const isCompare = dawnChk?.checked;
-
-        if (isPastDay && !isCompare) {
-            timeGrp.classList.add('dc-disabled');
-            notice.classList.add('dc-visible');
-        } else {
-            timeGrp.classList.remove('dc-disabled');
-            notice.classList.remove('dc-visible');
-        }
-    }
 
     function openPanel() {
         if (document.getElementById('dc-tracker-overlay')) return;
@@ -691,7 +666,7 @@
                                 <option value="2daysago">그저께</option>
                             </select>
                         </div>
-                        <div class="dc-ctrl-group" id="dc-time-group">
+                        <div class="dc-ctrl-group">
                             <label>시간대</label>
                             <select id="dc-time-select" class="dc-select">
                                 <option value="all">전체</option>
@@ -701,7 +676,6 @@
                                 <option value="night">저녁 19~23시</option>
                             </select>
                         </div>
-                        <span id="dc-time-notice">⚠ 모바일 과거날짜는 시간대 미지원</span>
                         <div class="dc-ctrl-group" style="margin-left:4px;">
                             <label class="dc-toggle-wrap" id="dc-dawn-compare-wrap" title="오늘 새벽 vs 어제 새벽 비교">
                                 <input type="checkbox" id="dc-dawn-compare-chk" />
@@ -763,40 +737,40 @@
 
         document.body.appendChild(overlay);
         panelEl = overlay;
+
+        // 패널 열릴 때 현재 디시 테마에 맞게 즉시 적용
         applyTheme();
 
+        // 블랙리스트 기존값 불러오기
         const savedBL = GM_getValue('blacklist', '');
         document.getElementById('dc-blacklist-input').value = savedBL;
 
+        // 닫기
         document.getElementById('dc-close-btn').addEventListener('click', closePanel);
         overlay.addEventListener('click', e => { if (e.target === overlay) closePanel(); });
+
+        // 수집 버튼
         document.getElementById('dc-collect-btn').addEventListener('click', startCollect);
 
-        const dawnChk   = document.getElementById('dc-dawn-compare-chk');
+        // 새벽 비교 체크 시 날짜/시간 select 흐리게
+        const dawnChk = document.getElementById('dc-dawn-compare-chk');
         const daySelEl  = document.getElementById('dc-day-select');
         const timeSelEl = document.getElementById('dc-time-select');
-
-        // 새벽 비교 토글 시 날짜/시간대 select 비활성
         const toggleSelectState = () => {
             const on = dawnChk.checked;
             daySelEl.disabled  = on;
             timeSelEl.disabled = on;
             daySelEl.style.opacity  = on ? '0.35' : '';
             timeSelEl.style.opacity = on ? '0.35' : '';
-            updateTimeSelectState();
         };
         dawnChk.addEventListener('change', toggleSelectState);
 
-        // 날짜 변경 시 시간대 비활성 여부 갱신
-        daySelEl.addEventListener('change', updateTimeSelectState);
-
-        // 초기 상태 적용
-        updateTimeSelectState();
-
+        // 단어 검색창
         document.getElementById('dc-word-search').addEventListener('input', e => {
             filterWordList(e.target.value.trim());
         });
 
+        // 모바일 탭 전환
         document.querySelectorAll('.dc-mob-tab').forEach(tab => {
             tab.addEventListener('click', () => switchMobTab(tab.dataset.tab));
         });
@@ -814,13 +788,19 @@
         const topN = parseInt(document.getElementById('dc-top-n')?.value || '50', 10);
 
         const gallInfo = getGalleryInfo();
-        if (!gallInfo) { setStatus('❌ 갤러리 페이지에서만 사용 가능합니다.'); btn.disabled = false; return; }
+        if (!gallInfo) {
+            setStatus('❌ 갤러리 페이지에서만 사용 가능합니다.');
+            btn.disabled = false;
+            return;
+        }
 
         state.compareMode = true;
-        state.words = []; state.allPosts = []; state.compareWords = [];
+        state.words = [];
+        state.allPosts = [];
+        state.compareWords = [];
 
-        const today     = getBaseDay('today');
-        const yesterday = getBaseDay('yesterday');
+        const today      = getBaseDay('today');
+        const yesterday  = getBaseDay('yesterday');
 
         const todayDawn = {
             dtFrom: new Date(today.getFullYear(),     today.getMonth(),     today.getDate(),     0, 0, 0),
@@ -831,9 +811,9 @@
             dtTo:   new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 5, 59, 59),
         };
 
-        const fmtDay = d => `${d.getMonth()+1}/${d.getDate()}`;
-        const todayDawnLabel     = `오늘 새벽 (${fmtDay(today)})`;
-        const yesterdayDawnLabel = `어제 새벽 (${fmtDay(yesterday)})`;
+        const fmtDay = (d) => `${d.getMonth()+1}/${d.getDate()}`;
+        const todayDawnLabel     = `오늘 새벽 (${fmtDay(todayDawn.dtTo)})`;
+        const yesterdayDawnLabel = `어제 새벽 (${fmtDay(yesterdayDawn.dtTo)})`;
 
         setProgress(0);
 
@@ -842,15 +822,16 @@
             let page = 1;
             while (page <= MAX_PAGES) {
                 try {
-                    const doc = await fetchPage(buildListUrl(gallInfo, page));
+                    const url = buildListUrl(gallInfo, page);
+                    const doc = await fetchPage(url);
                     const pagePosts = parsePosts(doc, baseDate);
                     if (pagePosts.length === 0) break;
                     const oldest = pagePosts.reduce((m, p) => p.date < m ? p.date : m, pagePosts[0].date);
                     const newest = pagePosts.reduce((m, p) => p.date > m ? p.date : m, pagePosts[0].date);
-                    // 새벽 비교는 오늘/어제 각각 HH:MM이 있는 게시글만 필터
-                    const inRange = pagePosts.filter(p => !p.timeUnknown && p.date >= range.dtFrom && p.date <= range.dtTo);
+                    const inRange = pagePosts.filter(p => p.date >= range.dtFrom && p.date <= range.dtTo);
                     posts.push(...inRange);
-                    setProgress(progressBase + Math.min(40, Math.round((page / (page + 3)) * 40)));
+                    const prog = progressBase + Math.min(40, Math.round((page / (page + 3)) * 40));
+                    setProgress(prog);
                     setStatus(`${label} ${page}p… ${posts.length}개`);
                     if (oldest < range.dtFrom && newest < range.dtFrom) break;
                     page++;
@@ -902,8 +883,10 @@
 
         container.innerHTML = '';
         state.compareWords.forEach(({ word, today, yesterday }, idx) => {
-            const tc = today.length, yc = yesterday.length, diff = tc - yc;
-            const diffHtml = diff > 0
+            const tc   = today.length;
+            const yc   = yesterday.length;
+            const diff = tc - yc;
+            let diffHtml = diff > 0
                 ? `<span style="color:#34d399;font-size:10px;font-weight:700;">▲${diff}</span>`
                 : diff < 0
                     ? `<span style="color:#f87171;font-size:10px;font-weight:700;">▼${Math.abs(diff)}</span>`
@@ -921,10 +904,12 @@
                     <span style="font-size:10px;color:#a78bfa;font-weight:700;">${tc}</span>
                     <span style="font-size:9px;color:#3a3a5a;">/</span>
                     <span style="font-size:10px;color:#60a5fa;">${yc}</span>
-                </span>`;
+                </span>
+            `;
             item.title = `${state.compareLabels.today} ${tc}개 / ${state.compareLabels.yesterday} ${yc}개`;
             item.addEventListener('click', () => {
-                state.selectedWord = word; state.selectedHour = null;
+                state.selectedWord = word;
+                state.selectedHour = null;
                 document.querySelectorAll('.dc-word-item').forEach(el => el.classList.toggle('active', el.dataset.word === word));
                 renderComparePosts(word, today, yesterday);
                 if (window.innerWidth <= 640) switchMobTab('detail');
@@ -1009,8 +994,15 @@
         panelEl = null;
     }
 
-    function setStatus(msg) { const el = document.getElementById('dc-tracker-status'); if (el) el.textContent = msg; }
-    function setProgress(pct) { const el = document.getElementById('dc-progress-bar'); if (el) el.style.width = pct + '%'; }
+    function setStatus(msg) {
+        const el = document.getElementById('dc-tracker-status');
+        if (el) el.textContent = msg;
+    }
+
+    function setProgress(pct) {
+        const el = document.getElementById('dc-progress-bar');
+        if (el) el.style.width = pct + '%';
+    }
 
     function getBaseDay(dayKey) {
         const now = new Date();
@@ -1022,7 +1014,13 @@
 
     function getTimeRange(timeKey, base) {
         const Y = base.getFullYear(), M = base.getMonth(), D = base.getDate();
-        if (timeKey === 'dawn') return { dtFrom: new Date(Y,M,D,0,0,0), dtTo: new Date(Y,M,D,5,59,59), label: '새벽' };
+        if (timeKey === 'dawn') {
+            return {
+                dtFrom: new Date(Y, M, D,  0, 0, 0),
+                dtTo:   new Date(Y, M, D,  5, 59, 59),
+                label:  '새벽',
+            };
+        }
         const ranges = {
             all:       { h1: 0,  h2: 23, label: '전체' },
             morning:   { h1: 6,  h2: 12, label: '오전' },
@@ -1030,21 +1028,22 @@
             night:     { h1: 19, h2: 23, label: '저녁' },
         };
         const r = ranges[timeKey] || ranges.all;
-        return { dtFrom: new Date(Y,M,D,r.h1,0,0), dtTo: new Date(Y,M,D,r.h2,59,59), label: r.label };
+        return {
+            dtFrom: new Date(Y, M, D, r.h1, 0, 0),
+            dtTo:   new Date(Y, M, D, r.h2, 59, 59),
+            label:  r.label,
+        };
     }
 
     async function startCollect() {
         const btn = document.getElementById('dc-collect-btn');
         btn.disabled = true;
 
-        const daySelect      = document.getElementById('dc-day-select');
-        const timeSelect     = document.getElementById('dc-time-select');
+        const daySelect  = document.getElementById('dc-day-select');
+        const timeSelect = document.getElementById('dc-time-select');
         const dawnCompareChk = document.getElementById('dc-dawn-compare-chk');
         const dayKey  = daySelect  ? daySelect.value  : 'today';
-
-        // [버그2 수정] 모바일 + 과거날짜면 시간대 정보가 없으므로 강제로 'all' 처리
-        const isPastMobile = isMobile && (dayKey === 'yesterday' || dayKey === '2daysago');
-        const timeKey = isPastMobile ? 'all' : (timeSelect ? timeSelect.value : 'all');
+        const timeKey = timeSelect ? timeSelect.value : 'all';
 
         if (dawnCompareChk && dawnCompareChk.checked) {
             await startDawnCompare(btn);
@@ -1056,45 +1055,61 @@
         const base = getBaseDay(dayKey);
         const { dtFrom, dtTo, label: timeLabel } = getTimeRange(timeKey, base);
 
-        const blStr       = document.getElementById('dc-blacklist-input').value;
+        const blStr     = document.getElementById('dc-blacklist-input').value;
         const includeBody = document.getElementById('dc-include-body').checked;
-        const MAX_PAGES   = 100;
+        const MAX_PAGES = 100;
 
         GM_setValue('blacklist', blStr);
         const extraStopwords = new Set(blStr.split(',').map(s => s.trim()).filter(Boolean));
         const topN = parseInt(document.getElementById('dc-top-n')?.value || '50', 10);
 
         const gallInfo = getGalleryInfo();
-        if (!gallInfo) { setStatus('❌ 갤러리 페이지에서만 사용 가능합니다.'); btn.disabled = false; return; }
+        if (!gallInfo) {
+            setStatus('❌ 갤러리 페이지에서만 사용 가능합니다.');
+            btn.disabled = false;
+            return;
+        }
 
-        state.allPosts = []; state.words = []; state.selectedWord = null; state.selectedHour = null;
-        state.dtFrom = dtFrom; state.dtTo = dtTo;
+        state.allPosts = [];
+        state.words = [];
+        state.selectedWord = null;
+        state.selectedHour = null;
+        state.dtFrom = dtFrom;
+        state.dtTo   = dtTo;
 
         setProgress(0);
-        const dayLabel = daySelect ? daySelect.options[daySelect.selectedIndex].text : '오늘';
+
+        const dayLabel  = daySelect ? daySelect.options[daySelect.selectedIndex].text : '오늘';
         setStatus(`${dayLabel} ${timeLabel} 수집 중...`);
 
-        let page = 1, stopped = false;
+        let page = 1;
+        let stopped = false;
 
         while (!stopped && page <= MAX_PAGES) {
             try {
-                const doc   = await fetchPage(buildListUrl(gallInfo, page));
+                const url = buildListUrl(gallInfo, page);
+                const doc = await fetchPage(url);
                 const posts = parsePosts(doc, base);
+
                 if (posts.length === 0) break;
 
                 const oldest = posts.reduce((m, p) => p.date < m ? p.date : m, posts[0].date);
                 const newest = posts.reduce((m, p) => p.date > m ? p.date : m, posts[0].date);
 
-                // 모바일 과거날짜: timeUnknown 게시글도 날짜만 맞으면 포함 (시간 필터는 all)
-                const inRange = isPastMobile
-                    ? posts.filter(p => {
-                        const d = p.date;
-                        return d.getFullYear() === base.getFullYear() &&
-                               d.getMonth()    === base.getMonth()    &&
-                               d.getDate()     === base.getDate();
-                    })
-                    : posts.filter(p => !p.timeUnknown && p.date >= dtFrom && p.date <= dtTo);
-
+                let inRange;
+                if (isMobile) {
+                    // 모바일 과거 글은 시간 정보가 없으므로 날짜만 비교
+                    inRange = posts.filter(p => {
+                        const pDate = p.date.toDateString();
+                        const fromDate = dtFrom.toDateString();
+                        if (pDate !== fromDate) return false;
+                        // 오늘 글(HH:MM 있음)만 시간대 필터 적용
+                        const hasPreciseTime = p.date.getHours() !== 0 || p.date.getMinutes() !== 0;
+                        return hasPreciseTime ? (p.date >= dtFrom && p.date <= dtTo) : true;
+                    });
+                } else {
+                    inRange = posts.filter(p => p.date >= dtFrom && p.date <= dtTo);
+                }
                 state.allPosts.push(...inRange);
 
                 const progressEst = Math.min(75, Math.round((page / (page + 3)) * 75));
@@ -1102,13 +1117,22 @@
 
                 if (!includeBody && state.allPosts.length > 0) {
                     const liveWords = analyzeWords(state.allPosts, extraStopwords, topN);
+                    const prevTop = state.words.length > 0 ? state.words[0][0] : null;
                     state.words = liveWords;
-                    renderWordListStreaming();
+                    renderWordListStreaming(prevTop);
                 }
 
                 setStatus(`📄 ${page}p 수집 중… 게시글 ${state.allPosts.length}개${includeBody ? '' : ` · 단어 ${state.words.length}개`}`);
 
-                if (oldest < dtFrom && newest < dtFrom) { stopped = true; break; }
+                // 모바일은 날짜 기준, PC는 시간 기준으로 중단
+                if (isMobile) {
+                    // 모든 글이 수집 대상 날짜보다 이전 날짜면 중단
+                    if (posts.every(p => p.date < dtFrom && p.date.toDateString() !== dtFrom.toDateString())) {
+                        stopped = true; break;
+                    }
+                } else {
+                    if (oldest < dtFrom && newest < dtFrom) { stopped = true; break; }
+                }
 
                 page++;
                 await sleep(250);
@@ -1130,7 +1154,8 @@
             setStatus(`본문 수집 중... (0 / ${state.allPosts.length})`);
             const CHUNK = 3;
             for (let i = 0; i < state.allPosts.length; i += CHUNK) {
-                await Promise.all(state.allPosts.slice(i, i + CHUNK).map(p => fetchPostBody(p)));
+                const chunk = state.allPosts.slice(i, i + CHUNK);
+                await Promise.all(chunk.map(post => fetchPostBody(post)));
                 const done = Math.min(i + CHUNK, state.allPosts.length);
                 setProgress(75 + Math.round((done / state.allPosts.length) * 20));
                 setStatus(`본문 수집 중... (${done} / ${state.allPosts.length}) — 완료 후 분석 시작`);
@@ -1146,9 +1171,10 @@
         setStatus(`✅ ${dayLabel} ${timeLabel} · ${state.allPosts.length}개 게시글 · ${state.words.length}개 단어 (${mode})`);
 
         const hdr = document.getElementById('dc-word-list-header');
-        if (hdr) hdr.textContent = `단어 목록 (상위 ${document.getElementById('dc-top-n')?.value || '50'})`;
+        if (hdr) { const n = document.getElementById('dc-top-n')?.value || '50'; hdr.textContent = `단어 목록 (상위 ${n})`; }
         renderWordList();
         btn.disabled = false;
+
         if (state.words.length > 0) selectWord(state.words[0][0]);
     }
 
@@ -1163,31 +1189,42 @@
             item.innerHTML = `
                 <span class="dc-word-rank">${idx + 1}</span>
                 <span class="dc-word-name">${escHtml(word)}</span>
-                <span class="dc-word-count">${posts.length}</span>`;
+                <span class="dc-word-count">${posts.length}</span>
+            `;
             item.addEventListener('click', () => selectWord(word));
             container.appendChild(item);
         });
     }
 
-    function renderWordListStreaming() {
+    function renderWordListStreaming(prevSelectedWord) {
         const container = document.getElementById('dc-word-list');
         if (!container) return;
 
         const existing = new Map();
-        container.querySelectorAll('.dc-word-item').forEach(el => existing.set(el.dataset.word, el));
+        container.querySelectorAll('.dc-word-item').forEach(el => {
+            existing.set(el.dataset.word, el);
+        });
 
         const newWords = new Set(state.words.map(([w]) => w));
-        existing.forEach((el, word) => { if (!newWords.has(word)) el.remove(); });
+
+        existing.forEach((el, word) => {
+            if (!newWords.has(word)) el.remove();
+        });
 
         state.words.forEach(([word, posts], idx) => {
-            const rank = idx + 1, count = posts.length;
+            const rank  = idx + 1;
+            const count = posts.length;
+
             if (existing.has(word)) {
                 const el = existing.get(word);
                 el.querySelector('.dc-word-rank').textContent  = rank;
                 el.querySelector('.dc-word-count').textContent = count;
                 el.classList.toggle('active', word === state.selectedWord);
-                const curIdx = [...container.children].indexOf(el);
-                if (curIdx !== idx) container.insertBefore(el, container.children[idx] || null);
+                const children = [...container.children];
+                const curIdx   = children.indexOf(el);
+                if (curIdx !== idx) {
+                    container.insertBefore(el, container.children[idx] || null);
+                }
             } else {
                 const item = document.createElement('div');
                 item.className = 'dc-word-item' + (word === state.selectedWord ? ' active' : '');
@@ -1195,7 +1232,8 @@
                 item.innerHTML = `
                     <span class="dc-word-rank">${rank}</span>
                     <span class="dc-word-name">${escHtml(word)}</span>
-                    <span class="dc-word-count">${count}</span>`;
+                    <span class="dc-word-count">${count}</span>
+                `;
                 item.addEventListener('click', () => selectWord(word));
                 item.style.background = 'rgba(99,102,241,0.22)';
                 setTimeout(() => { item.style.background = ''; }, 800);
@@ -1208,14 +1246,17 @@
         const wordWrap   = document.getElementById('dc-word-list-wrap');
         const detailWrap = document.getElementById('dc-detail-wrap');
         if (!wordWrap || !detailWrap) return;
-        document.querySelectorAll('.dc-mob-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+        document.querySelectorAll('.dc-mob-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.tab === tab);
+        });
         wordWrap.classList.toggle('dc-tab-hidden', tab !== 'words');
         detailWrap.classList.toggle('dc-tab-hidden', tab !== 'detail');
     }
 
     function filterWordList(query) {
+        const items = document.querySelectorAll('.dc-word-item');
         const q = query.toLowerCase();
-        document.querySelectorAll('.dc-word-item').forEach(item => {
+        items.forEach(item => {
             const word = (item.dataset.word || '').toLowerCase();
             const show = !q || word.includes(q);
             item.style.display = show ? '' : 'none';
@@ -1235,11 +1276,17 @@
     function selectWord(word) {
         state.selectedWord = word;
         state.selectedHour = null;
-        document.querySelectorAll('.dc-word-item').forEach(el => el.classList.toggle('active', el.dataset.word === word));
+
+        document.querySelectorAll('.dc-word-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.word === word);
+        });
+
         const entry = state.words.find(([w]) => w === word);
         if (!entry) return;
-        renderChart(word, entry[1]);
-        renderPosts(word, entry[1]);
+        const posts = entry[1];
+
+        renderChart(word, posts);
+        renderPosts(word, posts);
         if (window.innerWidth <= 640) switchMobTab('detail');
     }
 
@@ -1247,24 +1294,30 @@
         const chartArea = document.getElementById('dc-bar-chart');
         const wordLabel = document.getElementById('dc-chart-word-label');
         if (!chartArea) return;
+
         if (wordLabel) wordLabel.textContent = `"${word}" 시간대별 분포`;
 
-        const hourly   = getHourlyStats(posts);
-        const maxCount = Math.max(...hourly.map(h => h.count), 1);
+        const hourly = getHourlyStats(posts);
+        const visibleHourly = hourly;
+        const maxCount = Math.max(...visibleHourly.map(h => h.count), 1);
 
         chartArea.innerHTML = '';
-        hourly.forEach(({ hour, count }) => {
+        visibleHourly.forEach(({ hour, count }) => {
             const col = document.createElement('div');
             col.className = 'dc-bar-col';
 
+            const heightPct = Math.max((count / maxCount) * 70, count > 0 ? 4 : 0);
             const bar = document.createElement('div');
             bar.className = 'dc-bar' + (state.selectedHour === hour ? ' selected' : '');
-            bar.style.height = Math.max((count / maxCount) * 70, count > 0 ? 4 : 0) + 'px';
+            bar.style.height = heightPct + 'px';
             bar.dataset.hour = hour;
             bar.title = `${hour}시: ${count}건`;
+
             bar.addEventListener('click', () => {
                 state.selectedHour = (state.selectedHour === hour) ? null : hour;
-                document.querySelectorAll('.dc-bar').forEach(b => b.classList.toggle('selected', parseInt(b.dataset.hour) === state.selectedHour));
+                document.querySelectorAll('.dc-bar').forEach(b => {
+                    b.classList.toggle('selected', parseInt(b.dataset.hour) === state.selectedHour);
+                });
                 renderPosts(state.selectedWord, posts);
             });
 
@@ -1276,7 +1329,9 @@
             label.className = 'dc-bar-label';
             label.textContent = hour + '시';
 
-            col.appendChild(valLabel); col.appendChild(bar); col.appendChild(label);
+            col.appendChild(valLabel);
+            col.appendChild(bar);
+            col.appendChild(label);
             chartArea.appendChild(col);
         });
     }
@@ -1288,7 +1343,7 @@
 
         let filtered = posts;
         if (state.selectedHour !== null) {
-            filtered = posts.filter(p => !p.timeUnknown && p.date.getHours() === state.selectedHour);
+            filtered = posts.filter(p => p.date.getHours() === state.selectedHour);
             titleEl.textContent = `${state.selectedHour}시 게시글 (${filtered.length}건)`;
         } else {
             titleEl.textContent = `전체 게시글 (${posts.length}건) — 막대 클릭 시 시간 필터`;
@@ -1299,19 +1354,30 @@
             return;
         }
 
+        const sorted = [...filtered].sort((a, b) => b.date - a.date);
+
         container.innerHTML = '';
-        [...filtered].sort((a, b) => b.date - a.date).forEach(post => {
+        sorted.forEach(post => {
             const item = document.createElement('div');
             item.className = 'dc-post-item';
+
+            const timeStr = formatDate(post.date);
+            const highlighted = highlightWord(escHtml(post.title), word);
+
             item.innerHTML = `
-                <span class="dc-post-time">${formatDate(post.date)}</span>
-                <span class="dc-post-title">${highlightWord(escHtml(post.title), word)}</span>`;
+                <span class="dc-post-time">${timeStr}</span>
+                <span class="dc-post-title">${highlighted}</span>
+            `;
+
             if (post.href) {
                 item.addEventListener('click', () => {
-                    const url = post.href.startsWith('http') ? post.href : 'https://gall.dcinside.com' + post.href;
+                    const url = post.href.startsWith('http')
+                        ? post.href
+                        : 'https://gall.dcinside.com' + post.href;
                     window.open(url, '_blank');
                 });
             }
+
             container.appendChild(item);
         });
     }
@@ -1320,6 +1386,15 @@
     //  유틸
     // ─────────────────────────────────────────────
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    function toDatetimeLocal(d) {
+        const yyyy = d.getFullYear();
+        const mm   = String(d.getMonth() + 1).padStart(2, '0');
+        const dd   = String(d.getDate()).padStart(2, '0');
+        const hh   = String(d.getHours()).padStart(2, '0');
+        const min  = String(d.getMinutes()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    }
 
     function escHtml(str) {
         return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1333,7 +1408,9 @@
     function formatDate(d) {
         const now = new Date();
         const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-        if (sameDay) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        if (sameDay) {
+            return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
         return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
 
@@ -1351,36 +1428,58 @@
         btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="10" width="4" height="12" rx="1"/><rect x="10" y="6" width="4" height="16" rx="1"/><rect x="18" y="2" width="4" height="20" rx="1"/></svg>단어 분석`;
         btn.title = '이 갤러리의 단어 빈도를 시간대별로 분석합니다';
         btn.addEventListener('click', openPanel);
+        // 버튼 삽입 즉시 현재 테마 적용
         if (isDarkMode()) btn.classList.add('dc-btn-dark');
 
         if (isMobile) {
             const mWriteBtn = document.querySelector('.btn-write-wrap, .write-btn, a[href*="write"]');
             const mListWrap = document.querySelector('.gall-detail-lst, .listwrap, .list-wrap, ul.wr-list');
-            if (mWriteBtn)      mWriteBtn.insertAdjacentElement('beforebegin', btn);
-            else if (mListWrap) mListWrap.insertAdjacentElement('beforebegin', btn);
-            else                document.body.prepend(btn);
+            if (mWriteBtn) {
+                mWriteBtn.insertAdjacentElement('beforebegin', btn);
+            } else if (mListWrap) {
+                mListWrap.insertAdjacentElement('beforebegin', btn);
+            } else {
+                document.body.prepend(btn);
+            }
             return;
         }
 
         const switchBox = document.querySelector('.switch_btnbox');
-        if (switchBox) { switchBox.insertBefore(btn, switchBox.firstChild); return; }
+        if (switchBox) {
+            switchBox.insertBefore(btn, switchBox.firstChild);
+            return;
+        }
 
         const writeLink = document.querySelector('a.btn_write');
-        if (writeLink) { writeLink.insertAdjacentElement('beforebegin', btn); return; }
+        if (writeLink) {
+            writeLink.insertAdjacentElement('beforebegin', btn);
+            return;
+        }
 
         const searchWrap = document.querySelector('.top_search') || document.querySelector('.inner_search');
-        if (searchWrap) { searchWrap.insertAdjacentElement('afterend', btn); return; }
+        if (searchWrap) {
+            searchWrap.insertAdjacentElement('afterend', btn);
+            return;
+        }
 
         const listWrap = document.querySelector('.gall_listwrap') || document.querySelector('.gall_list');
         if (listWrap) listWrap.prepend(btn);
     }
 
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', insertButton);
-    else insertButton();
+    // DOM 준비 후 버튼 삽입
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', insertButton);
+    } else {
+        insertButton();
+    }
 
+    // SPA 대응 (페이지 이동 감지)
     let lastUrl = location.href;
     const observer = new MutationObserver(() => {
-        if (location.href !== lastUrl) { lastUrl = location.href; setTimeout(insertButton, 500); }
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+            setTimeout(insertButton, 500);
+        }
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
