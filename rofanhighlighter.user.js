@@ -3,7 +3,7 @@
 // @namespace    https://rofan.ai/
 // @version      3.0.0
 // @description  로판AI 형광펜 노트
-// @author       레몬파이 
+// @author       레몬파이
 // @match        https://rofan.ai/*
 // @grant        GM_addStyle
 // @license      MIT
@@ -584,6 +584,9 @@
                 </div>
             </div>
             <div class="rfhl-list-sec" id="rfhl-list"></div>
+        </div>
+        <div class="rfhl-footer">
+            <button class="rfhl-footer-btn" id="rfhl-footer-reset">추가 설정 초기화</button>
         </div>`;
     document.body.appendChild(popup);
 
