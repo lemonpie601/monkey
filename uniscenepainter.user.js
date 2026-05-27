@@ -2925,7 +2925,36 @@ ${guide}`.trim();
                 text-shadow: 0 1px 2px rgba(0,0,0,0.12);
             }
             .csp-message-generate-btn,
-            .csp-message-speed-btn { position: relative; }
+            .csp-message-speed-btn {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 28px;
+                height: 28px;
+                padding: 0;
+                border: none;
+                border-radius: 999px;
+                background: transparent;
+                color: var(--muted-foreground, #888);
+                cursor: pointer;
+                transition: background 150ms ease, color 150ms ease;
+                flex-shrink: 0;
+            }
+            .csp-message-generate-btn:hover,
+            .csp-message-speed-btn:hover {
+                background: var(--accent, rgba(0,0,0,0.08));
+                color: var(--foreground, #111);
+            }
+            .csp-message-generate-btn:active,
+            .csp-message-speed-btn:active {
+                background: var(--accent, rgba(0,0,0,0.12));
+            }
+            .csp-message-generate-btn svg,
+            .csp-message-speed-btn svg {
+                pointer-events: none;
+                flex-shrink: 0;
+            }
             .csp-inline-action-footer {
                 display: flex;
                 align-items: center;
@@ -7679,13 +7708,13 @@ UC: ${char.uc || ''}`;
 
     function makeMessageSpeedButton(bubble, markdown) {
         const btn = document.createElement('button');
-        btn.className = 'csp-message-speed-btn relative inline-flex items-center justify-center overflow-hidden whitespace-nowrap rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:fill-current size-7 [&_svg]:size-4 bg-transparent text-line-gray-2 hover:bg-accent active:bg-accent/80';
+        btn.className = 'csp-message-speed-btn';
         btn.type = 'button';
         btn.title = '스피드 모드: 분석 후 바로 NAI 생성';
         btn.setAttribute('aria-label', 'AI 삽화 스피드 생성');
         btn.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" fill="var(--icon_primary)" viewBox="0 0 24 24" width="22px" height="22px" aria-hidden="true">
-                <path d="M13.25 2.75 5.3 13.1c-.5.65-.04 1.6.78 1.6h4.38l-1.7 6.1c-.18.66.65 1.08 1.1.56l8.1-9.46c.56-.65.1-1.66-.76-1.66h-4.05l1.8-6.3c.2-.68-.55-1.23-1.02-.69Z"></path>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+                <path d="M13.25 2.75 5.3 13.1c-.5.65-.04 1.6.78 1.6h4.38l-1.7 6.1c-.18.66.65 1.08 1.1.56l8.1-9.46c.56-.65.1-1.66-.76-1.66h-4.05l1.8-6.3c.2-.68-.55-1.23-1.02-.69Z"/>
             </svg>
         `;
         const key = getMessageKey(markdown);
@@ -7749,14 +7778,14 @@ UC: ${char.uc || ''}`;
 
     function makeMessageGenerateButton(bubble, markdown) {
         const btn = document.createElement('button');
-        btn.className = 'csp-message-generate-btn relative inline-flex items-center justify-center overflow-hidden whitespace-nowrap rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:fill-current size-7 [&_svg]:size-4 bg-transparent text-line-gray-2 hover:bg-accent active:bg-accent/80';
+        btn.className = 'csp-message-generate-btn';
         btn.type = 'button';
         btn.title = '이 AI 답변으로 이미지 생성';
         btn.setAttribute('aria-label', 'AI 삽화 생성');
         btn.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" fill="var(--icon_primary)" viewBox="0 0 24 24" width="24px" height="24px">
-                <path d="M19.5 3h-15A2.5 2.5 0 0 0 2 5.5v13A2.5 2.5 0 0 0 4.5 21h15a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 19.5 3M4 5.5c0-.28.22-.5.5-.5h15c.28 0 .5.22.5.5v9.08l-3.4-3.4a1.5 1.5 0 0 0-2.12 0l-2.1 2.1-3.13-3.13a1.5 1.5 0 0 0-2.12 0L4 13.29zm.5 13.5a.5.5 0 0 1-.5-.5v-2.38l4.18-4.18 6.06 6.06zm15.5-.5a.5.5 0 0 1-.5.5h-2.43l-3.28-3.28 1.75-1.75L20 18.43z"></path>
-                <path d="M16.5 9.25a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5"></path>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-5-7-4 5.28-3-3.47L5 19h14l-3-7z"/>
+                <circle cx="16" cy="8.5" r="1.5"/>
             </svg>
         `;
 
