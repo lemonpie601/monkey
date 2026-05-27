@@ -4378,13 +4378,23 @@ ${appliedOutfit}` : '\
         if (!messageKey) return '';
         return `
             <div class="csp-image-info-row" aria-label="Scene Painter image info">
-                <button class="csp-image-action-btn csp-image-info-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="정보" aria-label="정보">ℹ️</button>
+                <button class="csp-image-action-btn csp-image-info-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="정보" aria-label="정보">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                </button>
             </div>
             <div class="csp-image-action-row" aria-label="Scene Painter image actions">
-                <button class="csp-image-action-btn csp-image-reroll-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="리롤" aria-label="리롤">↻</button>
-                <button class="csp-image-action-btn csp-image-edit-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="리롤 설정" aria-label="리롤 설정">⚙️</button>
-                <button class="csp-image-action-btn csp-image-download-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="저장" aria-label="저장">⬇</button>
-                <button class="csp-image-action-btn csp-image-delete-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="삭제" aria-label="삭제" data-csp-danger="true">🗑</button>
+                <button class="csp-image-action-btn csp-image-reroll-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="리롤" aria-label="리롤">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                </button>
+                <button class="csp-image-action-btn csp-image-edit-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="리롤 설정" aria-label="리롤 설정">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.37 1.04.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                </button>
+                <button class="csp-image-action-btn csp-image-download-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="저장" aria-label="저장">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5z"/></svg>
+                </button>
+                <button class="csp-image-action-btn csp-image-delete-btn" data-message-key="${escapeHtml(messageKey)}" type="button" title="삭제" aria-label="삭제" data-csp-danger="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                </button>
             </div>
         `;
     }
@@ -8633,56 +8643,63 @@ UC: ${char.uc || ''}`;
         updateGalleryRowCount();
     }
 
+    function isViewerTabActive() {
+        // 뷰어 탭 버튼이 활성화 상태인지 확인
+        // 비활성 탭은 항상 text-muted-foreground 클래스를 가짐
+        // 활성 탭은 text-muted-foreground 클래스가 없음
+        const viewerBtn = Array.from(document.querySelectorAll('button')).find(
+            b => b.textContent?.trim() === '뷰어' && b.className?.includes('font-medium')
+        );
+        if (!viewerBtn) return false;
+        return !viewerBtn.className.includes('text-muted-foreground');
+    }
+
     function findViewerTabContent() {
-        // 뷰어 탭 콘텐츠 안의 p-4.space-y-4 컨테이너를 반환
-        // 사이드바 구조:
-        //   sidebarRoot
-        //     > div.p-4.border-b  (헤더 "뷰어 설정")
-        //     > div.mx-4.mt-3.shrink-0  (탭 버튼 행)
-        //     > div.relative.overflow-hidden.flex-1  (탭 콘텐츠 래퍼)
-        //         > [radix scroll viewport]
-        //             > div.p-4.space-y-4  ← 여기에 삽입
+        // 뷰어 탭 콘텐츠 공유 컨테이너(p-4.space-y-4) 반환
         const tabBtnRow = findUniversTabButtonRow();
         if (!tabBtnRow) return null;
-        const tabRowWrapper = tabBtnRow.parentElement;
-        const sidebarRoot = tabRowWrapper?.parentElement;
+        const sidebarRoot = tabBtnRow.parentElement?.parentElement;
         if (!sidebarRoot) return null;
-        // 탭 콘텐츠 래퍼: relative overflow-hidden flex-1
         const contentWrapper = sidebarRoot.querySelector('.relative.overflow-hidden.flex-1');
         if (!contentWrapper) return null;
-        // Radix ScrollArea viewport 또는 직접 자식
         const viewport = contentWrapper.querySelector('[data-radix-scroll-area-viewport]') || contentWrapper;
-        // p-4 space-y-4 컨테이너
         return viewport.querySelector('.p-4.space-y-4') || viewport.firstElementChild || null;
+    }
+
+    function syncCspRowVisibility() {
+        // 뷰어 탭 활성 여부에 따라 CSP 행 표시/숨김
+        const painterRow = document.getElementById('csp-scene-painter-row');
+        const galleryRow = document.getElementById('csp-scene-gallery-row');
+        const viewerActive = isViewerTabActive();
+        if (painterRow) painterRow.style.display = viewerActive ? '' : 'none';
+        if (galleryRow) galleryRow.style.display = viewerActive ? '' : 'none';
+        if (viewerActive) updateGalleryRowCount();
     }
 
     function injectScenePainterRow() {
         injectStyles();
 
-        // univers.chat: 뷰어 탭 콘텐츠(div.p-4.space-y-4) 맨 위에
-        //   크랙과 동일한 형태로 "AI 삽화 생성" 토글 행 + "삽화 갤러리" 행 삽입
+        // 사이드바/탭 행이 없으면(사이드바 닫힘) 스킵
         const container = findViewerTabContent();
         if (!container) return;
 
-        // 이미 주입됐으면 갤러리 카운트만 업데이트
-        if (document.getElementById('csp-scene-painter-row')) {
-            updateGalleryRowCount();
-            return;
+        // 아직 주입 안 됐으면 삽입
+        if (!document.getElementById('csp-scene-painter-row')) {
+            const painterRow = createScenePainterRow(null);
+            // 크랙과 동일한 스타일 (px-2.5 h-4 py-[18px] 형태)
+            painterRow.style.removeProperty('padding');
+            painterRow.style.removeProperty('border-bottom');
+
+            const galleryRow = createSceneGalleryRow();
+            galleryRow.style.removeProperty('padding');
+            galleryRow.style.removeProperty('border-bottom');
+
+            container.insertBefore(galleryRow, container.firstChild);
+            container.insertBefore(painterRow, container.firstChild);
         }
 
-        // --- AI 삽화 생성 토글 행 ---
-        const painterRow = createScenePainterRow(null);
-        painterRow.style.cssText += 'padding: 8px 0; border-bottom: 1px solid var(--border);';
-
-        // --- 삽화 갤러리 행 ---
-        const galleryRow = createSceneGalleryRow();
-        galleryRow.style.cssText += 'padding: 8px 0; border-bottom: 1px solid var(--border);';
-
-        // 맨 앞에 삽입 (기존 뷰어 설정 항목들 위)
-        container.insertBefore(galleryRow, container.firstChild);
-        container.insertBefore(painterRow, container.firstChild);
-
-        updateGalleryRowCount();
+        // 뷰어 탭 활성 여부에 따라 표시/숨김
+        syncCspRowVisibility();
     }
     function injectAll() {
         injectStyles();
@@ -8727,21 +8744,27 @@ UC: ${char.uc || ''}`;
     }
 
     function mutationTouchesMenuArea(mutation) {
-        // univers.chat: 사이드바/뷰어탭 콘텐츠 변화 감지 → CSP 행 재주입
+        // univers.chat: 탭 버튼 클래스 변경(탭 전환) 또는 사이드바 DOM 변화 감지
+        const target = getMutationElement(mutation.target);
+
+        // 탭 버튼의 class 속성 변경 (탭 전환 시 text-foreground ↔ text-muted-foreground)
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+            if (target?.className?.includes('font-medium') &&
+                ['정보','기억','문체','뷰어'].includes(target?.textContent?.trim())) return true;
+        }
+
         const nodes = [mutation.target, ...Array.from(mutation.addedNodes || []), ...Array.from(mutation.removedNodes || [])]
             .map(getMutationElement)
             .filter(Boolean);
         return nodes.some(node => {
             if (!node) return false;
-            if (node.id === 'csp-tab-btn' || node.id === 'csp-tab-panel') return true;
-            if (node.closest?.('#csp-tab-btn, #csp-tab-panel')) return true;
             if (node.closest?.('#csp-scene-painter-row, #csp-scene-gallery-row')) return true;
             if (node.classList?.contains('bg-background/95') && node.classList?.contains('backdrop-blur-2xl')) return true;
             if (node.classList?.contains('backdrop-blur-2xl')) return true;
             if (node.classList?.contains('border-b') && node.classList?.contains('border-border') && node.classList?.contains('flex')) return true;
             if (node.closest?.('.border-b.border-border.flex.w-full')) return true;
             const text = String(node.textContent || '');
-            if (text.length < 30000 && (text.includes('AI AI 삽화 생성') || text.includes('삽화 갤러리') || (text.includes('정보') && text.includes('기억') && text.includes('뷰어')))) return true;
+            if (text.length < 30000 && (text.includes('AI 삽화 생성') || text.includes('삽화 갤러리') || (text.includes('정보') && text.includes('기억') && text.includes('뷰어')))) return true;
             return false;
         });
     }
@@ -8802,7 +8825,7 @@ UC: ${char.uc || ''}`;
         migrateSceneImagesToIndexedDb().finally(scheduleInject);
         scheduleInject();
 
-        cspScopedObserver.observe(document.body, { childList: true, subtree: true });
+        cspScopedObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 
         // React SPA는 document-idle 시점에 탭 행이 아직 없을 수 있음
         // 탭 버튼이 나타날 때까지 폴링으로 재시도 (최대 10초)
