@@ -6018,9 +6018,7 @@ UC: ${char.uc || ''}`;
         const raw = String(textValue || '').trim();
         if (!raw) return [];
 
-        const blocks = raw.split(/\
-\s*\
-/g).map(block => block.trim()).filter(Boolean);
+        const blocks = raw.split(/\n\s*\n/g).map(block => block.trim()).filter(Boolean);
         const result = [];
 
         blocks.forEach((block, index) => {
@@ -6828,8 +6826,7 @@ UC: ${char.uc || ''}`;
             overlay.innerHTML = `
                 <div class="csp-modal csp-scene-refine-modal" role="dialog" aria-modal="true" aria-labelledby="csp-scene-refine-title">
                     <h2 id="csp-scene-refine-title">✨ ${escapeHtml(title)}</h2>
-                    <div class="csp-desc">${escapeHtml(description).replace(/\
-/g, '<br>')}</div>
+                    <div class="csp-desc">${escapeHtml(description).replace(/\n/g, '<br>')}</div>
                     <div class="csp-field">
                         <label>리롤 지시사항</label>
                         <textarea id="csp-scene-refine-text" class="csp-long" maxlength="${maxLength}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(initialValue)}</textarea>
