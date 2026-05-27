@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.3.3
+// @version      2.5.3
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
