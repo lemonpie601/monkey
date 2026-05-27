@@ -3,7 +3,7 @@
 // @namespace    univers-scene-painter
 // @version      1.0.0
 // @description  Crack Scene Painter 유니챗(univers.chat) 포트 - NAI 이미지 생성
-// @author       ported from Crack Scene Painter by chyoyam-alt
+// @author       레몬파이
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
