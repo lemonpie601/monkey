@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      1.1.0
-// @description  Crack Scene Painter 유니챗(univers.chat) 포트 - NAI 이미지 생성
-// @author       레몬파이
+// @version      4.23.0
+// @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
@@ -15,10 +14,8 @@
 // @connect      *.novelai.net
 // @connect      *
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
-// @require      https://raw.githubusercontent.com/lemonpie601/monkey/raw/univers_scene_painter_core.user.js
 // @run-at       document-idle
 // ==/UserScript==
-
 
 (function () {
     'use strict';
@@ -3110,6 +3107,39 @@ ${guide}`.trim();
                 background: var(--primary, #ff4432);
                 line-height: 1;
             }
+            /* univers.chat 탭 행에 추가되는 🎨 삽화 탭 버튼 */
+            .csp-tab-button {
+                color: var(--muted-foreground);
+                font-size: 12px;
+                padding: 6px 8px;
+                border-radius: 0;
+                transition: color 0.15s;
+                white-space: nowrap;
+            }
+            .csp-tab-button:hover {
+                color: var(--foreground);
+            }
+            .csp-tab-button[data-active="true"] {
+                color: var(--foreground);
+                font-weight: 700;
+            }
+            .csp-tab-button[data-active="true"]::after {
+                content: '';
+                position: absolute;
+                bottom: -1px;
+                left: 0; right: 0;
+                height: 2px;
+                background: var(--foreground);
+                border-radius: 1px;
+            }
+            /* CSP 탭 패널 내부 버튼 */
+            #csp-tab-panel button:not([role="switch"]) {
+                cursor: pointer;
+                display: block;
+            }
+            #csp-tab-panel button:not([role="switch"]):hover {
+                background: var(--muted);
+            }
             .csp-gallery-modal { width: min(1080px, calc(100vw - 30px)); }
             .csp-gallery-summary {
                 display: flex;
@@ -3399,6 +3429,9 @@ ${guide}`.trim();
         return !!el?.closest?.([
             '#csp-scene-painter-row',
             '#csp-scene-gallery-row',
+            '#csp-tab-btn',
+            '#csp-tab-panel',
+            '.csp-tab-button',
             '.csp-toggle-row',
             '.csp-gallery-row',
             '.csp-overlay',
@@ -4472,13 +4505,18 @@ ${appliedOutfit}` : '\
     }
 
     function updateGalleryRowCount() {
-        const row = document.getElementById('csp-scene-gallery-row');
-        if (!row) return;
-        const badge = row.querySelector('.csp-gallery-count-badge');
-        if (!badge) return;
         const stats = getRoomGalleryStats();
-        badge.textContent = String(stats.imageCount || 0);
-        badge.title = `현재 방 삽화 ${stats.sceneCount}개 / 이미지 기록 ${stats.imageCount}장`;
+        const countText = String(stats.imageCount || 0);
+        const titleText = `현재 방 삽화 ${stats.sceneCount}개 / 이미지 기록 ${stats.imageCount}장`;
+        // 구형 갤러리 행 배지
+        const row = document.getElementById('csp-scene-gallery-row');
+        if (row) {
+            const badge = row.querySelector('.csp-gallery-count-badge');
+            if (badge) { badge.textContent = countText; badge.title = titleText; }
+        }
+        // 탭 패널 내 갤러리 버튼 배지
+        const panelBadge = document.querySelector('#csp-tab-panel .csp-gallery-count-badge');
+        if (panelBadge) { panelBadge.textContent = countText; panelBadge.title = titleText; }
     }
 
     function formatGalleryDate(ts) {
@@ -8562,25 +8600,31 @@ UC: ${char.uc || ''}`;
         return null;
     }
 
-    function findSituationImageContainer(root = document) {
-        // univers.chat: 오른쪽 사이드바 안의 탭 행(.mx-4.mt-3.shrink-0)을 기준점으로 사용.
-        // injectScenePainterRow가 originContainer.nextSibling 위치에 패널을 삽입하므로
-        // 탭 행 다음(탭 콘텐츠 바로 위)에 CSP 패널이 위치하게 됨.
-        //
-        // 사이드바 구조:
-        //   div.bg-background/95.backdrop-blur-2xl  (사이드바 루트)
-        //     > div.p-4.border-b  (헤더)
-        //     > div.mx-4.mt-3.shrink-0  ← 여기를 반환 (탭 행)
-        //     > [CSP 패널이 여기 삽입됨]
-        //     > div.relative.overflow-hidden  (탭 콘텐츠)
-        const sidebar = Array.from(document.querySelectorAll('div')).find(d =>
-            d.classList?.contains('bg-background\/95') && d.classList?.contains('backdrop-blur-2xl')
+    function findUniversSidebar() {
+        // classList.contains로 슬래시 포함 클래스 직접 매칭
+        return Array.from(document.querySelectorAll('div')).find(d =>
+            d.classList?.contains('bg-background/95') && d.classList?.contains('backdrop-blur-2xl')
+        ) || null;
+    }
+
+    function findUniversTabButtonRow() {
+        // 정보/기억/문체/뷰어 버튼이 있는 탭 행을 직접 찾음 (사이드바 선택자 없이도 동작)
+        const tabBtn = Array.from(document.querySelectorAll('button')).find(
+            b => ['정보', '기억', '문체', '뷰어'].includes(b.textContent?.trim()) &&
+                 b.className?.includes('font-medium')
         );
+        return tabBtn ? tabBtn.parentElement : null; // div.border-b.border-border.flex.w-full
+    }
+
+    function findSituationImageContainer(root = document) {
+        // univers.chat: 탭 버튼 행(.border-b.border-border.flex.w-full)의 부모(.mx-4.mt-3.shrink-0)를 반환
+        // injectScenePainterRow가 이 기준점 다음에 CSP 패널을 삽입함
+        const tabBtnRow = findUniversTabButtonRow();
+        if (tabBtnRow) return tabBtnRow.parentElement || null;
+        // fallback: 사이드바 직접 찾기
+        const sidebar = findUniversSidebar();
         if (!sidebar) return null;
-        // 탭 행 div: mx-4 mt-3 shrink-0
-        return sidebar.querySelector('.mx-4.mt-3.shrink-0')
-            || sidebar.querySelector('.border-b.border-border.flex.w-full')?.parentElement
-            || null;
+        return sidebar.querySelector('.mx-4.mt-3.shrink-0') || null;
     }
     function ensureGalleryAfterPainter(painterRow) {
         if (!painterRow || !painterRow.parentNode) return;
@@ -8592,46 +8636,155 @@ UC: ${char.uc || ''}`;
         updateGalleryRowCount();
     }
 
+    function injectCspTabButton() {
+        // 탭 버튼 행(정보/기억/문체/뷰어)에 🎨 삽화 탭 버튼 추가
+        const tabBtnRow = findUniversTabButtonRow();
+        if (!tabBtnRow) return false;
+
+        // 이미 추가됐으면 스킵
+        if (tabBtnRow.querySelector('#csp-tab-btn')) return true;
+
+        const enabled = isEnabled();
+        const tabBtn = document.createElement('button');
+        tabBtn.id = 'csp-tab-btn';
+        tabBtn.type = 'button';
+        tabBtn.className = 'relative font-medium transition-colors flex items-center justify-center gap-1.5 ' +
+            'text-xs px-2 py-1.5 csp-tab-button';
+        tabBtn.innerHTML = `<span style="font-size:14px;line-height:1;">🎨</span><span>삽화</span>`;
+        tabBtn.title = 'AI 삽화 생성 설정';
+        tabBtn.style.cssText = 'flex:1;min-width:0;';
+        tabBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleCspPanel();
+        });
+        tabBtnRow.appendChild(tabBtn);
+        return true;
+    }
+
+    function toggleCspPanel() {
+        // CSP 패널이 표시되어 있으면 숨기고, 없으면 표시
+        const existing = document.getElementById('csp-tab-panel');
+        if (existing) {
+            existing.remove();
+            document.getElementById('csp-tab-btn')?.removeAttribute('data-active');
+            return;
+        }
+        showCspTabPanel();
+    }
+
+    function showCspTabPanel() {
+        injectStyles();
+        // 탭 콘텐츠 영역 찾기 (탭 버튼 행의 형제 중 overflow 있는 div)
+        const tabBtnRow = findUniversTabButtonRow();
+        if (!tabBtnRow) return;
+        const tabRowWrapper = tabBtnRow.parentElement; // div.mx-4.mt-3.shrink-0
+        const sidebarRoot = tabRowWrapper?.parentElement;
+        if (!sidebarRoot) return;
+
+        // 기존 탭 콘텐츠 패널 숨기기
+        let tabContent = null;
+        for (const child of Array.from(sidebarRoot.children)) {
+            if (child === tabRowWrapper) continue;
+            if (child.id === 'csp-tab-panel') continue;
+            if (child.querySelector?.('[data-message-id]')) continue; // 채팅 영역
+            const s = window.getComputedStyle(child);
+            if (s.overflow === 'hidden' || s.overflowY === 'auto' || s.overflowY === 'scroll' || child.classList.contains('overflow-hidden') || child.classList.contains('relative')) {
+                tabContent = child;
+                break;
+            }
+        }
+        if (tabContent) tabContent.style.display = 'none';
+
+        // CSP 패널 생성
+        const panel = document.createElement('div');
+        panel.id = 'csp-tab-panel';
+        panel.style.cssText = 'flex:1;overflow-y:auto;padding:8px 16px 16px;display:flex;flex-direction:column;gap:8px;';
+
+        // 패널 상단: 활성화 토글 + 설정 버튼
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:between;gap:8px;padding:8px 0 4px;border-bottom:1px solid var(--border);';
+        header.innerHTML = `
+            <span style="font-size:16px;">🎨</span>
+            <span style="flex:1;font-size:13px;font-weight:600;">AI 삽화 생성</span>
+            <button id="csp-panel-toggle" type="button" role="switch"
+                aria-checked="${isEnabled()}" data-state="${isEnabled() ? 'checked' : 'unchecked'}"
+                class="peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors border data-[state=unchecked]:border-bg-input-80 data-[state=unchecked]:bg-bg-input-80 data-[state=checked]:border-primary data-[state=checked]:bg-primary focus-visible:outline-none"
+                style="margin-left:auto;">
+                <span data-state="${isEnabled() ? 'checked' : 'unchecked'}"
+                    class="pointer-events-none block size-4 rounded-full bg-background shadow-sm ring-0 transition-transform data-[state=checked]:translate-x-[15px] data-[state=unchecked]:translate-x-[-1px]"></span>
+            </button>
+        `;
+        panel.appendChild(header);
+
+        // 설정 열기 버튼
+        const settingsBtn = document.createElement('button');
+        settingsBtn.type = 'button';
+        settingsBtn.className = 'w-full text-left text-xs px-3 py-2 rounded-md border border-border hover:bg-muted transition-colors';
+        settingsBtn.textContent = '⚙️ 삽화 상세 설정 열기';
+        settingsBtn.addEventListener('click', openSettingsModal);
+        panel.appendChild(settingsBtn);
+
+        // 갤러리 열기 버튼
+        const galleryBtn = document.createElement('button');
+        galleryBtn.type = 'button';
+        galleryBtn.id = 'csp-panel-gallery-btn';
+        galleryBtn.className = 'w-full text-left text-xs px-3 py-2 rounded-md border border-border hover:bg-muted transition-colors';
+        galleryBtn.innerHTML = '🖼️ 삽화 갤러리 <span class="csp-gallery-count-badge" style="float:right;"></span>';
+        galleryBtn.addEventListener('click', openGalleryModal);
+        panel.appendChild(galleryBtn);
+
+        // 토글 이벤트
+        const toggleBtn = header.querySelector('#csp-panel-toggle');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const next = !isEnabled();
+                setEnabled(next);
+                toggleBtn.setAttribute('aria-checked', String(next));
+                toggleBtn.setAttribute('data-state', next ? 'checked' : 'unchecked');
+                const thumb = toggleBtn.querySelector('span');
+                if (thumb) thumb.setAttribute('data-state', next ? 'checked' : 'unchecked');
+                applySceneVisibilityState(next);
+                if (!next) {
+                    document.querySelectorAll('.csp-message-generate-btn').forEach(b => b.remove());
+                } else {
+                    scheduleInject();
+                }
+                showToast(next ? '🎨 AI 삽화 생성 ON' : '⏸️ AI 삽화 생성 OFF');
+            });
+        }
+
+        // 탭 버튼 활성 표시
+        document.getElementById('csp-tab-btn')?.setAttribute('data-active', 'true');
+
+        // 패널이 닫힐 때 탭 콘텐츠 복구
+        const observer = new MutationObserver(() => {
+            if (!document.contains(panel)) {
+                if (tabContent) tabContent.style.display = '';
+                observer.disconnect();
+            }
+        });
+        observer.observe(sidebarRoot, { childList: true });
+
+        sidebarRoot.appendChild(panel);
+        updateGalleryRowCount();
+    }
+
     function injectScenePainterRow() {
         injectStyles();
 
-        // univers.chat: 사이드바(.bg-background\/95.backdrop-blur-2xl)의
-        //   탭 행(.mx-4.mt-3.shrink-0) 다음에 CSP 패널 삽입
-        //   사이드바가 닫혀있으면 skip (다음 MutationObserver 사이클에서 재시도)
-        const sidebar = Array.from(document.querySelectorAll('div')).find(d =>
-            d.classList?.contains('bg-background\/95') && d.classList?.contains('backdrop-blur-2xl')
-        );
+        // univers.chat: 탭 버튼 행에 🎨 탭 버튼을 추가하는 방식
+        // 사이드바가 닫혀있으면 탭 버튼 행도 없으므로 자연히 skip됨
+        const injected = injectCspTabButton();
+        if (!injected) return;
 
-        const existingPainter = document.getElementById('csp-scene-painter-row');
+        // 갤러리 카운트 업데이트 (패널이 열려있으면)
         const existingGallery = document.getElementById('csp-scene-gallery-row');
-
-        if (!sidebar) {
-            // 사이드바 닫힘 → 기존 패널도 없애진 않음 (DOM에서 사라지므로 자연 정리됨)
-            if (existingGallery) updateGalleryRowCount();
-            return;
-        }
-
-        // 삽입 기준점: 탭 행 div
-        const tabRow = sidebar.querySelector('.mx-4.mt-3.shrink-0')
-            || sidebar.querySelector('.border-b.border-border.flex.w-full')?.parentElement;
-
-        if (!tabRow || !tabRow.parentNode) {
-            if (existingGallery) updateGalleryRowCount();
-            return;
-        }
-
-        let painterRow = existingPainter;
-        if (!painterRow) {
-            // originContainer=null → makeFallbackRow() 경로로
-            painterRow = createScenePainterRow(null);
-            painterRow.style.cssText += 'padding: 8px 16px; border-bottom: 1px solid var(--border);';
-        }
-
-        // 탭 행 바로 다음(탭 콘텐츠 앞)에 삽입
-        if (painterRow.parentNode !== tabRow.parentNode || painterRow.previousElementSibling !== tabRow) {
-            tabRow.parentNode.insertBefore(painterRow, tabRow.nextSibling);
-        }
-        ensureGalleryAfterPainter(painterRow);
+        if (existingGallery) updateGalleryRowCount();
+        const panelGalleryBadge = document.querySelector('.csp-tab-panel .csp-gallery-count-badge, #csp-tab-panel .csp-gallery-count-badge');
+        if (panelGalleryBadge) updateGalleryRowCount();
     }
     function injectAll() {
         injectStyles();
@@ -8676,23 +8829,25 @@ UC: ${char.uc || ''}`;
     }
 
     function mutationTouchesMenuArea(mutation) {
-        // univers.chat: 사이드바 DOM 변화(열림/닫힘/탭 전환)를 감지해서 CSP 패널 재주입
+        // univers.chat: 사이드바 DOM 변화(열림/닫힘/탭 전환)를 감지해서 CSP 탭 버튼 재주입
         const nodes = [mutation.target, ...Array.from(mutation.addedNodes || []), ...Array.from(mutation.removedNodes || [])]
             .map(getMutationElement)
             .filter(Boolean);
         return nodes.some(node => {
             if (!node) return false;
-            // CSP 패널 자체 변화
+            if (node.id === 'csp-tab-btn' || node.id === 'csp-tab-panel') return true;
+            if (node.closest?.('#csp-tab-btn, #csp-tab-panel')) return true;
             if (node.closest?.('#csp-scene-painter-row, #csp-scene-gallery-row')) return true;
-            // 사이드바 컨테이너 변화 (열림/닫힘 포함)
-            if (node.classList?.contains('bg-background\/95') && node.classList?.contains('backdrop-blur-2xl')) return true;
-            if (node.closest?.('.bg-background\/95')) return true;
-            // 'AI 삽화 생성' 또는 '삽화 갤러리' 텍스트 포함 노드
+            if (node.classList?.contains('bg-background/95') && node.classList?.contains('backdrop-blur-2xl')) return true;
+            if (node.classList?.contains('backdrop-blur-2xl')) return true;
+            if (node.classList?.contains('border-b') && node.classList?.contains('border-border') && node.classList?.contains('flex')) return true;
+            if (node.closest?.('.border-b.border-border.flex.w-full')) return true;
             const text = String(node.textContent || '');
-            if (text.length < 30000 && (text.includes('AI 삽화 생성') || text.includes('삽화 갤러리'))) return true;
+            if (text.length < 30000 && (text.includes('AI AI 삽화 생성') || text.includes('삽화 갤러리') || (text.includes('정보') && text.includes('기억') && text.includes('뷰어')))) return true;
             return false;
         });
     }
+
     function mutationTouchesAssistantMessage(mutation) {
         const nodes = [mutation.target, ...Array.from(mutation.addedNodes || [])]
             .map(getMutationElement)
@@ -8749,8 +8904,6 @@ UC: ${char.uc || ''}`;
         migrateSceneImagesToIndexedDb().finally(scheduleInject);
         scheduleInject();
 
-        // body 전체를 매번 injectAll 트리거로 쓰지 않고,
-        // 실제 수집한 대상(오른쪽 메뉴 / data-message-id AI 답변 / 하단 액션바) 변화만 분류해서 반응한다.
         cspScopedObserver.observe(document.body, { childList: true, subtree: true });
 
         let lastUrl = location.href;
@@ -8767,4 +8920,5 @@ UC: ${char.uc || ''}`;
     } else {
         start();
     }
+
 })();
