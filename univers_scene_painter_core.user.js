@@ -8560,9 +8560,23 @@ UC: ${char.uc || ''}`;
     }
 
     function findSituationImageContainer(root = document) {
-        // univers.chat: 사이드바 없음. 헤더 오른쪽 버튼 그룹에 삽입
-        return document.querySelector('header div.flex.items-center.shrink-0')
-            || document.querySelector('header > div > div:last-child')
+        // univers.chat: 오른쪽 사이드바 안의 탭 행(.mx-4.mt-3.shrink-0)을 기준점으로 사용.
+        // injectScenePainterRow가 originContainer.nextSibling 위치에 패널을 삽입하므로
+        // 탭 행 다음(탭 콘텐츠 바로 위)에 CSP 패널이 위치하게 됨.
+        //
+        // 사이드바 구조:
+        //   div.bg-background/95.backdrop-blur-2xl  (사이드바 루트)
+        //     > div.p-4.border-b  (헤더)
+        //     > div.mx-4.mt-3.shrink-0  ← 여기를 반환 (탭 행)
+        //     > [CSP 패널이 여기 삽입됨]
+        //     > div.relative.overflow-hidden  (탭 콘텐츠)
+        const sidebar = Array.from(document.querySelectorAll('div')).find(d =>
+            d.classList?.contains('bg-background\/95') && d.classList?.contains('backdrop-blur-2xl')
+        );
+        if (!sidebar) return null;
+        // 탭 행 div: mx-4 mt-3 shrink-0
+        return sidebar.querySelector('.mx-4.mt-3.shrink-0')
+            || sidebar.querySelector('.border-b.border-border.flex.w-full')?.parentElement
             || null;
     }
     function ensureGalleryAfterPainter(painterRow) {
