@@ -16,9 +16,9 @@
 // @connect      aistudio.googleapis.com
 // @connect      *
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
-// @require      https://raw.githubusercontent.com/lemonpie601/monkey/raw/univers_scene_painter_core.user.js
-// @updateURL    https://gist.githubusercontent.com/chyoyam-alt/f11d82e7a5bdd652c9d2182af5ec3bff/raw/univers_scene_painter_loader.user.js
-// @downloadURL  https://gist.githubusercontent.com/chyoyam-alt/f11d82e7a5bdd652c9d2182af5ec3bff/raw/univers_scene_painter_loader.user.js
+// @require      https://gist.githubusercontent.com/lemonpie601/monkey/raw/univers_scene_painter_core.user.js
+// @updateURL    https://gist.githubusercontent.com/lemonpie601/monkey/raw/univers_scene_painter_loader.user.js
+// @downloadURL  https://gist.githubusercontent.com/lemonpie601/monkey/raw/univers_scene_painter_loader.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
