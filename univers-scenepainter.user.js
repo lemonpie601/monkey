@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.4.1
+// @version      4.23.1
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -794,6 +794,65 @@ ${guide}`.trim();
         };
     }
 
+    const NAI_UC_PRESET_TAGS_V45_FULL = Object.freeze({
+        0: 'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page',
+        1: 'lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page',
+        2: '',
+        3: 'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy',
+        4: '{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic'
+    });
+
+    const NAI_UC_PRESET_TAGS_V45_CURATED = Object.freeze({
+        0: 'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page',
+        1: 'blurry, lowres, upscaled, artistic error, scan artifacts, jpeg artifacts, logo, too many watermarks, negative space, blank page',
+        2: '',
+        3: 'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, @_@, mismatched pupils, glowing eyes, negative space, blank page',
+        4: NAI_UC_PRESET_TAGS_V45_FULL[4]
+    });
+
+    function normalizeNaiUcPresetValue(ucPreset) {
+        const preset = Number(ucPreset);
+        return [0, 1, 2, 3, 4].includes(preset) ? preset : 0;
+    }
+
+    function getNaiUcPresetTagsForModel(ucPreset, model) {
+        const preset = normalizeNaiUcPresetValue(ucPreset);
+        if (preset === 2) return '';
+        const normalizedModel = String(model || '').toLowerCase();
+        const presetMap = normalizedModel.includes('4-5-curated')
+            ? NAI_UC_PRESET_TAGS_V45_CURATED
+            : NAI_UC_PRESET_TAGS_V45_FULL;
+        return presetMap[preset] || NAI_UC_PRESET_TAGS_V45_FULL[preset] || presetMap[0] || '';
+    }
+
+    function getNaiUcPresetLabel(ucPreset) {
+        const preset = normalizeNaiUcPresetValue(ucPreset);
+        if (preset === 1) return 'Light UC';
+        if (preset === 2) return 'None';
+        if (preset === 3) return 'Human Focus UC';
+        if (preset === 4) return 'Furry Focus UC';
+        return 'Heavy UC';
+    }
+
+    function buildNaiUcPresetOptionsHtml(selectedValue) {
+        const selected = normalizeNaiUcPresetValue(selectedValue);
+        return [
+            { value: 0, label: 'Heavy UC' },
+            { value: 1, label: 'Light UC' },
+            { value: 3, label: 'Human Focus UC' },
+            { value: 4, label: 'Furry Focus UC' },
+            { value: 2, label: 'None' }
+        ].map(option => `<option value="${option.value}" ${selected === option.value ? 'selected' : ''}>${option.label}</option>`).join('');
+    }
+
+    function mergeNaiUcPresetWithNegative(negativeText, settings = {}, model = '') {
+        const presetTags = getNaiUcPresetTagsForModel(settings.ucPreset, model);
+        return normalizeNaiWeightSyntax(buildCommaPrompt([
+            presetTags,
+            negativeText || ''
+        ]));
+    }
+
     function getDefaultGlobalSettings() {
         return {
             geminiProvider: 'ai-studio',
@@ -1341,9 +1400,9 @@ ${guide}`.trim();
         const index = clampHistoryIndex(record);
 
         return `
-            <button class="csp-image-history-btn csp-image-history-prev" data-message-key="${escapeHtml(messageKey)}" type="button" title="이전 이미지" aria-label="이전 이미지" ${index <= 0 ? 'disabled' : ''}>‹</button>
+            <button class="csp-image-history-btn csp-image-history-prev" data-message-key="${escapeHtml(messageKey)}" type="button" title="이전 이미지" aria-label="이전 이미지" ${index <= 0 ? 'disabled' : ''}><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
             <span class="csp-image-history-count">${index + 1} / ${count}</span>
-            <button class="csp-image-history-btn csp-image-history-next" data-message-key="${escapeHtml(messageKey)}" type="button" title="다음 이미지" aria-label="다음 이미지" ${index >= count - 1 ? 'disabled' : ''}>›</button>
+            <button class="csp-image-history-btn csp-image-history-next" data-message-key="${escapeHtml(messageKey)}" type="button" title="다음 이미지" aria-label="다음 이미지" ${index >= count - 1 ? 'disabled' : ''}><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
         `;
     }
 
@@ -1703,7 +1762,8 @@ ${guide}`.trim();
         return {
             width: Number(overlay?.querySelector('#csp-nai-width')?.value || 832),
             height: Number(overlay?.querySelector('#csp-nai-height')?.value || 1216),
-            steps: Number(overlay?.querySelector('#csp-nai-steps')?.value || 28)
+            steps: Number(overlay?.querySelector('#csp-nai-steps')?.value || 28),
+            ucPreset: Number(overlay?.querySelector('#csp-nai-uc-preset')?.value || 0)
         };
     }
 
@@ -3981,7 +4041,7 @@ ${finalPrompt}`);
             nSamples: 1,
             smea: false,
             dyn: false,
-            ucPreset: 0
+            ucPreset: Number(overlay.querySelector('#csp-edit-uc-preset')?.value || 0)
         };
     }
 
@@ -4039,8 +4099,14 @@ ${finalPrompt}`);
                         <textarea id="csp-edit-base-prompt" class="csp-long">${escapeHtml(basePrompt)}</textarea>
                     </div>
                     <div class="csp-field">
-                        <label>Undesired Content</label>
+                        <div class="csp-label-row">
+                            <label>Undesired Content</label>
+                            <select id="csp-edit-uc-preset" title="NovelAI Undesired Content Preset" style="max-width: 180px;">
+                                ${buildNaiUcPresetOptionsHtml(settings.ucPreset)}
+                            </select>
+                        </div>
                         <textarea id="csp-edit-base-negative" class="csp-long">${escapeHtml(baseNegative)}</textarea>
+                        <div class="csp-mini-note">선택한 UC 프리셋 태그도 실제 Negative에 합쳐서 전송돼.</div>
                     </div>
                     <div class="csp-field">
                         <label class="csp-check-row">
@@ -4212,8 +4278,11 @@ ${finalPrompt}`);
 
         function updateEditPreview() {
             const state = buildEditedPromptState();
+            const editSettings = getImageEditNaiSettings(overlay);
+            const editModel = getGlobalSettings().naiModel || 'nai-diffusion-4-5-full';
+            const visibleFinalNegative = mergeNaiUcPresetWithNegative(state.finalNegative, editSettings, editModel);
             overlay.querySelector('#csp-edit-final-prompt-preview').textContent = state.finalPrompt || '(empty)';
-            overlay.querySelector('#csp-edit-final-negative-preview').textContent = state.finalNegative || '(empty)';
+            overlay.querySelector('#csp-edit-final-negative-preview').textContent = visibleFinalNegative || '(empty)';
             if (outfitPreviewEl) {
                 const slot = findRoomCharacterSlotByName((state.charPrompts[0] || {}).name || savedPlan.visibleCharacters?.[0] || '', room);
                 const appliedOutfit = state.useTemporaryOutfit ? (savedPlan.temporaryOutfitPrompt || '') : getCharacterOutfitTags(slot);
@@ -4740,8 +4809,8 @@ ${appliedOutfit}` : '\
                         <div class="csp-gallery-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
                         <div class="csp-gallery-meta">문단 ${paragraph} · ${galleryIndex + 1} / ${historyCount}${created ? ` · ${escapeHtml(created)}` : ''}</div>
                         <div class="csp-gallery-actions">
-                            <button class="csp-btn csp-gallery-nav-btn" type="button" data-csp-gallery-action="prev" ${galleryIndex <= 0 ? 'disabled' : ''}>‹</button>
-                            <button class="csp-btn csp-gallery-nav-btn" type="button" data-csp-gallery-action="next" ${galleryIndex >= historyCount - 1 ? 'disabled' : ''}>›</button>
+                            <button class="csp-btn csp-gallery-nav-btn" type="button" data-csp-gallery-action="prev" ${galleryIndex <= 0 ? 'disabled' : ''}><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
+                            <button class="csp-btn csp-gallery-nav-btn" type="button" data-csp-gallery-action="next" ${galleryIndex >= historyCount - 1 ? 'disabled' : ''}><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
                             <button class="csp-btn" type="button" data-csp-gallery-action="download">저장</button>
                             <button class="csp-btn csp-btn-danger" type="button" data-csp-gallery-action="delete">삭제</button>
                         </div>
@@ -6256,6 +6325,7 @@ UC: ${char.uc || ''}`;
 
         const cleanBasePrompt = normalizeNaiWeightSyntax(normalizePrompt(basePrompt || finalPrompt));
         const cleanBaseNegative = normalizeNaiWeightSyntax(normalizePrompt(baseNegative || ''));
+        const cleanPresetMergedNegative = mergeNaiUcPresetWithNegative(cleanBaseNegative, settings, model);
         const cleanFinalPrompt = normalizeNaiWeightSyntax(normalizePrompt(finalPrompt || ''));
         const cleanFinalNegative = normalizeNaiWeightSyntax(normalizePrompt(finalNegative || ''));
 
@@ -6309,8 +6379,8 @@ UC: ${char.uc || ''}`;
                 seed: seedNumber,
                 noise_schedule: settings.noiseSchedule || 'karras',
 
-                negative_prompt: cleanBaseNegative,
-                uc: cleanBaseNegative,
+                negative_prompt: cleanPresetMergedNegative,
+                uc: cleanPresetMergedNegative,
                 ucPreset: Number(settings.ucPreset || 0),
                 qualityToggle: false,
 
@@ -6342,7 +6412,7 @@ UC: ${char.uc || ''}`;
 
                 v4_negative_prompt: {
                     caption: {
-                        base_caption: cleanBaseNegative,
+                        base_caption: cleanPresetMergedNegative,
                         char_captions: v4CharNegativeCaptions
                     },
                     use_coords: false,
@@ -6971,9 +7041,14 @@ UC: ${char.uc || ''}`;
                                     <div class="csp-mini-note">자동으로 조립되지만, 필요하면 직접 수정해도 돼.</div>
                                 </div>
                                 <div class="csp-field">
-                                    <label>Negative / UC</label>
+                                    <div class="csp-label-row">
+                                        <label>Negative / UC</label>
+                                        <select id="csp-nai-uc-preset" title="NovelAI Undesired Content Preset" style="max-width: 180px;">
+                                            ${buildNaiUcPresetOptionsHtml(settings.ucPreset)}
+                                        </select>
+                                    </div>
                                     <textarea id="csp-final-negative" class="csp-long">${escapeHtml(promptState.finalNegative || '')}</textarea>
-                                    <div class="csp-mini-note">이 값이 NovelAI의 uc(undesired content)로 전송돼.</div>
+                                    <div class="csp-mini-note">이 값이 NovelAI의 uc(undesired content)로 전송돼. 오른쪽 프리셋 태그도 Negative에 합쳐서 전송돼서 EXIF에서 확인 가능해.</div>
                                 </div>
                             </div>
                         </div>
@@ -8100,8 +8175,14 @@ UC: ${char.uc || ''}`;
                         <textarea id="csp-base-positive" class="csp-long" placeholder="artist tags, base style tags...">${escapeHtml(global.basePositive || '')}</textarea>
                     </div>
                     <div class="csp-field">
-                        <label>고정 Negative / UC</label>
+                        <div class="csp-label-row">
+                            <label>고정 Negative / UC</label>
+                            <select id="csp-default-uc-preset" title="NovelAI Undesired Content Preset" style="max-width: 180px;">
+                                ${buildNaiUcPresetOptionsHtml(settings.ucPreset)}
+                            </select>
+                        </div>
                         <textarea id="csp-base-negative" class="csp-long" placeholder="bad anatomy, blurry...">${escapeHtml(global.baseNegative || '')}</textarea>
+                        <div class="csp-mini-note">기본 생성/리롤 설정에 사용할 NAI UC 프리셋. 실제 생성 시 직접 쓴 UC와 합쳐서 전송돼.</div>
                     </div>
                     <div class="csp-field">
                         <label>Gemini 장면 태그 지침</label>
@@ -8431,7 +8512,7 @@ UC: ${char.uc || ''}`;
                     nSamples: 1,
                     smea: false,
                     dyn: false,
-                    ucPreset: 0
+                    ucPreset: Number(overlay.querySelector('#csp-default-uc-preset')?.value || 0)
                 },
                 characterQuickSlots: quickCharacterSlots
             };
