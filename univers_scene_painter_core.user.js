@@ -8591,26 +8591,45 @@ UC: ${char.uc || ''}`;
 
     function injectScenePainterRow() {
         injectStyles();
-        const originContainer = findSituationImageContainer();
+
+        // univers.chat: 사이드바(.bg-background\/95.backdrop-blur-2xl)의
+        //   탭 행(.mx-4.mt-3.shrink-0) 다음에 CSP 패널 삽입
+        //   사이드바가 닫혀있으면 skip (다음 MutationObserver 사이클에서 재시도)
+        const sidebar = Array.from(document.querySelectorAll('div')).find(d =>
+            d.classList?.contains('bg-background\/95') && d.classList?.contains('backdrop-blur-2xl')
+        );
+
         const existingPainter = document.getElementById('csp-scene-painter-row');
         const existingGallery = document.getElementById('csp-scene-gallery-row');
 
-        if (!originContainer || !originContainer.parentNode) {
+        if (!sidebar) {
+            // 사이드바 닫힘 → 기존 패널도 없애진 않음 (DOM에서 사라지므로 자연 정리됨)
+            if (existingGallery) updateGalleryRowCount();
+            return;
+        }
+
+        // 삽입 기준점: 탭 행 div
+        const tabRow = sidebar.querySelector('.mx-4.mt-3.shrink-0')
+            || sidebar.querySelector('.border-b.border-border.flex.w-full')?.parentElement;
+
+        if (!tabRow || !tabRow.parentNode) {
             if (existingGallery) updateGalleryRowCount();
             return;
         }
 
         let painterRow = existingPainter;
         if (!painterRow) {
-            painterRow = createScenePainterRow(originContainer);
+            // originContainer=null → makeFallbackRow() 경로로
+            painterRow = createScenePainterRow(null);
+            painterRow.style.cssText += 'padding: 8px 16px; border-bottom: 1px solid var(--border);';
         }
 
-        if (painterRow.parentNode !== originContainer.parentNode || painterRow.previousElementSibling !== originContainer) {
-            originContainer.parentNode.insertBefore(painterRow, originContainer.nextSibling);
+        // 탭 행 바로 다음(탭 콘텐츠 앞)에 삽입
+        if (painterRow.parentNode !== tabRow.parentNode || painterRow.previousElementSibling !== tabRow) {
+            tabRow.parentNode.insertBefore(painterRow, tabRow.nextSibling);
         }
         ensureGalleryAfterPainter(painterRow);
     }
-
     function injectAll() {
         injectStyles();
         injectScenePainterRow();
@@ -8654,19 +8673,23 @@ UC: ${char.uc || ''}`;
     }
 
     function mutationTouchesMenuArea(mutation) {
+        // univers.chat: 사이드바 DOM 변화(열림/닫힘/탭 전환)를 감지해서 CSP 패널 재주입
         const nodes = [mutation.target, ...Array.from(mutation.addedNodes || []), ...Array.from(mutation.removedNodes || [])]
             .map(getMutationElement)
             .filter(Boolean);
         return nodes.some(node => {
-            if (isComposerNode(node) || isChatListNode(node) || isSuggestionNode(node)) return false;
+            if (!node) return false;
+            // CSP 패널 자체 변화
             if (node.closest?.('#csp-scene-painter-row, #csp-scene-gallery-row')) return true;
+            // 사이드바 컨테이너 변화 (열림/닫힘 포함)
+            if (node.classList?.contains('bg-background\/95') && node.classList?.contains('backdrop-blur-2xl')) return true;
+            if (node.closest?.('.bg-background\/95')) return true;
+            // 'AI 삽화 생성' 또는 '삽화 갤러리' 텍스트 포함 노드
             const text = String(node.textContent || '');
-            if (text.length > 30000) return false;
-            if (!text.includes('상황 이미지 보기') && !text.includes('AI 삽화 생성') && !text.includes('삽화 갤러리')) return false;
-            return !!findSituationImageContainer(node.ownerDocument === document ? document : node);
+            if (text.length < 30000 && (text.includes('AI 삽화 생성') || text.includes('삽화 갤러리'))) return true;
+            return false;
         });
     }
-
     function mutationTouchesAssistantMessage(mutation) {
         const nodes = [mutation.target, ...Array.from(mutation.addedNodes || [])]
             .map(getMutationElement)
