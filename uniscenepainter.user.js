@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.5.5
+// @version      2.6.5
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -115,8 +115,7 @@
         return (data?.candidates || [])
             .flatMap(candidate => candidate.content?.parts || candidate.parts || [])
             .map(part => part.text || '')
-            .join('\
-')
+            .join('\n')
             .trim();
     }
 
@@ -169,8 +168,7 @@
         const systemText = String((payload?.systemInstruction?.parts || [])
             .map(part => part?.text || '')
             .filter(Boolean)
-            .join('\
-')).trim();
+            .join('\n')).trim();
 
         const options = {
             model: geminiRequest.model
@@ -3878,8 +3876,7 @@ ${guide}`.trim();
     function getSceneWindowText(markdown, insertAfterParagraph, radius = 1) {
         return getSceneParagraphWindow(markdown, insertAfterParagraph, radius)
             .map(item => item.text)
-            .join('\
-');
+            .join('\n');
     }
 
     function getRoomCharacterNames(room) {
@@ -5972,8 +5969,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             const text = (data.candidates || [])
                 .flatMap(candidate => candidate.content?.parts || [])
                 .map(part => part.text || '')
-                .join('\
-')
+                .join('\n')
                 .trim();
             if (!text) return '';
             const repaired = extractJsonLoose(text);
@@ -6130,8 +6126,7 @@ UC: ${char.uc || ''}`;
 
         blocks.forEach((block, index) => {
             const fallback = (fallbackCharPrompts || [])[index] || {};
-            const lines = block.split('\
-').map(line => line.trim()).filter(Boolean);
+            const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
             let name = fallback.name || `Character ${index + 1}`;
             let promptLines = [];
             let uc = fallback.uc || '';
