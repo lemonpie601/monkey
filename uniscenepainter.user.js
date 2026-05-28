@@ -8586,7 +8586,7 @@ UC: ${char.uc || ''}`;
         if (!switchBtn) return;
         switchBtn.setAttribute('aria-checked', value ? 'true' : 'false');
         switchBtn.setAttribute('data-state', value ? 'checked' : 'unchecked');
-        if (thumb) thumb.setAttribute('data-state', value ? 'checked' : 'unchecked');
+        if (thumb) thumb.setAttribute('data-state', value ? 'checked' : 'unchecked'); thumb.style.transform = value ? 'translateX(15px)' : 'translateX(-1px)';
     }
 
     function makeFallbackRow() {
