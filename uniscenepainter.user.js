@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.6.7-openai-claude-openrouter
+// @version      2.7.9
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
 // @connect      api.openai.com
 // @connect      api.anthropic.com
-// @connect      openrouter.ai
+// @connect      open.bigmodel.cn
 // @connect      aiplatform.googleapis.com
 // @connect      *.aiplatform.googleapis.com
 // @connect      image.novelai.net
@@ -87,8 +87,41 @@
         return CLAUDE_MODEL_OPTIONS.includes(raw) ? raw : 'claude-sonnet-4-5';
     }
 
-    /** OpenAI Chat Completions API 호출 */
-    async function callOpenAiGenerateContent(request, systemText, userText) {
+
+    // ── 재시도 래퍼 (429 / 5xx 일시적 에러 자동 재시도) ──────────────────
+    async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = '' } = {}) {
+        const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+        let lastErr;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return await fn();
+            } catch (err) {
+                lastErr = err;
+                const msg = String(err?.message || err || '');
+                // HTTP 상태코드 추출 시도
+                const statusMatch = msg.match(/\b(\d{3})\b/);
+                const status = statusMatch ? Number(statusMatch[1]) : 0;
+                const isRetryable = RETRYABLE.has(status) ||
+                    /rate.?limit|too many|overloaded|provider returned error|service unavailable/i.test(msg);
+
+                if (!isRetryable || attempt >= maxRetries) break;
+
+                const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${Math.round(delay / 1000)}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+        throw lastErr;
+    }
+
+
+
+
+
+
+    /** Zhipu AI (GLM) API 호출 (OpenAI 호환) */
+    async function callGlmGenerateContent(request, systemText, userText) {
+        // GLM 무료 모델(GLM-4.5-Flash, GLM-4.7-Flash)은 128K 컨텍스트 지원 → 트리밍 불필요
         const payload = {
             model: request.model,
             messages: [
@@ -97,6 +130,45 @@
             ],
             temperature: request.temperature ?? 0.18,
             top_p: request.topP ?? 0.75,
+            max_tokens: 16384,
+            stream: false
+        };
+        const data = await gmRequestJson({
+            method: 'POST',
+            url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${request.apiKey}`
+            },
+            data: payload
+        });
+        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
+        if (!text) {
+            console.warn('[Crack Scene Painter] GLM 응답 디버그:', JSON.stringify({
+                choices: (data?.choices || []).map(c => ({
+                    finish_reason: c.finish_reason,
+                    content: c.message?.content,
+                    role: c.message?.role
+                }))
+            }));
+        }
+        return { _glmRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** OpenAI Chat Completions API 호출 */
+    async function callOpenAiGenerateContent(request, systemText, userText) {
+        // o1/o3/o4 추론 모델은 temperature/top_p 미지원 → 생략
+        const isReasoningModel = /^o\d/.test(String(request.model || ''));
+        const payload = {
+            model: request.model,
+            messages: [
+                ...(systemText ? [{ role: 'system', content: systemText }] : []),
+                { role: 'user', content: userText }
+            ],
+            ...(isReasoningModel ? {} : {
+                temperature: request.temperature ?? 0.18,
+                top_p: request.topP ?? 0.75
+            }),
             response_format: request.responseFormat ?? undefined
         };
         const data = await gmRequestJson({
@@ -132,31 +204,6 @@
         return { _anthropicRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
     }
 
-    /** OpenRouter (OpenAI 호환) 호출 */
-    async function callOpenRouterGenerateContent(request, systemText, userText) {
-        const payload = {
-            model: request.model,
-            messages: [
-                ...(systemText ? [{ role: 'system', content: systemText }] : []),
-                { role: 'user', content: userText }
-            ],
-            temperature: request.temperature ?? 0.18,
-            top_p: request.topP ?? 0.75
-        };
-        const data = await gmRequestJson({
-            method: 'POST',
-            url: 'https://openrouter.ai/api/v1/chat/completions',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${request.apiKey}`,
-                'HTTP-Referer': 'https://www.univers.chat',
-                'X-Title': 'Univers Scene Painter'
-            },
-            data: payload
-        });
-        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
-        return { _openrouterRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
-    }
 
     function normalizeGeminiModelId(model) {
         const raw = String(model || 'gemini-2.5-flash').trim().replace(/^models\//, '');
@@ -349,11 +396,11 @@
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
             const genCfg = payload?.generationConfig || {};
             const useJson = String(genCfg.responseMimeType || '').includes('json');
-            return await callOpenAiGenerateContent(
+            return await withRetry(() => callOpenAiGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
                   responseFormat: useJson ? { type: 'json_object' } : undefined },
                 systemText, userText
-            );
+            ), { label: 'OpenAI' });
         }
 
         // ── Anthropic Claude ─────────────────────────────────────────────
@@ -363,23 +410,23 @@
             const userText = String((payload?.contents || [])
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
             const genCfg = payload?.generationConfig || {};
-            return await callAnthropicGenerateContent(
+            return await withRetry(() => callAnthropicGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature },
                 systemText, userText
-            );
+            ), { label: 'Anthropic' });
         }
 
-        // ── OpenRouter ───────────────────────────────────────────────────
-        if (provider === 'openrouter') {
+        // ── Zhipu AI (GLM) ───────────────────────────────────────────────
+        if (provider === 'glm') {
             const systemText = String((payload?.systemInstruction?.parts || [])
                 .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
             const userText = String((payload?.contents || [])
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
             const genCfg = payload?.generationConfig || {};
-            return await callOpenRouterGenerateContent(
+            return await withRetry(() => callGlmGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP },
                 systemText, userText
-            );
+            ), { label: 'GLM' });
         }
 
         // ── Firebase / Vertex / AI Studio (기존 Gemini 경로) ────────────
@@ -387,12 +434,12 @@
         if (provider === 'firebase') {
             return await callFirebaseAiLogicGenerateContent(geminiRequest, payloadWithSafetySettings);
         }
-        return await gmRequestJson({
+        return await withRetry(() => gmRequestJson({
             method: 'POST',
             url: geminiRequest.url,
             headers: geminiRequest.headers,
             data: payloadWithSafetySettings
-        });
+        }), { label: 'Gemini' });
     }
 
     function getGeminiGenerateContentRequestConfig(global, options = {}) {
@@ -428,15 +475,15 @@
             return { provider: 'anthropic', model: claudeModel, apiKey, headers: {} };
         }
 
-        // ── OpenRouter ────────────────────────────────────────────────────
-        if (provider === 'openrouter') {
-            const apiKey = String(global?.openrouterApiKey || '').trim();
-            const orModel = String(global?.openrouterModel || 'google/gemini-2.5-flash-preview').trim();
+        // ── Zhipu AI (GLM) ────────────────────────────────────────────────
+        if (provider === 'glm') {
+            const apiKey = String(global?.glmApiKey || '').trim();
+            const glmModel = String(global?.glmModel || 'glm-4.5-flash').trim();
             if (!apiKey) {
                 if (silent) return null;
-                throw new Error('OpenRouter API Key가 비어 있어요. 설정에서 OpenRouter API Key를 입력해줘.');
+                throw new Error('GLM API Key가 비어 있어요. 설정에서 Zhipu AI API Key를 입력해줘.');
             }
-            return { provider: 'openrouter', model: orModel, apiKey, headers: {} };
+            return { provider: 'glm', model: glmModel, apiKey, headers: {} };
         }
 
         // 사용자가 Firebase Config를 넣어둔 상태에서 provider가 Vertex로 남아 있으면
@@ -1053,8 +1100,8 @@ ${guide}`.trim();
             openaiModel: 'gpt-4o',
             anthropicApiKey: '',
             claudeModel: 'claude-sonnet-4-5',
-            openrouterApiKey: '',
-            openrouterModel: 'google/gemini-2.5-flash-preview',
+            glmApiKey: '',
+            glmModel: 'glm-4.5-flash',
             naiApiKey: '',
             naiModel: 'nai-diffusion-4-5-full',
             folderSaveEnabled: false,
@@ -8240,7 +8287,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                 <option value="firebase" ${global.geminiProvider === 'firebase' ? 'selected' : ''}>Firebase AI Logic Beta</option>
                                 <option value="openai" ${global.geminiProvider === 'openai' ? 'selected' : ''}>OpenAI (GPT)</option>
                                 <option value="anthropic" ${global.geminiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
-                                <option value="openrouter" ${global.geminiProvider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
+                                <option value="glm" ${global.geminiProvider === 'glm' ? 'selected' : ''}>Zhipu AI (GLM)</option>
                             </select>
                         </div>
                         <div class="csp-field">
@@ -8304,17 +8351,20 @@ ${JSON.stringify(parsedPlan, null, 2)}
                             </div>
                         </div>
                     </div>
-                    <div class="csp-section-subbox" id="csp-openrouter-section" style="display:none;">
-                        <div class="csp-section-title">OpenRouter 설정</div>
-                        <div class="csp-mini-note">openrouter.ai에서 발급한 API Key와 사용할 모델 ID를 입력해. (예: anthropic/claude-3-5-sonnet, google/gemini-2.5-flash-preview)</div>
+                    <div class="csp-section-subbox" id="csp-glm-section" style="display:none;">
+                        <div class="csp-section-title">Zhipu AI (GLM) 설정</div>
+                        <div class="csp-mini-note">bigmodel.cn에서 API Key 발급. 무료 모델은 속도가 느릴 수 있어.</div>
                         <div class="csp-grid">
                             <div class="csp-field">
-                                <label>모델 ID</label>
-                                <input id="csp-openrouter-model" value="${escapeHtml(global.openrouterModel||'google/gemini-2.5-flash-preview')}" placeholder="google/gemini-2.5-flash-preview">
+                                <label>GLM 모델</label>
+                                <select id="csp-glm-model">
+                                    <option value="glm-4.5-flash" ${(global.glmModel||'glm-4.5-flash')==='glm-4.5-flash'?'selected':''}>GLM-4.5-Flash (무료)</option>
+                                    <option value="glm-4.7-flash" ${global.glmModel==='glm-4.7-flash'?'selected':''}>GLM-4.7-Flash (무료)</option>
+                                </select>
                             </div>
                             <div class="csp-field">
-                                <label>OpenRouter API Key</label>
-                                <input id="csp-openrouter-key" type="password" value="${escapeHtml(global.openrouterApiKey||'')}" placeholder="sk-or-...">
+                                <label>Zhipu AI API Key</label>
+                                <input id="csp-glm-key" type="password" value="${escapeHtml(global.glmApiKey||'')}" placeholder="Zhipu AI API Key">
                             </div>
                         </div>
                     </div>
@@ -8688,34 +8738,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         }
 
         overlay.querySelector('#csp-storage-refresh')?.addEventListener('click', () => {
-    
-        // ── 제공자별 설정 섹션 토글 ─────────────────────────────────────
-        function updateProviderSections() {
-            const provider = overlay.querySelector('#csp-gemini-provider').value;
-            const isGemini = ['ai-studio', 'vertex', 'firebase'].includes(provider);
-            // Gemini 관련 필드 표시 여부
-            const geminiFieldIds = ['csp-google-model', 'csp-google-key',
-                'csp-vertex-project', 'csp-vertex-location', 'csp-vertex-token',
-                'csp-firebase-config', 'csp-firebase-location', 'csp-firebase-sdk-version'];
-            geminiFieldIds.forEach(id => {
-                const el = overlay.querySelector('#' + id);
-                if (el) {
-                    const fieldWrap = el.closest('.csp-field') || el.closest('.csp-grid') || el.closest('.csp-section-subbox');
-                    if (fieldWrap) fieldWrap.style.display = isGemini ? '' : 'none';
-                }
-            });
-            // 새 제공자 섹션
-            const openaiSection = overlay.querySelector('#csp-openai-section');
-            const anthropicSection = overlay.querySelector('#csp-anthropic-section');
-            const openrouterSection = overlay.querySelector('#csp-openrouter-section');
-            if (openaiSection) openaiSection.style.display = provider === 'openai' ? '' : 'none';
-            if (anthropicSection) anthropicSection.style.display = provider === 'anthropic' ? '' : 'none';
-            if (openrouterSection) openrouterSection.style.display = provider === 'openrouter' ? '' : 'none';
-        }
-        overlay.querySelector('#csp-gemini-provider').addEventListener('change', updateProviderSections);
-        updateProviderSections(); // 초기 상태 적용
-
-        refreshStorageStatus();
+            refreshStorageStatus();
             showToast('📊 저장소 상태를 확인했어요.');
         });
 
@@ -8729,6 +8752,50 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         refreshFolderStatus();
 
+        // ── 제공자별 설정 섹션 토글 ──────────────────────────────────────
+        function updateProviderSections() {
+            const provider = overlay.querySelector('#csp-gemini-provider').value;
+            const isGemini = ['ai-studio', 'vertex', 'firebase'].includes(provider);
+
+            // csp-google-model 필드만 숨김 (provider select와 같은 grid이므로 grid 전체는 건드리지 않음)
+            const googleModelField = overlay.querySelector('#csp-google-model');
+            if (googleModelField) {
+                const wrap = googleModelField.closest('.csp-field');
+                if (wrap) wrap.style.display = isGemini ? '' : 'none';
+            }
+
+            // 나머지 Gemini 전용 필드들 (각자 .csp-field 또는 .csp-section-subbox 단위로 숨김)
+            const geminiOnlyIds = ['csp-google-key',
+                'csp-vertex-project', 'csp-vertex-location', 'csp-vertex-token',
+                'csp-firebase-config', 'csp-firebase-location', 'csp-firebase-sdk-version'];
+            geminiOnlyIds.forEach(id => {
+                const el = overlay.querySelector('#' + id);
+                if (!el) return;
+                const wrap = el.closest('.csp-field') || el.closest('.csp-section-subbox');
+                if (wrap) wrap.style.display = isGemini ? '' : 'none';
+            });
+
+            // Vertex grid (Project ID + Location 묶음), Firebase sdk grid 숨김
+            ['csp-vertex-project', 'csp-firebase-location'].forEach(id => {
+                const el = overlay.querySelector('#' + id);
+                if (!el) return;
+                const grid = el.closest('.csp-grid');
+                if (grid) grid.style.display = isGemini ? '' : 'none';
+            });
+
+            // 새 제공자 섹션 표시
+            const openaiSection = overlay.querySelector('#csp-openai-section');
+            const anthropicSection = overlay.querySelector('#csp-anthropic-section');
+            const openrouterSection = overlay.querySelector('#csp-openrouter-section');
+            if (openaiSection) openaiSection.style.display = provider === 'openai' ? '' : 'none';
+            if (anthropicSection) anthropicSection.style.display = provider === 'anthropic' ? '' : 'none';
+            if (openrouterSection) openrouterSection.style.display = provider === 'openrouter' ? '' : 'none';
+            const glmSection = overlay.querySelector('#csp-glm-section');
+            if (glmSection) glmSection.style.display = provider === 'glm' ? '' : 'none';
+        }
+        overlay.querySelector('#csp-gemini-provider').addEventListener('change', updateProviderSections);
+        updateProviderSections(); // 초기 상태 적용
+
         function collectGlobal() {
             return {
                 geminiProvider: overlay.querySelector('#csp-gemini-provider').value,
@@ -8738,8 +8805,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 openaiModel: overlay.querySelector('#csp-openai-model').value,
                 anthropicApiKey: overlay.querySelector('#csp-anthropic-key').value.trim(),
                 claudeModel: overlay.querySelector('#csp-claude-model').value,
-                openrouterApiKey: overlay.querySelector('#csp-openrouter-key').value.trim(),
-                openrouterModel: overlay.querySelector('#csp-openrouter-model').value.trim() || 'google/gemini-2.5-flash-preview',
+                glmApiKey: overlay.querySelector('#csp-glm-key').value.trim(),
+                glmModel: overlay.querySelector('#csp-glm-model').value,
                 vertexProjectId: overlay.querySelector('#csp-vertex-project').value.trim(),
                 vertexLocation: overlay.querySelector('#csp-vertex-location').value.trim() || 'us-central1',
                 vertexAccessToken: overlay.querySelector('#csp-vertex-token').value.trim(),
