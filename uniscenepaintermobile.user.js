@@ -7827,7 +7827,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         overlay.innerHTML = `
             <div class="cspm-modal" role="dialog" aria-modal="true">
-                <h2>🎨 Crack Scene Painter 설정</h2>
+                <h2>🎨 Uni Scene Painter 설정</h2>
                 <div class="cspm-desc">
                     Gemini: 장면/삽입 위치 분석<br>NAI: 실제 이미지 생성<br>저장: 내부 갤러리 · 다운로드 · ZIP<br>채팅방 ID: <b>${escapeHtml(roomId)}</b>
                 </div>
