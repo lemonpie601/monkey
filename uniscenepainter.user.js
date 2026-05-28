@@ -8084,7 +8084,7 @@ UC: ${char.uc || ''}`;
 
         overlay.innerHTML = `
             <div class="csp-modal" role="dialog" aria-modal="true">
-                <h2>🎨 Crack Scene Painter 설정</h2>
+                <h2>🎨 Uni Scene Painter 설정</h2>
                 <div class="csp-desc">
                     Gemini: 장면/삽입 위치 분석<br>NAI: 실제 이미지 생성<br>채팅방 ID: <b>${escapeHtml(roomId)}</b>
                 </div>
