@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.10.0
+// @version      2.10.1
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -102,7 +102,7 @@
                 const statusMatch = msg.match(/\b(\d{3})\b/);
                 const status = statusMatch ? Number(statusMatch[1]) : 0;
                 const isRetryable = RETRYABLE.has(status) ||
-                    /rate.?limit|too many|overloaded|provider returned error|service unavailable/i.test(msg);
+                    /rate.?limit|too many|overloaded|provider returned error|service unavailable|시간이 초과|timeout/i.test(msg);
 
                 if (!isRetryable || attempt >= maxRetries) break;
 
@@ -456,6 +456,17 @@
             headers: geminiRequest.headers,
             data: payloadWithSafetySettings
         }), { label: 'Gemini' });
+    }
+
+    /** 현재 설정된 provider의 UI 표시용 이름 반환 */
+    function getProviderDisplayName(global) {
+        const provider = String(global?.geminiProvider || 'ai-studio').trim();
+        if (provider === 'openai') return `OpenAI (${String(global?.openaiModel || 'gpt-4o').trim()})`;
+        if (provider === 'anthropic') return `Claude (${String(global?.claudeModel || 'claude-sonnet-4-5').trim()})`;
+        if (provider === 'glm') return `GLM (${String(global?.glmModel || 'glm-4.5-flash').trim()})`;
+        if (provider === 'vertex') return 'Vertex AI';
+        if (['firebase', 'firebase-ai', 'firebase-ai-logic'].includes(provider)) return 'Firebase AI';
+        return `Gemini (${String(global?.googleModel || 'gemini-2.5-flash').trim()})`;
     }
 
     function getGeminiGenerateContentRequestConfig(global, options = {}) {
@@ -7837,9 +7848,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
 
             showToast('⚡ 스피드 모드 시작: 분석 후 바로 생성해요.');
-            showTaskHud('스피드 모드', 'Gemini 분석부터 NAI 생성까지 확인창 없이 바로 진행해.', 10);
+            const _speedProviderName = getProviderDisplayName(getGlobalSettings());
+            showTaskHud('스피드 모드', `AI 분석부터 NAI 생성까지 확인창 없이 바로 진행해.`, 10);
             const ticker = startTaskHudTicker([
-                { title: 'Gemini 분석 중', message: 'AI 답변에서 삽화로 만들 장면을 자동으로 고르는 중이야.', progress: 26 },
+                { title: 'AI 분석 중', message: `${_speedProviderName}에게 장면 분석을 요청했어. 잠깐만 기다려줘.`, progress: 26 },
                 { title: '프롬프트 조립 중', message: '캐릭터 슬롯과 장면 태그를 합쳐 NAI 프롬프트를 만들고 있어.', progress: 48 },
                 { title: 'NAI 생성 중', message: '이미지를 생성하고 있어. 이 단계에서 Anlas가 소모될 수 있어.', progress: 72 },
                 { title: '이미지 삽입 중', message: '생성된 이미지를 답변 문단 사이에 넣고 기록을 저장하고 있어.', progress: 90 }
@@ -7931,7 +7943,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const records = getSceneRecords();
         const record = records[key];
         if (!record) return;
-        if (markdown.querySelector('.csp-generated-scene-image')) return;
+        // React 리렌더링으로 DOM이 교체된 경우를 감지:
+        // 이미지 엘리먼트가 있어도 document에 연결돼 있지 않으면(detached) 재삽입 필요
+        const existing = markdown.querySelector('.csp-generated-scene-image');
+        if (existing && existing.isConnected) return;
 
         normalizeSceneRecordHistory(record, key);
 
@@ -8003,27 +8018,28 @@ ${JSON.stringify(parsedPlan, null, 2)}
             console.log('[Crack Scene Painter] image button clicked:', { key, markdown });
             btn.setAttribute('data-csp-loading', 'true');
             btn.disabled = true;
-            btn.title = 'Gemini가 장면을 분석 중...';
-            showToast('🔎 Gemini가 장면과 삽입 위치를 분석 중...');
+            const _providerName = getProviderDisplayName(getGlobalSettings());
+            btn.title = 'AI가 장면을 분석 중...';
+            showToast(`🔎 ${_providerName}이(가) 장면과 삽입 위치를 분석 중...`);
             showTaskHud('장면 분석 시작', '지금 선택한 AI 답변을 읽고, 어디에 어떤 장면을 넣을지 고르는 중이야.', 10);
             const ticker = startTaskHudTicker([
                 { title: '로그 정리 중', message: '현재 AI 답변의 문단과 장면 흐름을 정리하고 있어.', progress: 24 },
-                { title: 'Gemini 분석 요청', message: 'Gemini API에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.', progress: 46 },
+                { title: 'AI 분석 요청 중', message: `${_providerName}에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.`, progress: 46 },
                 { title: '응답 해석 중', message: '받아온 JSON을 읽고, 삽입 위치와 장면 태그를 정리하고 있어.', progress: 68 },
                 { title: '확인창 준비 중', message: '확인창과 프롬프트 초안을 만들고 있어.', progress: 84 }
             ]);
 
             try {
                 const plan = await generateScenePlanWithGemini(bubble, markdown);
-                console.log('[Crack Scene Painter] Gemini scene plan:', plan);
-                updateTaskHud({ title: '분석 완료', message: 'Gemini 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
+                console.log('[Crack Scene Painter] AI scene plan:', plan);
+                updateTaskHud({ title: '분석 완료', message: 'AI 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
                 showScenePlanModal({ targetBubble: bubble, markdown, plan });
-                showToast('✅ Gemini 분석 완료. 생성 전 확인창을 열었어요.');
+                showToast('✅ AI 분석 완료. 생성 전 확인창을 열었어요.');
                 setTimeout(() => hideTaskHud(), 360);
             } catch (err) {
-                console.error('[Crack Scene Painter] Gemini 분석 실패:', err);
+                console.error('[Crack Scene Painter] AI 분석 실패:', err);
                 updateTaskHud({ title: '분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Crack Scene Painter] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-                showToast('⚠️ Gemini 분석 실패: ' + err.message);
+                showToast('⚠️ AI 분석 실패: ' + err.message);
                 setTimeout(() => hideTaskHud(), 1800);
             } finally {
                 ticker.stop();
