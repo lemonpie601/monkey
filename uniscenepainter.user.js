@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.10.1
+// @version      2.10.2
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -123,8 +123,8 @@
     async function callGlmGenerateContent(request, systemText, userText) {
         // GM_xmlhttpRequest 페이로드 한계 및 GLM 안정성을 위해 적절히 트리밍
         // GLM 무료 모델은 128K 컨텍스트 지원이지만 실제 요청 크기는 ~20K chars 이내가 안정적
-        const MAX_SYS_CHARS = 6000;
-        const MAX_USER_CHARS = 14000;
+        const MAX_SYS_CHARS = 3000;
+        const MAX_USER_CHARS = 6000;
         const trimmedSys = systemText.length > MAX_SYS_CHARS
             ? systemText.slice(0, MAX_SYS_CHARS) + '\n...(생략)'
             : systemText;
