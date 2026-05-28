@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.5.4
+// @version      2.5.5
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -3771,7 +3771,6 @@ ${guide}`.trim();
         if (group) {
             if (isAssistantMessageGroup(group)) return false;
             if (group.querySelector('.bg-surface_chat_secondary')) return true;
-            if (group.querySelector('[data-message-id]')) return true;
             if (findNovelUserRow(group)) return true;
         }
         if (bubble.classList?.contains('bg-surface_chat_secondary')) return true;
@@ -7527,7 +7526,7 @@ UC: ${char.uc || ''}`;
                 nSamples: 1,
                 smea: false,
                 dyn: false,
-                ucPreset: 0
+                ucPreset: Number(overlay.querySelector('#csp-nai-uc-preset')?.value || 0)
             };
         }
 
