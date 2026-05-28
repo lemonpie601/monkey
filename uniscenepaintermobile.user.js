@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter Mobile
 // @namespace    univers-scene-painter-mobile
-// @version      0.1.2
+// @version      0.1.3
 // @description  Univers Scene Painter Mobile - NAI V4.5 Character Slots Full
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -3374,7 +3374,7 @@ ${guide}`.trim();
             if (isMainMarkdown(aiMd)) return aiMd;
 
             const candidates = Array.from(group.querySelectorAll('[data-message-id] .space-y-3')).filter(isMainMarkdown);
-            const preferred = candidates.find(md => !md.closest('.bg-surface_chat_secondary') !== null || closest('.rounded-2xl') !== null);
+            const preferred = candidates.find(md => !isUserMarkdown(md));
             if (preferred) return preferred;
             if (candidates.length) return candidates[0];
         }
@@ -3556,7 +3556,7 @@ ${guide}`.trim();
 
         // univers: bg-surface_chat_secondary = 유저 메시지
         // 그래도 정렬/배경 힌트가 전혀 없는 경우에는 기존 채팅형 유저 메시지 호환을 위해 유저 쪽으로 둔다.
-        if (markdown.closest('.bg-surface_chat_secondary') !== null || closest('.rounded-2xl') !== null) return true;
+        if (markdown.closest?.('.bg-surface_chat_secondary') !== null) return true;
 
         return false;
     }
