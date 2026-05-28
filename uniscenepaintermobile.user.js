@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter Mobile
 // @namespace    univers-scene-painter-mobile
-// @version      0.1.3
+// @version      0.1.4
 // @description  Univers Scene Painter Mobile - NAI V4.5 Character Slots Full
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -3725,7 +3725,7 @@ ${guide}`.trim();
     function buildPromptDetailText(plan, paragraphIndex, mode, promptInfo) {
         const title = plan?.sceneTitle || '장면 삽화';
         const reason = plan?.reason || '';
-        const label = mode === 'nai' ? 'NAI 생성' : (mode === 'gemini' ? 'Gemini 분석' : '복원');
+        const label = mode === 'nai' ? 'NAI 생성' : (mode === 'gemini' ? 'AI 분석' : '복원');
 
         const info = (promptInfo && typeof promptInfo === 'object')
             ? promptInfo
@@ -4929,7 +4929,7 @@ ${guide}`.trim();
                 headers,
                 responseType: responseType || 'text',
                 data: requestPayload,
-                timeout: 180000,
+                timeout: 240000,
                 onload: (response) => {
                     if (settled) return;
                     try {
@@ -4977,7 +4977,7 @@ ${guide}`.trim();
                 ontimeout: () => {
                     if (settled) return;
                     console.error('[Univers Scene Painter Mobile] GM request timeout:', { method, url });
-                    finishReject(new Error('요청 시간이 초과됐어요.'));
+                    finishReject(new Error('요청 시간이 초과됐어요. 네트워크 상태를 확인하거나 잠시 후 다시 시도해줘.'));
                 },
                 onabort: () => {
                     if (settled) return;
@@ -6337,7 +6337,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 charPrompts,
                 referenceInfo,
                 naiSettings
-            }, messageKey)
+            }, messageKey),
+            historyHtml: buildImageFooterControls(messageKey, null)
         });
 
         if (!result.ok) throw new Error('AI 답변의 문단을 찾지 못했어요.');
@@ -6356,7 +6357,11 @@ ${JSON.stringify(parsedPlan, null, 2)}
             createdAt: Date.now()
         };
 
-        const currentHistoryItem = await appendSceneHistoryImage(messageKey, record, imageUrl);
+        try {
+            await appendSceneHistoryImage(messageKey, record, imageUrl);
+        } catch (historyErr) {
+            console.warn('[Univers Scene Painter Mobile] appendSceneHistoryImage failed, saving record anyway:', historyErr);
+        }
 
         const nextRecords = getSceneRecords();
         nextRecords[messageKey] = record;
@@ -6789,7 +6794,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             <div class="cspm-modal" role="dialog" aria-modal="true">
                 <h2>🖼️ NAI 생성 전 확인</h2>
                 <div class="cspm-desc">
-                    Gemini가 장면과 삽입 위치를 골랐어.<br>프롬프트 확인/수정 후 NAI로 생성해.
+                    AI가 장면과 삽입 위치를 골랐어.<br>프롬프트 확인/수정 후 NAI로 생성해.
                 </div>
 
                 <div class="cspm-tablist" data-default-tab="prompt" data-tab-panels=".cspm-plan-tab-panel" role="tablist" aria-label="NAI 생성 전 확인 탭">
@@ -7157,7 +7162,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 showTaskHud('문단 기준 재분석', '선택한 문단과 앞뒤 문단만 보고 장면 태그를 다시 만들고 있어.', 18);
                 const ticker = startTaskHudTicker([
                     { title: '선택 문단 확인', message: '사용자가 고른 문단 주변만 추려내고 있어.', progress: 34 },
-                    { title: 'Gemini 재분석 요청', message: '선택 문단 기준으로 중심 캐릭터와 구도를 다시 고르는 중이야.', progress: 62 },
+                    { title: 'AI 재분석 요청', message: '선택 문단 기준으로 중심 캐릭터와 구도를 다시 고르는 중이야.', progress: 62 },
                     { title: '확인창 갱신', message: '새 장면 태그와 프롬프트를 확인창에 반영하고 있어.', progress: 86 }
                 ]);
 
@@ -7205,7 +7210,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 showTaskHud('장면 수정 요청', '추가 지시사항을 반영해서 현재 장면을 다시 다듬고 있어.', 16);
                 const ticker = startTaskHudTicker([
                     { title: '요청 정리 중', message: '현재 장면과 추가 요청을 함께 정리하고 있어.', progress: 34 },
-                    { title: 'Gemini 재분석 요청', message: '현재 장면을 유지한 채, 추가 요청이 반영된 새 태그를 만드는 중이야.', progress: 62 },
+                    { title: 'AI 재분석 요청', message: '현재 장면을 유지한 채, 추가 요청이 반영된 새 태그를 만드는 중이야.', progress: 62 },
                     { title: '확인창 갱신', message: '수정된 장면 태그와 프롬프트를 확인창에 반영하고 있어.', progress: 86 }
                 ]);
 
@@ -7387,9 +7392,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
 
             showToast('⚡ 스피드 모드 시작: 분석 후 바로 생성해요.');
-            showTaskHud('스피드 모드', 'Gemini 분석부터 NAI 생성까지 확인창 없이 바로 진행해.', 10);
+            showTaskHud('스피드 모드', 'AI 분석부터 NAI 생성까지 확인창 없이 바로 진행해.', 10);
             const ticker = startTaskHudTicker([
-                { title: 'Gemini 분석 중', message: 'AI 답변에서 삽화로 만들 장면을 자동으로 고르는 중이야.', progress: 26 },
+                { title: 'AI 장면 분석 중', message: 'AI 답변에서 삽화로 만들 장면을 자동으로 고르는 중이야.', progress: 26 },
                 { title: '프롬프트 조립 중', message: '캐릭터 슬롯과 장면 태그를 합쳐 NAI 프롬프트를 만들고 있어.', progress: 48 },
                 { title: 'NAI 생성 중', message: '이미지를 생성하고 있어. 이 단계에서 Anlas가 소모될 수 있어.', progress: 72 },
                 { title: '이미지 삽입 중', message: '생성된 이미지를 답변 문단 사이에 넣고 기록을 저장하고 있어.', progress: 90 }
@@ -7484,6 +7489,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             if (markdown?.dataset) markdown.dataset.cspmRestoreChecked = 'true';
             return;
         }
+        if (!markdown.isConnected) return;
         if (markdown.querySelector('.cspm-generated-scene-image')) return;
 
         normalizeSceneRecordHistory(record, key);
@@ -7558,12 +7564,12 @@ ${JSON.stringify(parsedPlan, null, 2)}
             console.log('[Univers Scene Painter Mobile] image button clicked:', { key, markdown });
             btn.setAttribute('data-cspm-loading', 'true');
             btn.disabled = true;
-            btn.title = 'Gemini가 장면을 분석 중...';
-            showToast('🔎 Gemini가 장면과 삽입 위치를 분석 중...');
+            btn.title = 'AI가 장면을 분석 중...';
+            showToast('🔎 AI가 장면과 삽입 위치를 분석 중...');
             showTaskHud('장면 분석 시작', '지금 선택한 AI 답변을 읽고, 어디에 어떤 장면을 넣을지 고르는 중이야.', 10);
             const ticker = startTaskHudTicker([
                 { title: '로그 정리 중', message: '현재 AI 답변의 문단과 장면 흐름을 정리하고 있어.', progress: 24 },
-                { title: 'Gemini 분석 요청', message: 'Gemini API에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.', progress: 46 },
+                { title: 'AI 분석 요청', message: 'AI API에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.', progress: 46 },
                 { title: '응답 해석 중', message: '받아온 JSON을 읽고, 삽입 위치와 장면 태그를 정리하고 있어.', progress: 68 },
                 { title: '확인창 준비 중', message: '확인창과 프롬프트 초안을 만들고 있어.', progress: 84 }
             ]);
@@ -7571,14 +7577,14 @@ ${JSON.stringify(parsedPlan, null, 2)}
             try {
                 const plan = await generateScenePlanWithGemini(bubble, markdown);
                 console.log('[Univers Scene Painter Mobile] Gemini scene plan:', plan);
-                updateTaskHud({ title: '분석 완료', message: 'Gemini 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
+                updateTaskHud({ title: '분석 완료', message: 'AI 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
                 showScenePlanModal({ targetBubble: bubble, markdown, plan });
-                showToast('✅ Gemini 분석 완료. 생성 전 확인창을 열었어요.');
+                showToast('✅ AI 분석 완료. 생성 전 확인창을 열었어요.');
                 setTimeout(() => hideTaskHud(), 360);
             } catch (err) {
                 console.error('[Univers Scene Painter Mobile] Gemini 분석 실패:', err);
-                updateTaskHud({ title: '분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Univers Scene Painter Mobile] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-                showToast('⚠️ Gemini 분석 실패: ' + err.message);
+                updateTaskHud({ title: 'AI 분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Univers Scene Painter Mobile] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
+                showToast('⚠️ AI 분석 실패: ' + err.message);
                 setTimeout(() => hideTaskHud(), 1800);
             } finally {
                 ticker.stop();
