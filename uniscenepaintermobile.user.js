@@ -7,6 +7,10 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      generativelanguage.googleapis.com
+// @connect      api.openai.com
+// @connect      api.anthropic.com
+// @connect      open.bigmodel.cn
+// @connect      openrouter.ai
 // @connect      aiplatform.googleapis.com
 // @connect      *.aiplatform.googleapis.com
 // @connect      image.novelai.net
@@ -219,7 +223,114 @@
         return options;
     }
 
-    async function callFirebaseAiLogicGenerateContent(geminiRequest, payload) {
+    // ── 재시도 래퍼 ──────────────────────────────────────────────────────
+    async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = '' } = {}) {
+        const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+        let lastErr;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try { return await fn(); }
+            catch (err) {
+                lastErr = err;
+                const msg = String(err?.message || err || '');
+                const status = err?.httpStatus || (() => { const m = msg.match(/\b(\d{3})\b/); return m ? Number(m[1]) : 0; })();
+                if (status >= 400 && status < 500 && status !== 429) break;
+                const isRetryable = RETRYABLE.has(status) ||
+                    /rate.?limit|too many|overloaded|provider returned error|service unavailable|시간이 초과|timeout/i.test(msg);
+                if (!isRetryable || attempt >= maxRetries) break;
+                const serverRetryAfter = err?.retryAfterSec ? Number(err.retryAfterSec) : null;
+                const delaySec = serverRetryAfter ? serverRetryAfter + 1
+                    : Math.round((baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000) / 1000);
+                console.warn(`[Univers Scene Painter Mobile] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${delaySec}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                if (typeof updateTaskHud === 'function') {
+                    updateTaskHud({ title: `재시도 중 (${attempt + 1}/${maxRetries})`, message: `${label} 오류로 ${delaySec}초 후 재시도해. 원인: ${msg.slice(0, 80)}` });
+                }
+                await new Promise(r => setTimeout(r, delaySec * 1000));
+            }
+        }
+        throw lastErr;
+    }
+
+    /** OpenAI Chat Completions API 호출 */
+    async function callOpenAiGenerateContent(request, systemText, userText) {
+        const isReasoningModel = /^o\d/.test(String(request.model || ''));
+        const payload = {
+            model: request.model,
+            messages: [
+                ...(systemText ? [{ role: 'system', content: systemText }] : []),
+                { role: 'user', content: userText }
+            ],
+            ...(isReasoningModel ? {} : { temperature: request.temperature ?? 0.18, top_p: request.topP ?? 0.75 }),
+            response_format: request.responseFormat ?? undefined
+        };
+        const data = await gmRequestJson({
+            method: 'POST', url: request.url,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${request.apiKey}` },
+            data: payload
+        });
+        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
+        return { _openaiRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** Anthropic Messages API 호출 */
+    async function callAnthropicGenerateContent(request, systemText, userText) {
+        const payload = {
+            model: request.model, max_tokens: 4096,
+            messages: [{ role: 'user', content: userText }],
+            ...(systemText ? { system: systemText } : {}),
+            temperature: request.temperature ?? 0.18
+        };
+        const data = await gmRequestJson({
+            method: 'POST', url: 'https://api.anthropic.com/v1/messages',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': request.apiKey, 'anthropic-version': '2023-06-01' },
+            data: payload
+        });
+        const text = (data?.content || []).map(c => c.text || '').join('\n').trim();
+        if (!text) console.warn('[Univers Scene Painter Mobile] Anthropic 응답 디버그:', JSON.stringify({ stop_reason: data?.stop_reason, error: data?.error }));
+        return { _anthropicRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** Zhipu AI (GLM) API 호출 */
+    async function callGlmGenerateContent(request, systemText, userText) {
+        const MAX_SYS_CHARS = 6000;
+        const MAX_USER_CHARS = 20000;
+        const trimmedSys = systemText.length > MAX_SYS_CHARS ? systemText.slice(0, MAX_SYS_CHARS) + '\n...(생략)' : systemText;
+        const trimmedUser = userText.length > MAX_USER_CHARS ? userText.slice(0, MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)' : userText;
+        const useJson = true;
+        const finalUser = useJson ? trimmedUser + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.' : trimmedUser;
+        const payload = {
+            model: request.model,
+            messages: [
+                ...(trimmedSys ? [{ role: 'system', content: trimmedSys }] : []),
+                { role: 'user', content: finalUser }
+            ],
+            temperature: request.temperature ?? 0.18,
+            top_p: request.topP ?? 0.75,
+            max_tokens: 16384,
+            stream: false
+        };
+        const data = await gmRequestJson({
+            method: 'POST', url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${request.apiKey}` },
+            data: payload
+        });
+        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
+        if (!text) console.warn('[Univers Scene Painter Mobile] GLM 응답 디버그:', JSON.stringify({ choices: (data?.choices || []).map(c => ({ finish_reason: c.finish_reason, content: c.message?.content })) }));
+        return { _glmRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** 현재 provider 표시명 */
+    function getProviderDisplayName(global) {
+        const provider = String(global?.geminiProvider || 'ai-studio').trim();
+        if (provider === 'openai') return `OpenAI (${String(global?.openaiModel || 'gpt-4o').trim()})`;
+        if (provider === 'anthropic') return `Claude (${String(global?.claudeModel || 'claude-sonnet-4-5').trim()})`;
+        if (provider === 'glm') return `GLM (${String(global?.glmModel || 'glm-4.5-flash').trim()})`;
+        if (provider === 'openrouter') return `OpenRouter (${String(global?.openrouterModel || 'meta-llama/llama-3.3-70b-instruct').trim()})`;
+        if (provider === 'vertex') return 'Vertex AI';
+        if (['firebase', 'firebase-ai', 'firebase-ai-logic'].includes(provider)) return 'Firebase AI';
+        return `Gemini (${String(global?.googleModel || 'gemini-2.5-flash').trim()})`;
+    }
+
+        async function callFirebaseAiLogicGenerateContent(geminiRequest, payload) {
         const firebaseConfig = parseFirebaseConfigInput(geminiRequest.firebaseConfigJson);
         if (!firebaseConfig || typeof firebaseConfig !== 'object') {
             throw new Error('Firebase Config가 비어 있어요.');
@@ -266,18 +377,72 @@
     }
 
     async function requestGeminiGenerateContent(geminiRequest, payload) {
-        const payloadWithSafetySettings = withGeminiSafetySettings(payload);
+        const provider = geminiRequest?.provider || 'ai-studio';
 
-        if (geminiRequest?.provider === 'firebase') {
-            return await callFirebaseAiLogicGenerateContent(geminiRequest, payloadWithSafetySettings);
+        const extractTexts = (p) => {
+            const systemText = String((p?.systemInstruction?.parts || [])
+                .map(pp => pp?.text || '').filter(Boolean).join('\n')).trim();
+            const userText = String((p?.contents || [])
+                .flatMap(c => c.parts || []).map(pp => pp?.text || '').join('\n')).trim();
+            const genCfg = p?.generationConfig || {};
+            const useJson = String(genCfg.responseMimeType || '').includes('json');
+            return { systemText, userText, genCfg, useJson };
+        };
+
+        // ── OpenAI ──────────────────────────────────────────────────────
+        if (provider === 'openai') {
+            const { systemText, userText, genCfg, useJson } = extractTexts(payload);
+            return await withRetry(() => callOpenAiGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
+                  responseFormat: useJson ? { type: 'json_object' } : undefined },
+                systemText, userText
+            ), { label: 'OpenAI' });
         }
 
-        return await gmRequestJson({
+        // ── Anthropic Claude ─────────────────────────────────────────────
+        if (provider === 'anthropic') {
+            const { systemText, userText, genCfg } = extractTexts(payload);
+            return await withRetry(() => callAnthropicGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature },
+                systemText, userText
+            ), { label: 'Anthropic' });
+        }
+
+        // ── Zhipu AI (GLM) ───────────────────────────────────────────────
+        if (provider === 'glm') {
+            const { systemText, userText, genCfg } = extractTexts(payload);
+            return await withRetry(() => callGlmGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP },
+                systemText, userText
+            ), { label: 'GLM' });
+        }
+
+        // ── OpenRouter ───────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const OR_MAX_SYS_CHARS = 6000;
+            const OR_MAX_USER_CHARS = 20000;
+            const { systemText: rawSys, userText: rawUser, genCfg, useJson } = extractTexts(payload);
+            const systemText = rawSys.length > OR_MAX_SYS_CHARS ? rawSys.slice(0, OR_MAX_SYS_CHARS) + '\n...(생략)' : rawSys;
+            const trimmedUser = rawUser.length > OR_MAX_USER_CHARS ? rawUser.slice(0, OR_MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)' : rawUser;
+            const userText = useJson ? trimmedUser + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.' : trimmedUser;
+            return await withRetry(() => callOpenAiGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
+                  responseFormat: useJson ? { type: 'json_object' } : undefined },
+                systemText, userText
+            ), { label: 'OpenRouter' });
+        }
+
+        // ── Firebase / Vertex / AI Studio ────────────────────────────────
+        const payloadWithSafetySettings = withGeminiSafetySettings(payload);
+        if (provider === 'firebase') {
+            return await callFirebaseAiLogicGenerateContent(geminiRequest, payloadWithSafetySettings);
+        }
+        return await withRetry(() => gmRequestJson({
             method: 'POST',
             url: geminiRequest.url,
             headers: geminiRequest.headers,
             data: payloadWithSafetySettings
-        });
+        }), { label: 'Gemini' });
     }
 
     function getGeminiGenerateContentRequestConfig(global, options = {}) {
@@ -308,6 +473,38 @@
             vertexProjectId: String(global?.vertexProjectId || '').trim() || '',
             hasVertexToken: !!String(global?.vertexAccessToken || '').trim()
         });
+
+        // ── OpenAI ───────────────────────────────────────────────────────
+        if (provider === 'openai') {
+            const apiKey = String(global?.openaiApiKey || '').trim();
+            const openaiModel = String(global?.openaiModel || 'gpt-4o').trim();
+            if (!apiKey) { if (silent) return null; throw new Error('OpenAI API Key가 비어 있어요. 설정에서 입력해줘.'); }
+            return { provider: 'openai', model: openaiModel, apiKey, url: 'https://api.openai.com/v1/chat/completions', headers: {} };
+        }
+
+        // ── Anthropic Claude ─────────────────────────────────────────────
+        if (provider === 'anthropic') {
+            const apiKey = String(global?.anthropicApiKey || '').trim();
+            const claudeModel = String(global?.claudeModel || 'claude-sonnet-4-5').trim();
+            if (!apiKey) { if (silent) return null; throw new Error('Anthropic API Key가 비어 있어요. 설정에서 입력해줘.'); }
+            return { provider: 'anthropic', model: claudeModel, apiKey, headers: {} };
+        }
+
+        // ── Zhipu AI (GLM) ────────────────────────────────────────────────
+        if (provider === 'glm') {
+            const apiKey = String(global?.glmApiKey || '').trim();
+            const glmModel = String(global?.glmModel || 'glm-4.5-flash').trim();
+            if (!apiKey) { if (silent) return null; throw new Error('GLM API Key가 비어 있어요. 설정에서 입력해줘.'); }
+            return { provider: 'glm', model: glmModel, apiKey, headers: {} };
+        }
+
+        // ── OpenRouter ────────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const apiKey = String(global?.openrouterApiKey || '').trim();
+            const orModel = String(global?.openrouterModel || 'meta-llama/llama-3.3-70b-instruct').trim();
+            if (!apiKey) { if (silent) return null; throw new Error('OpenRouter API Key가 비어 있어요. 설정에서 입력해줘.'); }
+            return { provider: 'openrouter', model: orModel, apiKey, url: 'https://openrouter.ai/api/v1/chat/completions', headers: {} };
+        }
 
         if (provider === 'firebase') {
             const firebaseConfigJson = String(global?.firebaseConfigJson || '').trim();
@@ -689,10 +886,10 @@ ${guide}`.trim();
             orientationPreset: 'portrait',
             width: 832,
             height: 1216,
-            steps: 28,
+            steps: 20,
             scale: 6.5,
             guidanceRescale: 0.3,
-            sampler: 'k_euler_ancestral',
+            sampler: 'k_euler',
             noiseSchedule: 'karras',
             seed: '',
             nSamples: 1,
@@ -774,6 +971,14 @@ ${guide}`.trim();
             firebaseConfigJson: '',
             firebaseLocation: 'global',
             firebaseSdkVersion: '12.5.0',
+            openaiApiKey: '',
+            openaiModel: 'gpt-4o',
+            anthropicApiKey: '',
+            claudeModel: 'claude-sonnet-4-5',
+            glmApiKey: '',
+            glmModel: 'glm-4.5-flash',
+            openrouterApiKey: '',
+            openrouterModel: 'meta-llama/llama-3.3-70b-instruct',
             naiApiKey: '',
             naiModel: 'nai-diffusion-4-5-full',
             folderSaveEnabled: false,
@@ -3423,6 +3628,16 @@ ${guide}`.trim();
 
     function getButtonTargetFooter(bubble, markdown) {
         if (!isLikelyAssistantMarkdown(markdown) || isUserBubble(bubble) || isUserBubble(markdown)) return null;
+        // 사이드바 패널(정보/기억/문체/뷰어 탭) 내부에는 버튼 삽입 금지
+        if (bubble?.closest?.('[role="dialog"]')) return null;
+        if (bubble?.closest?.('.ring-offset-sidebar')) return null;
+        if (bubble?.closest?.('#cspm-scene-painter-row, #cspm-scene-gallery-row')) return null;
+        // 사이드바 탭 패널 감지: 탭 버튼(정보/기억/문체/뷰어)의 부모 패널
+        const tabPanel = bubble?.closest?.('[data-state="active"]') || bubble?.closest?.('[role="tabpanel"]');
+        if (tabPanel) return null;
+        // 말풍선이 채팅 스크롤 영역 안에 있지 않으면 제외
+        const inChat = bubble?.closest?.('[data-message-id]') || bubble?.closest?.('.space-y-3');
+        if (!inChat && !markdown?.closest?.('[data-message-id]')) return null;
         return getFooter(bubble) || ensureCspInlineFooter(markdown);
     }
 
@@ -3572,12 +3787,23 @@ ${guide}`.trim();
         return false;
     }
 
+    function isInSidebarPanel(el) {
+        if (!el) return false;
+        if (el.closest?.('[role="dialog"]')) return true;
+        if (el.closest?.('.ring-offset-sidebar')) return true;
+        if (el.closest?.('[role="tabpanel"]')) return true;
+        if (el.closest?.('[data-state="active"]')?.closest?.('[role="tablist"]')) return true;
+        if (el.closest?.('#cspm-scene-painter-row, #cspm-scene-gallery-row')) return true;
+        return false;
+    }
+
     function getAssistantBubbles() {
         const set = new Set();
 
         // univers.chat: '응답 재생성' 버튼이 있는 메시지 = AI 응답
         const regenButtons = Array.from(document.querySelectorAll('button[aria-label="응답 재생성"]'));
         regenButtons.forEach(btn => {
+            if (isInSidebarPanel(btn)) return;
             const msgEl = btn.closest('[data-message-id]');
             if (msgEl && isAssistantBubble(msgEl)) set.add(msgEl);
         });
@@ -3587,12 +3813,14 @@ ${guide}`.trim();
         Array.from(document.querySelectorAll('div.space-y-3'))
             .filter(isMainMarkdown)
             .filter(markdown => cleanMarkdownText(markdown).length >= 5)
+            .filter(markdown => !isInSidebarPanel(markdown))
             .forEach(markdown => {
                 if (!isLikelyAssistantMarkdown(markdown)) return;
 
                 const group = getMessageGroupContainer(markdown);
                 const candidate = group || markdown;
                 if (isUserBubble(candidate)) return;
+                if (isInSidebarPanel(candidate)) return;
 
                 const md = getDirectMarkdown(candidate);
                 if (!md || !isLikelyAssistantMarkdown(md)) return;
@@ -7446,8 +7674,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
             markSceneButtons(messageKey, true);
         } catch (err) {
             console.error('[Univers Scene Painter Mobile] speed mode failed:', err);
-            updateTaskHud({ title: '스피드 모드 실패', message: '스피드 모드 생성에 실패했어.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-            showToast('⚠️ 스피드 모드 실패: ' + err.message);
+            showToast('⚠️ 생성 실패: ' + err.message);
+            hideTaskHud(true);
             setTimeout(() => hideTaskHud(), 1800);
         } finally {
             if (button) {
@@ -7541,9 +7769,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         btn.title = '이 AI 답변으로 이미지 생성';
         btn.setAttribute('aria-label', 'AI 삽화 생성');
         btn.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" width="24px" height="24px">
-                <path d="M19.5 3h-15A2.5 2.5 0 0 0 2 5.5v13A2.5 2.5 0 0 0 4.5 21h15a2.5 2.5 0 0 0 2.5-2.5v-13A2.5 2.5 0 0 0 19.5 3M4 5.5c0-.28.22-.5.5-.5h15c.28 0 .5.22.5.5v9.08l-3.4-3.4a1.5 1.5 0 0 0-2.12 0l-2.1 2.1-3.13-3.13a1.5 1.5 0 0 0-2.12 0L4 13.29zm.5 13.5a.5.5 0 0 1-.5-.5v-2.38l4.18-4.18 6.06 6.06zm15.5-.5a.5.5 0 0 1-.5.5h-2.43l-3.28-3.28 1.75-1.75L20 18.43z"></path>
-                <path d="M16.5 9.25a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5"></path>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" width="22px" height="22px" aria-hidden="true">
+                <path d="M12 2l2.09 6.26L20 10l-5.91 1.74L12 18l-2.09-6.26L4 10l5.91-1.74L12 2z"/>
+                <path d="M19 14l1.12 3.38L23.5 18.5l-3.38 1.12L19 23l-1.12-3.38L14.5 18.5l3.38-1.12L19 14z" opacity="0.7"/>
+                <path d="M5 14l.75 2.25L8 17l-2.25.75L5 20l-.75-2.25L2 17l2.25-.75L5 14z" opacity="0.5"/>
             </svg>
         `;
 
@@ -7583,9 +7812,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 setTimeout(() => hideTaskHud(), 360);
             } catch (err) {
                 console.error('[Univers Scene Painter Mobile] Gemini 분석 실패:', err);
-                updateTaskHud({ title: 'AI 분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Univers Scene Painter Mobile] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
                 showToast('⚠️ AI 분석 실패: ' + err.message);
-                setTimeout(() => hideTaskHud(), 1800);
+                hideTaskHud(true);
             } finally {
                 ticker.stop();
                 btn.removeAttribute('data-cspm-loading');
@@ -7855,6 +8083,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                     <option value="ai-studio" ${(global.geminiProvider || 'ai-studio') === 'ai-studio' ? 'selected' : ''}>Google AI Studio API Key</option>
                                     <option value="vertex" ${global.geminiProvider === 'vertex' ? 'selected' : ''}>Vertex AI OAuth</option>
                                     <option value="firebase" ${global.geminiProvider === 'firebase' ? 'selected' : ''}>Firebase AI Logic Beta</option>
+                                    <option value="openai" ${global.geminiProvider === 'openai' ? 'selected' : ''}>OpenAI (GPT)</option>
+                                    <option value="anthropic" ${global.geminiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                                    <option value="glm" ${global.geminiProvider === 'glm' ? 'selected' : ''}>Zhipu AI (GLM)</option>
+                                    <option value="openrouter" ${global.geminiProvider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                                 </select>
                             </div>
                             <div class="cspm-field">
@@ -7902,6 +8134,67 @@ ${JSON.stringify(parsedPlan, null, 2)}
                             <div class="cspm-field">
                                 <label>Firebase SDK Version</label>
                                 <input id="cspm-firebase-sdk-version" value="${escapeHtml(global.firebaseSdkVersion || '12.5.0')}" placeholder="12.5.0">
+                            </div>
+                        </div>
+                        <div class="cspm-section-subbox" id="cspm-openai-section" style="display:none;">
+                            <div class="cspm-section-title">OpenAI 설정</div>
+                            <div class="cspm-field">
+                                <label>OpenAI 모델</label>
+                                <select id="cspm-openai-model">
+                                    <option value="gpt-4o" ${(global.openaiModel||'gpt-4o')==='gpt-4o'?'selected':''}>gpt-4o</option>
+                                    <option value="gpt-4o-mini" ${global.openaiModel==='gpt-4o-mini'?'selected':''}>gpt-4o-mini</option>
+                                    <option value="gpt-4.1" ${global.openaiModel==='gpt-4.1'?'selected':''}>gpt-4.1</option>
+                                    <option value="gpt-4.1-mini" ${global.openaiModel==='gpt-4.1-mini'?'selected':''}>gpt-4.1-mini</option>
+                                    <option value="o4-mini" ${global.openaiModel==='o4-mini'?'selected':''}>o4-mini</option>
+                                </select>
+                            </div>
+                            <div class="cspm-field">
+                                <label>OpenAI API Key</label>
+                                <input id="cspm-openai-key" type="password" value="${escapeHtml(global.openaiApiKey||'')}" placeholder="sk-...">
+                            </div>
+                        </div>
+                        <div class="cspm-section-subbox" id="cspm-anthropic-section" style="display:none;">
+                            <div class="cspm-section-title">Anthropic Claude 설정</div>
+                            <div class="cspm-field">
+                                <label>Claude 모델</label>
+                                <select id="cspm-claude-model">
+                                    <option value="claude-sonnet-4-5" ${(global.claudeModel||'claude-sonnet-4-5')==='claude-sonnet-4-5'?'selected':''}>claude-sonnet-4-5</option>
+                                    <option value="claude-haiku-4-5" ${global.claudeModel==='claude-haiku-4-5'?'selected':''}>claude-haiku-4-5</option>
+                                    <option value="claude-opus-4" ${global.claudeModel==='claude-opus-4'?'selected':''}>claude-opus-4</option>
+                                    <option value="claude-sonnet-4" ${global.claudeModel==='claude-sonnet-4'?'selected':''}>claude-sonnet-4</option>
+                                    <option value="claude-3-5-sonnet-20241022" ${global.claudeModel==='claude-3-5-sonnet-20241022'?'selected':''}>claude-3-5-sonnet</option>
+                                </select>
+                            </div>
+                            <div class="cspm-field">
+                                <label>Anthropic API Key</label>
+                                <input id="cspm-anthropic-key" type="password" value="${escapeHtml(global.anthropicApiKey||'')}" placeholder="sk-ant-...">
+                            </div>
+                        </div>
+                        <div class="cspm-section-subbox" id="cspm-glm-section" style="display:none;">
+                            <div class="cspm-section-title">Zhipu AI (GLM) 설정</div>
+                            <div class="cspm-mini-note">bigmodel.cn에서 API Key 발급. 무료 모델은 속도가 느릴 수 있어.</div>
+                            <div class="cspm-field">
+                                <label>GLM 모델</label>
+                                <select id="cspm-glm-model">
+                                    <option value="glm-4.5-flash" ${(global.glmModel||'glm-4.5-flash')==='glm-4.5-flash'?'selected':''}>GLM-4.5-Flash (무료)</option>
+                                    <option value="glm-4.7-flash" ${global.glmModel==='glm-4.7-flash'?'selected':''}>GLM-4.7-Flash (무료)</option>
+                                </select>
+                            </div>
+                            <div class="cspm-field">
+                                <label>Zhipu AI API Key</label>
+                                <input id="cspm-glm-key" type="password" value="${escapeHtml(global.glmApiKey||'')}" placeholder="Zhipu AI API Key">
+                            </div>
+                        </div>
+                        <div class="cspm-section-subbox" id="cspm-openrouter-section" style="display:none;">
+                            <div class="cspm-section-title">OpenRouter 설정</div>
+                            <div class="cspm-mini-note">openrouter.ai에서 API Key 발급.</div>
+                            <div class="cspm-field">
+                                <label>OpenRouter 모델 ID</label>
+                                <input id="cspm-openrouter-model" value="${escapeHtml(global.openrouterModel||'meta-llama/llama-3.3-70b-instruct')}" placeholder="예: meta-llama/llama-3.3-70b-instruct">
+                            </div>
+                            <div class="cspm-field">
+                                <label>OpenRouter API Key</label>
+                                <input id="cspm-openrouter-key" type="password" value="${escapeHtml(global.openrouterApiKey||'')}" placeholder="sk-or-v1-...">
                             </div>
                         </div>
                         <div class="cspm-grid">
@@ -8169,6 +8462,14 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 firebaseConfigJson: overlay.querySelector('#cspm-firebase-config').value.trim(),
                 firebaseLocation: overlay.querySelector('#cspm-firebase-location').value.trim() || 'global',
                 firebaseSdkVersion: overlay.querySelector('#cspm-firebase-sdk-version').value.trim() || '12.5.0',
+                openaiApiKey: overlay.querySelector('#cspm-openai-key')?.value.trim() || '',
+                openaiModel: overlay.querySelector('#cspm-openai-model')?.value || 'gpt-4o',
+                anthropicApiKey: overlay.querySelector('#cspm-anthropic-key')?.value.trim() || '',
+                claudeModel: overlay.querySelector('#cspm-claude-model')?.value || 'claude-sonnet-4-5',
+                glmApiKey: overlay.querySelector('#cspm-glm-key')?.value.trim() || '',
+                glmModel: overlay.querySelector('#cspm-glm-model')?.value || 'glm-4.5-flash',
+                openrouterApiKey: overlay.querySelector('#cspm-openrouter-key')?.value.trim() || '',
+                openrouterModel: overlay.querySelector('#cspm-openrouter-model')?.value.trim() || 'meta-llama/llama-3.3-70b-instruct',
                 naiApiKey: overlay.querySelector('#cspm-nai-key').value.trim(),
                 naiModel: overlay.querySelector('#cspm-nai-model').value.trim() || 'nai-diffusion-4-5-full',
                 folderSaveEnabled: false,
@@ -8205,6 +8506,18 @@ ${JSON.stringify(parsedPlan, null, 2)}
         overlay.addEventListener('mousedown', (e) => {
             if (e.target === overlay) overlay.remove();
         });
+
+        // provider 변경 시 해당 섹션만 표시
+        function updateProviderSections() {
+            const provider = overlay.querySelector('#cspm-gemini-provider').value;
+            const sections = ['openai', 'anthropic', 'glm', 'openrouter'];
+            sections.forEach(p => {
+                const el = overlay.querySelector(`#cspm-${p}-section`);
+                if (el) el.style.display = provider === p ? '' : 'none';
+            });
+        }
+        overlay.querySelector('#cspm-gemini-provider').addEventListener('change', updateProviderSections);
+        updateProviderSections();
 
         overlay.querySelector('#cspm-close').onclick = () => overlay.remove();
         overlay.querySelector('#cspm-save').onclick = () => {
