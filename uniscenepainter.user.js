@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.11.1
+// @version      2.12.1
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -99,16 +99,30 @@
             } catch (err) {
                 lastErr = err;
                 const msg = String(err?.message || err || '');
-                // HTTP 상태코드 추출 시도
-                const statusMatch = msg.match(/\b(\d{3})\b/);
-                const status = statusMatch ? Number(statusMatch[1]) : 0;
+                // httpStatus가 직접 달려있으면 우선 사용, 없으면 메시지에서 추출
+                const status = err?.httpStatus || (() => {
+                    const m = msg.match(/\b(\d{3})\b/);
+                    return m ? Number(m[1]) : 0;
+                })();
+                // 4xx 클라이언트 에러는 재시도해도 동일 — 즉시 실패 (429 rate limit은 제외)
+                if (status >= 400 && status < 500 && status !== 429) break;
+
                 const isRetryable = RETRYABLE.has(status) ||
                     /rate.?limit|too many|overloaded|provider returned error|service unavailable|시간이 초과|timeout/i.test(msg);
 
                 if (!isRetryable || attempt >= maxRetries) break;
 
-                const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
-                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${Math.round(delay / 1000)}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                // 서버가 Retry-After를 알려주면 그 시간을 우선 사용, 아니면 지수 백오프
+                const serverRetryAfter = err?.retryAfterSec ? Number(err.retryAfterSec) : null;
+                const delaySec = serverRetryAfter
+                    ? serverRetryAfter + 1  // 서버 지정 시간 + 1초 여유
+                    : Math.round((baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000) / 1000);
+                const delay = delaySec * 1000;
+                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${delaySec}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                // HUD에 재시도 상태 표시
+                if (typeof updateTaskHud === 'function') {
+                    updateTaskHud({ title: `재시도 중 (${attempt + 1}/${maxRetries})`, message: `${label} 오류로 ${delaySec}초 후 재시도해. 원인: ${msg.slice(0, 80)}` });
+                }
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -448,10 +462,18 @@
 
         // ── OpenRouter ───────────────────────────────────────────────────
         if (provider === 'openrouter') {
-            const systemText = String((payload?.systemInstruction?.parts || [])
+            const OR_MAX_SYS_CHARS = 3000;
+            const OR_MAX_USER_CHARS = 6000;
+            const rawSys = String((payload?.systemInstruction?.parts || [])
                 .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
-            const userText = String((payload?.contents || [])
+            const rawUser = String((payload?.contents || [])
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const systemText = rawSys.length > OR_MAX_SYS_CHARS
+                ? rawSys.slice(0, OR_MAX_SYS_CHARS) + '\n...(생략)'
+                : rawSys;
+            const userText = rawUser.length > OR_MAX_USER_CHARS
+                ? rawUser.slice(0, OR_MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
+                : rawUser;
             const genCfg = payload?.generationConfig || {};
             const useJson = String(genCfg.responseMimeType || '').includes('json');
             return await withRetry(() => callOpenAiGenerateContent(
@@ -918,7 +940,16 @@
 
     function stripNonSceneNodes(root) {
         if (!root) return root;
-        root.querySelectorAll('.csp-generated-scene-image, pre').forEach(el => el.remove());
+        // CSP 전용 노드 제거
+        root.querySelectorAll('.csp-generated-scene-image, .csp-image-history-row').forEach(el => el.remove());
+        // <details> 태그 제거 — 캐릭터 정보 접기 블록, AI 분석에 불필요
+        root.querySelectorAll('details').forEach(el => el.remove());
+        // style 속성이 있는 <div>/<span> 중 상태창 패턴 제거
+        // (background/border/padding 조합 → 유니버스 채팅의 인라인 스타일 상태창)
+        root.querySelectorAll('div[style], span[style]').forEach(el => {
+            const s = el.getAttribute('style') || '';
+            if (/background|border|padding/i.test(s)) el.remove();
+        });
         return root;
     }
 
@@ -4126,16 +4157,20 @@ ${guide}`.trim();
         if (!markdown) return [];
 
         const children = Array.from(markdown.children || []).filter(el => {
-            if (!el || el.classList?.contains('csp-generated-scene-image')) return false;
-            if (el.matches?.('pre')) return false;
-            if (el.matches?.('p, blockquote, ul, ol, table')) return true;
-            if (el.tagName === 'DIV') {
-                const clone = el.cloneNode(true);
-                stripNonSceneNodes(clone);
-                const text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
-                return !!text;
-            }
-            return false;
+            if (!el) return false;
+            // CSP 전용 노드 제외
+            if (el.classList?.contains('csp-generated-scene-image')) return false;
+            if (el.classList?.contains('csp-image-history-row')) return false;
+            if (el.id?.startsWith('csp-')) return false;
+            // <details> 제외 — 캐릭터 정보 블록, AI 분석/삽입 위치 카운트 모두 제외
+            if (el.tagName === 'DETAILS') return false;
+            // style 속성에 background/border/padding 조합 → 인라인 스타일 상태창 제외
+            const style = el.getAttribute?.('style') || '';
+            if (style && /background|border|padding/i.test(style)) return false;
+            // 나머지는 모두 block으로 인정 — 커스텀 태그(<OceanStatus> 등) 포함
+            // 단, 텍스트 내용이 전혀 없는 빈 요소는 제외
+            const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            return text.length > 0;
         });
 
         return children;
@@ -5312,10 +5347,14 @@ ${guide}`.trim();
 
     function buildHttpErrorMessage({ url, status, responseText }) {
         let message = responseText || `HTTP ${status}`;
+        let rawDetail = '';
 
         try {
             const err = JSON.parse(responseText);
-            message = err.error?.message || err.message || message;
+            const raw = err.error?.metadata?.raw || '';
+            const base = err.error?.message || err.message || message;
+            rawDetail = raw;
+            message = raw ? `${base} — ${raw}` : base;
         } catch (_) {
             message = stripHtmlErrorMessage(message);
         }
@@ -5327,6 +5366,27 @@ ${guide}`.trim();
                 ? `${vertexHint}\n\n원문: ${compact.slice(0, 500)}`
                 : vertexHint;
         }
+
+        // HTTP 상태코드별 한국어 메시지
+        const detail = String(rawDetail || message || '').toLowerCase();
+        if (status === 408 || /timeout|시간이 초과/.test(detail)) return '⏱️ 타임아웃: 응답이 너무 오래 걸렸어. 다시 시도해봐.';
+        if (status === 429) {
+            const retryMatch = String(rawDetail).match(/retry\s*(?:after\s*)?(\d+)\s*sec/i);
+            const sec = retryMatch ? retryMatch[1] : '';
+            return `⚡ 요청이 너무 많아서 잠깐 막혔어.${sec ? ` ${sec}초 후 자동 재시도할게.` : ' 잠시 후 다시 시도해봐.'}`;
+        }
+        if (status === 400) {
+            if (/embedding|embed/.test(detail)) return '❌ 이 모델은 임베딩 전용이라 채팅에 못 써. 다른 모델로 바꿔줘.';
+            return '❌ 요청 형식이 잘못됐어. 모델 ID나 설정을 확인해줘.';
+        }
+        if (status === 401) return '🔑 API Key가 틀렸거나 만료됐어. 설정에서 다시 확인해줘.';
+        if (status === 403) return '🚫 이 API Key로는 접근이 안 돼. 권한을 확인해줘.';
+        if (status === 404) {
+            if (/model not found|no endpoints/.test(detail)) return '❌ 없는 모델이야. openrouter.ai/models에서 정확한 모델 ID를 확인해줘.';
+            return '❌ 요청한 주소를 찾을 수 없어. API 설정을 확인해줘.';
+        }
+        if (status === 402) return '💳 크레딧이 부족해. 충전하거나 무료 모델로 바꿔줘.';
+        if (status >= 500 && status < 600) return `🔥 서버 에러 떴어 (${status}). 잠시 후 자동 재시도할게.`;
 
         return String(message || `HTTP ${status}`).replace(/\s+/g, ' ').trim();
     }
@@ -5396,8 +5456,22 @@ ${guide}`.trim();
                                 responseText: response.responseText,
                                 responseHeaders: response.responseHeaders
                             });
+                            // 에러 원인 파악을 위해 응답 본문 전체를 별도 로그로 출력
+                            // retry_after_seconds가 있으면 에러 객체에 실어서 withRetry가 활용
+                            let retryAfterSec = null;
+                            try {
+                                const errBody = JSON.parse(response.responseText);
+                                console.error('[Crack Scene Painter] API 에러 상세:', JSON.stringify(errBody, null, 2));
+                                const ra = errBody?.error?.metadata?.retry_after_seconds;
+                                if (ra && Number.isFinite(Number(ra))) retryAfterSec = Math.ceil(Number(ra));
+                            } catch (_) {
+                                console.error('[Crack Scene Painter] API 에러 원문:', response.responseText?.slice(0, 1000));
+                            }
 
-                            finishReject(new Error(message));
+                            const httpErr = new Error(message);
+                            httpErr.httpStatus = response.status; // withRetry에서 정확히 판단하기 위해
+                            if (retryAfterSec) httpErr.retryAfterSec = retryAfterSec;
+                            finishReject(httpErr);
                             return;
                         }
 
@@ -5420,16 +5494,18 @@ ${guide}`.trim();
                         error,
                         payloadLength: requestPayload ? requestPayload.length : 0
                     });
-                    finishReject(new Error('네트워크 요청 실패: 콘솔의 [Crack Scene Painter] GM network error 로그를 확인해줘.'));
+                    finishReject(new Error('🌐 네트워크 오류: 인터넷 연결이나 API 주소를 확인해줘.'));
                 },
                 ontimeout: () => {
                     if (settled) return;
                     console.error('[Crack Scene Painter] GM request timeout:', { method, url });
-                    finishReject(new Error('요청 시간이 초과됐어요.'));
+                    const toErr = new Error('⏱️ 타임아웃: 응답이 너무 오래 걸렸어. 다시 시도해봐.');
+                    toErr.httpStatus = 408;
+                    finishReject(toErr);
                 },
                 onabort: () => {
                     if (settled) return;
-                    console.error('[Crack Scene Painter] GM request aborted:', { method, url });
+                    console.log('[Crack Scene Painter] 생성 취소됨:', { method, url });
                     finishReject(new Error('작업이 취소됐어요.'));
                 }
             });
@@ -7934,9 +8010,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
             markSceneButtons(messageKey, true);
         } catch (err) {
             console.error('[Crack Scene Painter] speed mode failed:', err);
-            updateTaskHud({ title: '스피드 모드 실패', message: '스피드 모드 생성에 실패했어.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-            showToast('⚠️ 스피드 모드 실패: ' + err.message);
-            setTimeout(() => hideTaskHud(), 1800);
+            showToast('⚠️ 생성 실패: ' + err.message);
+            hideTaskHud(true);
         } finally {
             if (button) {
                 button.disabled = false;
@@ -8069,9 +8144,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 setTimeout(() => hideTaskHud(), 360);
             } catch (err) {
                 console.error('[Crack Scene Painter] AI 분석 실패:', err);
-                updateTaskHud({ title: '분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Crack Scene Painter] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-                showToast('⚠️ AI 분석 실패: ' + err.message);
-                setTimeout(() => hideTaskHud(), 1800);
+                showToast('⚠️ 분석 실패: ' + err.message);
+                hideTaskHud(true);
             } finally {
                 ticker.stop();
                 btn.removeAttribute('data-csp-loading');
