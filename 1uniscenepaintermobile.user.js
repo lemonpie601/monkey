@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter Mobile
 // @namespace    univers-scene-painter-mobile
-// @version      0.1.4
+// @version      0.1.9
 // @description  Univers Scene Painter Mobile - NAI V4.5 Character Slots Full
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
