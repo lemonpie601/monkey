@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter Mobile
 // @namespace    univers-scene-painter-mobile
-// @version      0.1.7
+// @version      0.1.9
 // @description  Univers Scene Painter Mobile - NAI V4.5 Character Slots Full
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -36,7 +36,8 @@
     const ENABLED_KEY = `${CSP_PREFIX}_enabled`;
     const IMAGE_DB_NAME = `${CSP_PREFIX}_image_db`;
     const IMAGE_STORE_NAME = 'images';
-    const IMAGE_DB_VERSION = 2;
+    const HANDLE_STORE_NAME = 'handles';
+    const IMAGE_DB_VERSION = 3;
     const PRECISE_REFERENCE_EXTRA_ANLAS = 5;
     let injectScheduled = false;
     let injectTimer = null;
@@ -1020,7 +1021,7 @@ ${guide}`.trim();
         const saved = settings || {};
         const merged = Object.assign({}, defaults, saved);
 
-        merged.folderSaveEnabled = false;
+        // merged.folderSaveEnabled = false; // 키위브라우저 등 지원 브라우저에서 사용 가능
 
         // v4.1 이하에서 방별로 저장하던 값을 전역값으로 부드럽게 승격합니다.
         if (!saved.basePositive && legacyRoom.basePositive) merged.basePositive = legacyRoom.basePositive;
@@ -1529,14 +1530,101 @@ ${guide}`.trim();
         });
     }
 
-    function openImageDb() {
+
+    async function putStoredDirectoryHandle(handle) {
+        if (!handle) return;
+        const db = await openImageDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+            tx.objectStore(HANDLE_STORE_NAME).put({ id: 'imageDirectory', handle, createdAt: Date.now() });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error || new Error('폴더 핸들을 저장하지 못했어요.'));
+        });
+    }
+
+    async function getStoredDirectoryHandle() {
+        const db = await openImageDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
+            const req = tx.objectStore(HANDLE_STORE_NAME).get('imageDirectory');
+            req.onsuccess = () => resolve(req.result?.handle || null);
+            req.onerror = () => reject(req.error || new Error('폴더 핸들을 읽지 못했어요.'));
+        });
+    }
+
+    async function deleteStoredDirectoryHandle() {
+        const db = await openImageDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+            tx.objectStore(HANDLE_STORE_NAME).delete('imageDirectory');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error || new Error('폴더 핸들을 삭제하지 못했어요.'));
+        });
+    }
+
+    async function ensureDirectoryPermission(handle, mode = 'readwrite', options = {}) {
+        if (!handle) return false;
+        const permissionOptions = { mode };
+        const prompt = options.prompt !== false;
+        const timeoutMs = Number(options.timeoutMs || 6000);
+        const current = await withTimeout(
+            handle.queryPermission(permissionOptions),
+            Math.min(timeoutMs, 3000),
+            '폴더 권한 확인'
+        );
+        if (current === 'granted') return true;
+        if (!prompt) return false;
+        const requested = await withTimeout(
+            handle.requestPermission(permissionOptions),
+            timeoutMs,
+            '폴더 권한 요청'
+        );
+        return requested === 'granted';
+    }
+
+    async function chooseImageDirectory() {
+        if (!window.showDirectoryPicker) {
+            throw new Error('이 브라우저는 폴더 저장 기능을 지원하지 않아요. 키위브라우저 등 Chrome 기반 브라우저에서 사용해줘.');
+        }
+        const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        const ok = await ensureDirectoryPermission(handle, 'readwrite', { prompt: true, timeoutMs: 9000 });
+        if (!ok) throw new Error('폴더 쓰기 권한이 거부됐어요.');
+        await withTimeout(putStoredDirectoryHandle(handle), 5000, '폴더 핸들 저장');
+        return handle;
+    }
+
+    function makeImageFileName(plan) {
+        const now = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        return `Scene_${sanitizeFileName(getRoomId())}_${sanitizeFileName(plan?.sceneTitle || 'scene')}_${stamp}.png`;
+    }
+
+    async function saveImageToChosenFolder(dataUrl, plan) {
+        if (!String(dataUrl || '').startsWith('data:')) throw new Error('폴더에 저장할 이미지 데이터가 없어요.');
+        const handle = await withTimeout(getStoredDirectoryHandle(), 3500, '이미지 저장 폴더 읽기');
+        if (!handle) throw new Error('이미지 저장 폴더가 선택되지 않았어요.');
+        const ok = await ensureDirectoryPermission(handle, 'readwrite', { prompt: false, timeoutMs: 3000 });
+        if (!ok) throw new Error('폴더 쓰기 권한이 없어요. 설정에서 폴더를 다시 선택해줘.');
+        const filename = makeImageFileName(plan);
+        const fileHandle = await handle.getFileHandle(filename, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(dataUrlToBlob(dataUrl));
+        await writable.close();
+        return filename;
+    }
+
+        function openImageDb() {
         if (imageDbPromise) return imageDbPromise;
         imageDbPromise = new Promise((resolve, reject) => {
             const req = indexedDB.open(IMAGE_DB_NAME, IMAGE_DB_VERSION);
-            req.onupgradeneeded = () => {
+            req.onupgradeneeded = (e) => {
                 const db = req.result;
                 if (!db.objectStoreNames.contains(IMAGE_STORE_NAME)) {
                     db.createObjectStore(IMAGE_STORE_NAME, { keyPath: 'id' });
+                }
+                if (!db.objectStoreNames.contains(HANDLE_STORE_NAME)) {
+                    db.createObjectStore(HANDLE_STORE_NAME, { keyPath: 'id' });
                 }
             };
             req.onsuccess = () => resolve(req.result);
@@ -1997,12 +2085,6 @@ ${guide}`.trim();
     }
 
     function getMessageKey(markdown) {
-        if (!markdown) return hashText('');
-        // [버그 2 수정] data-message-id가 있으면 텍스트 해시 대신 그걸 우선 키로 사용한다.
-        // 본문이 리롤(재생성)되면 텍스트 해시가 바뀌어 저장된 기록을 못 찾는 문제를 방지한다.
-        const group = markdown.closest?.('[data-message-id]');
-        const msgId = group?.getAttribute('data-message-id') || markdown.getAttribute?.('data-message-id') || '';
-        if (msgId) return 'mid_' + msgId;
         const text = cleanMarkdownText(markdown);
         return hashText(text.slice(0, 1500));
     }
@@ -3512,11 +3594,13 @@ ${guide}`.trim();
     }
 
     function isMainMarkdown(el) {
-        return !!el
-            && el.classList
-            && el.classList.contains('space-y-3')
-            && !el.closest('.csp-generated-scene-image')
-            && !el.closest('.cspm-generated-scene-image');
+        if (!el || !el.classList) return false;
+        if (!el.classList.contains('space-y-3')) return false;
+        // [data-message-id] 안에 있어야 실제 말풍선 — 사이드바 패널 제외 핵심 조건
+        if (!el.closest('[data-message-id]')) return false;
+        if (el.closest('.csp-generated-scene-image')) return false;
+        if (el.closest('.cspm-generated-scene-image')) return false;
+        return true;
     }
 
     function findPreviousMarkdown(footer) {
@@ -6600,6 +6684,21 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const nextRecords = getSceneRecords();
         nextRecords[messageKey] = record;
         saveSceneRecords(nextRecords);
+
+        // 폴더 자동 저장 (folderSaveEnabled + showDirectoryPicker 지원 브라우저)
+        if (getGlobalSettings().folderSaveEnabled && String(imageUrl || '').startsWith('data:')) {
+            try {
+                const currentItem = getCurrentHistoryItem(record);
+                if (currentItem) {
+                    const filename = await saveImageToChosenFolder(imageUrl, plan);
+                    currentItem.folderFileName = filename;
+                    saveSceneRecords(nextRecords);
+                }
+            } catch (folderErr) {
+                console.warn('[Univers Scene Painter Mobile] 폴더 자동 저장 실패:', folderErr);
+            }
+        }
+
         refreshImageHistoryControls(messageKey, result.box, record);
         markSceneButtons(messageKey, true);
         showToast(`🖼️ 문단 ${result.index + 1} 뒤에 삽입 완료`);
@@ -7527,11 +7626,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             saveGlobalSettings(nextGlobal);
         }
 
-        overlay.querySelector('#cspm-plan-close').onclick = () => {
-            // [버그 1 수정] 취소 버튼으로 닫을 때도 basePositive/baseNegative/naiSettings 변경사항을 저장한다.
-            saveGenerationGlobalEdits();
-            overlay.remove();
-        };
+        overlay.querySelector('#cspm-plan-close').onclick = () => overlay.remove();
 
         overlay.querySelector('#cspm-copy-final').onclick = async () => {
             await navigator.clipboard.writeText(finalPromptEl.value);
@@ -7595,11 +7690,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         };
 
         overlay.addEventListener('mousedown', (e) => {
-            if (e.target === overlay) {
-                // [버그 1 수정] 배경 클릭으로 닫을 때도 설정 변경사항을 저장한다.
-                saveGenerationGlobalEdits();
-                overlay.remove();
-            }
+            if (e.target === overlay) overlay.remove();
         });
 
         refreshAnlasBalance(true);
@@ -7847,10 +7938,6 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const recordKeys = new Set(Object.keys(records || {}));
         const bubbles = getAssistantBubbles().slice(-CSPM_MAX_BUBBLES_PER_PASS);
 
-        // [버그 3 수정] 이미 버튼이 주입된 footer를 추적해서 같은 footer에 중복 삽입하지 않는다.
-        // 여러 bubble이 동일한 [data-message-id] 컨테이너 안의 footer를 공유할 때 발생하는 중복을 방지한다.
-        const injectedFooters = new WeakSet();
-
         bubbles.forEach(bubble => {
             const markdown = getDirectMarkdown(bubble);
             if (!markdown || !isLikelyAssistantMarkdown(markdown) || isUserBubble(bubble)) return;
@@ -7864,16 +7951,6 @@ ${JSON.stringify(parsedPlan, null, 2)}
             } else if (markdown?.dataset && !markdown.dataset.cspmRestoreChecked) {
                 markdown.dataset.cspmRestoreChecked = 'true';
             }
-
-            // 이미 이번 패스에서 처리한 footer면 skip
-            if (injectedFooters.has(footer)) return;
-            // 이미 버튼이 있는 footer면 skip (이전 패스에서 주입된 경우)
-            if (footer.querySelector('.cspm-message-generate-btn')) {
-                injectedFooters.add(footer);
-                return;
-            }
-
-            injectedFooters.add(footer);
 
             let leftSlot = footer.children[0];
             if (!leftSlot) {
@@ -8235,6 +8312,19 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                 <input id="cspm-nai-key" type="password" value="${escapeHtml(global.naiApiKey)}" placeholder="NAI API 키 또는 토큰">
                             </div>
                         </div>
+                        <div class="cspm-section-subbox">
+                            <div class="cspm-section-title">📁 이미지 폴더 자동 저장</div>
+                            <div class="cspm-mini-note">키위브라우저 등 Chrome 기반 브라우저에서만 동작해. 생성된 이미지를 선택한 폴더에 자동으로 저장해줘.</div>
+                            <div class="cspm-check-row">
+                                <input id="cspm-folder-save-enabled" type="checkbox" ${global.folderSaveEnabled ? 'checked' : ''}>
+                                <label for="cspm-folder-save-enabled">NAI 생성 이미지를 선택 폴더에도 자동 저장</label>
+                            </div>
+                            <div class="cspm-mini-note" id="cspm-folder-status">폴더 상태 확인 중...</div>
+                            <div style="display:flex;gap:8px;margin-top:8px;">
+                                <button class="cspm-btn cspm-btn-small" id="cspm-folder-choose" type="button">📁 폴더 선택</button>
+                                <button class="cspm-btn cspm-btn-small" id="cspm-folder-clear" type="button">🗑️ 폴더 해제</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -8500,7 +8590,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 openrouterModel: overlay.querySelector('#cspm-openrouter-model')?.value.trim() || 'meta-llama/llama-3.3-70b-instruct',
                 naiApiKey: overlay.querySelector('#cspm-nai-key').value.trim(),
                 naiModel: overlay.querySelector('#cspm-nai-model').value.trim() || 'nai-diffusion-4-5-full',
-                folderSaveEnabled: false,
+                folderSaveEnabled: !!(overlay.querySelector('#cspm-folder-save-enabled')?.checked),
                 geminiInstruction: overlay.querySelector('#cspm-gemini-instruction').value.trim(),
                 basePositive: overlay.querySelector('#cspm-base-positive').value.trim(),
                 baseNegative: overlay.querySelector('#cspm-base-negative').value.trim(),
@@ -8534,6 +8624,40 @@ ${JSON.stringify(parsedPlan, null, 2)}
         overlay.addEventListener('mousedown', (e) => {
             if (e.target === overlay) overlay.remove();
         });
+
+        // 폴더 저장 UI
+        const folderStatusEl = overlay.querySelector('#cspm-folder-status');
+        async function refreshFolderStatus() {
+            if (!folderStatusEl) return;
+            try {
+                const handle = await withTimeout(getStoredDirectoryHandle(), 3500, '폴더 상태 확인');
+                if (!handle) { folderStatusEl.textContent = '선택된 폴더 없음'; return; }
+                const perm = await handle.queryPermission({ mode: 'readwrite' });
+                folderStatusEl.textContent = `선택됨: ${handle.name || '(폴더)'} / 권한: ${perm}`;
+            } catch (e) {
+                folderStatusEl.textContent = '폴더 상태 확인 실패: ' + e.message;
+            }
+        }
+        overlay.querySelector('#cspm-folder-choose')?.addEventListener('click', async () => {
+            try {
+                folderStatusEl.textContent = '폴더 선택 중...';
+                const handle = await chooseImageDirectory();
+                folderStatusEl.textContent = `선택됨: ${handle.name || '(폴더)'} / 권한: granted`;
+                overlay.querySelector('#cspm-folder-save-enabled').checked = true;
+            } catch (e) {
+                folderStatusEl.textContent = '폴더 선택 실패: ' + e.message;
+            }
+        });
+        overlay.querySelector('#cspm-folder-clear')?.addEventListener('click', async () => {
+            try {
+                await deleteStoredDirectoryHandle();
+                overlay.querySelector('#cspm-folder-save-enabled').checked = false;
+                folderStatusEl.textContent = '선택된 폴더 없음';
+            } catch (e) {
+                folderStatusEl.textContent = '폴더 해제 실패: ' + e.message;
+            }
+        });
+        refreshFolderStatus();
 
         // provider 변경 시 해당 섹션만 표시
         function updateProviderSections() {
