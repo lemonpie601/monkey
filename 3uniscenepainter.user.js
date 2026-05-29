@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.7.9
+// @version      3.7.2
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -9,6 +9,7 @@
 // @connect      api.openai.com
 // @connect      api.anthropic.com
 // @connect      open.bigmodel.cn
+// @connect      openrouter.ai
 // @connect      aiplatform.googleapis.com
 // @connect      *.aiplatform.googleapis.com
 // @connect      image.novelai.net
@@ -98,16 +99,30 @@
             } catch (err) {
                 lastErr = err;
                 const msg = String(err?.message || err || '');
-                // HTTP 상태코드 추출 시도
-                const statusMatch = msg.match(/\b(\d{3})\b/);
-                const status = statusMatch ? Number(statusMatch[1]) : 0;
+                // httpStatus가 직접 달려있으면 우선 사용, 없으면 메시지에서 추출
+                const status = err?.httpStatus || (() => {
+                    const m = msg.match(/\b(\d{3})\b/);
+                    return m ? Number(m[1]) : 0;
+                })();
+                // 4xx 클라이언트 에러는 재시도해도 동일 — 즉시 실패 (429 rate limit은 제외)
+                if (status >= 400 && status < 500 && status !== 429) break;
+
                 const isRetryable = RETRYABLE.has(status) ||
-                    /rate.?limit|too many|overloaded|provider returned error|service unavailable/i.test(msg);
+                    /rate.?limit|too many|overloaded|provider returned error|service unavailable|시간이 초과|timeout/i.test(msg);
 
                 if (!isRetryable || attempt >= maxRetries) break;
 
-                const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
-                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${Math.round(delay / 1000)}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                // 서버가 Retry-After를 알려주면 그 시간을 우선 사용, 아니면 지수 백오프
+                const serverRetryAfter = err?.retryAfterSec ? Number(err.retryAfterSec) : null;
+                const delaySec = serverRetryAfter
+                    ? serverRetryAfter + 1  // 서버 지정 시간 + 1초 여유
+                    : Math.round((baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000) / 1000);
+                const delay = delaySec * 1000;
+                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${delaySec}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                // HUD에 재시도 상태 표시
+                if (typeof updateTaskHud === 'function') {
+                    updateTaskHud({ title: `재시도 중 (${attempt + 1}/${maxRetries})`, message: `${label} 오류로 ${delaySec}초 후 재시도해. 원인: ${msg.slice(0, 80)}` });
+                }
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -121,12 +136,20 @@
 
     /** Zhipu AI (GLM) API 호출 (OpenAI 호환) */
     async function callGlmGenerateContent(request, systemText, userText) {
-        // GLM 무료 모델(GLM-4.5-Flash, GLM-4.7-Flash)은 128K 컨텍스트 지원 → 트리밍 불필요
+        // GLM 무료 모델은 128K 컨텍스트 지원, 실제 안정적 요청 크기 기준으로 트리밍
+        const MAX_SYS_CHARS = 6000;
+        const MAX_USER_CHARS = 20000;
+        const trimmedSys = systemText.length > MAX_SYS_CHARS
+            ? systemText.slice(0, MAX_SYS_CHARS) + '\n...(생략)'
+            : systemText;
+        const trimmedUser = userText.length > MAX_USER_CHARS
+            ? userText.slice(0, MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
+            : userText;
         const payload = {
             model: request.model,
             messages: [
-                ...(systemText ? [{ role: 'system', content: systemText }] : []),
-                { role: 'user', content: userText }
+                ...(trimmedSys ? [{ role: 'system', content: trimmedSys }] : []),
+                { role: 'user', content: trimmedUser }
             ],
             temperature: request.temperature ?? 0.18,
             top_p: request.topP ?? 0.75,
@@ -201,6 +224,13 @@
             data: payload
         });
         const text = (data?.content || []).map(c => c.text || '').join('\n').trim();
+        if (!text) {
+            console.warn('[Crack Scene Painter] Anthropic 응답 디버그:', JSON.stringify({
+                stop_reason: data?.stop_reason,
+                content: data?.content,
+                error: data?.error
+            }));
+        }
         return { _anthropicRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
     }
 
@@ -420,13 +450,44 @@
         if (provider === 'glm') {
             const systemText = String((payload?.systemInstruction?.parts || [])
                 .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
-            const userText = String((payload?.contents || [])
+            const rawUserGlm = String((payload?.contents || [])
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
             const genCfg = payload?.generationConfig || {};
+            const useJsonGlm = String(genCfg.responseMimeType || '').includes('json');
+            const userText = useJsonGlm
+                ? rawUserGlm + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.'
+                : rawUserGlm;
             return await withRetry(() => callGlmGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP },
                 systemText, userText
             ), { label: 'GLM' });
+        }
+
+        // ── OpenRouter ───────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const OR_MAX_SYS_CHARS = 6000;
+            const OR_MAX_USER_CHARS = 20000;
+            const rawSys = String((payload?.systemInstruction?.parts || [])
+                .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
+            const rawUser = String((payload?.contents || [])
+                .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const systemText = rawSys.length > OR_MAX_SYS_CHARS
+                ? rawSys.slice(0, OR_MAX_SYS_CHARS) + '\n...(생략)'
+                : rawSys;
+            const genCfg = payload?.generationConfig || {};
+            const useJson = String(genCfg.responseMimeType || '').includes('json');
+            const trimmedUser = rawUser.length > OR_MAX_USER_CHARS
+                ? rawUser.slice(0, OR_MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
+                : rawUser;
+            // JSON 응답 강제: 유저 메시지 끝에 명시적 지시 추가 (무료 모델 호환성)
+            const userText = useJson
+                ? trimmedUser + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.'
+                : trimmedUser;
+            return await withRetry(() => callOpenAiGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
+                  responseFormat: useJson ? { type: 'json_object' } : undefined },
+                systemText, userText
+            ), { label: 'OpenRouter' });
         }
 
         // ── Firebase / Vertex / AI Studio (기존 Gemini 경로) ────────────
@@ -440,6 +501,18 @@
             headers: geminiRequest.headers,
             data: payloadWithSafetySettings
         }), { label: 'Gemini' });
+    }
+
+    /** 현재 설정된 provider의 UI 표시용 이름 반환 */
+    function getProviderDisplayName(global) {
+        const provider = String(global?.geminiProvider || 'ai-studio').trim();
+        if (provider === 'openai') return `OpenAI (${String(global?.openaiModel || 'gpt-4o').trim()})`;
+        if (provider === 'anthropic') return `Claude (${String(global?.claudeModel || 'claude-sonnet-4-5').trim()})`;
+        if (provider === 'glm') return `GLM (${String(global?.glmModel || 'glm-4.5-flash').trim()})`;
+        if (provider === 'openrouter') return `OpenRouter (${String(global?.openrouterModel || 'google/gemini-2.0-flash-exp:free').trim()})`;
+        if (provider === 'vertex') return 'Vertex AI';
+        if (['firebase', 'firebase-ai', 'firebase-ai-logic'].includes(provider)) return 'Firebase AI';
+        return `Gemini (${String(global?.googleModel || 'gemini-2.5-flash').trim()})`;
     }
 
     function getGeminiGenerateContentRequestConfig(global, options = {}) {
@@ -484,6 +557,18 @@
                 throw new Error('GLM API Key가 비어 있어요. 설정에서 Zhipu AI API Key를 입력해줘.');
             }
             return { provider: 'glm', model: glmModel, apiKey, headers: {} };
+        }
+
+        // ── OpenRouter ────────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const apiKey = String(global?.openrouterApiKey || '').trim();
+            const orModel = String(global?.openrouterModel || 'google/gemini-2.0-flash-exp:free').trim();
+            if (!apiKey) {
+                if (silent) return null;
+                throw new Error('OpenRouter API Key가 비어 있어요. 설정에서 OpenRouter API Key를 입력해줘.');
+            }
+            return { provider: 'openrouter', model: orModel, apiKey,
+                     url: 'https://openrouter.ai/api/v1/chat/completions', headers: {} };
         }
 
         // 사용자가 Firebase Config를 넣어둔 상태에서 provider가 Vertex로 남아 있으면
@@ -862,7 +947,16 @@
 
     function stripNonSceneNodes(root) {
         if (!root) return root;
-        root.querySelectorAll('.csp-generated-scene-image, pre').forEach(el => el.remove());
+        // CSP 전용 노드 제거
+        root.querySelectorAll('.csp-generated-scene-image, .csp-image-history-row').forEach(el => el.remove());
+        // <details> 태그 제거 — 캐릭터 정보 접기 블록, AI 분석에 불필요
+        root.querySelectorAll('details').forEach(el => el.remove());
+        // style 속성이 있는 <div>/<span> 중 상태창 패턴 제거
+        // (background/border/padding 조합 → 유니버스 채팅의 인라인 스타일 상태창)
+        root.querySelectorAll('div[style], span[style]').forEach(el => {
+            const s = el.getAttribute('style') || '';
+            if (/background|border|padding/i.test(s)) el.remove();
+        });
         return root;
     }
 
@@ -904,7 +998,9 @@ ${guide}`.trim();
     }
 
     function getDefaultGeminiInstruction() {
-        return `Gemini 장면 태그 생성 지침:
+        return `You are a JSON-only response AI. You MUST output ONLY a single valid JSON object. No explanations, no markdown, no code blocks, no extra text before or after. Just the raw JSON object.
+
+Gemini 장면 태그 생성 지침:
 
 [장면 선택]
 - 채팅 로그에서 삽화로 만들 핵심 순간 하나만 선택한다.
@@ -914,6 +1010,7 @@ ${guide}`.trim();
 - 사용자의 캐릭터는 화면 밖 상호작용 대상으로 간주하고 visibleCharacters에 넣지 않는다.
 - 코드블록, 상태창, info 박스, 시간/관계/소지품 같은 메타 정보는 장면 본문이 아니므로 핵심 장면 선택에서 제외한다.
 - insertAfterParagraph는 실제 행동/표정/감정이 드러나는 본문 문단 뒤 index로 정한다.
+- 같은 요청에서 여러 장면을 생성할 때는 각 장면의 insertAfterParagraph가 서로 다른 값이어야 한다. 각 장면은 이야기 흐름에서 가장 적합한 위치에 자연스럽게 배치해.
 
 [출력 필드]
 - 출력은 반드시 JSON만 사용한다. 코드블록, 설명문, 주석은 출력하지 않는다.
@@ -971,22 +1068,23 @@ ${guide}`.trim();
 - 최종 프롬프트는 코드에서 composition → interactionPrompt → baseScenePrompt → globalContext 순서로 조립한다.
 - 그러므로 각 필드는 자기 역할의 태그만 넣어야 한다.
 
+RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text):
 {
-  "sceneTitle": "한국어 장면 제목",
-  "insertAfterParagraph": 0,
-  "visibleCharacters": ["저장된 캐릭터 이름 1명"],
-  "mood": "english mood tags",
+  "sceneTitle": "장면 제목 (한국어)",
+  "insertAfterParagraph": 2,
+  "visibleCharacters": ["캐릭터이름"],
+  "mood": "tense, emotional",
   "globalContext": {
-    "locationPrompt": "english place/background tags from the whole log",
-    "timePrompt": "english time/weather tags from the whole log",
-    "atmospherePrompt": "english mood/lighting tags from the whole log",
-    "situationSummary": "전체 로그의 장소와 큰 상황을 한국어로 짧게"
+    "locationPrompt": "indoor, office",
+    "timePrompt": "daytime",
+    "atmospherePrompt": "dim lighting, quiet",
+    "situationSummary": "상황 요약 (한국어)"
   },
-  "composition": "2-3 english camera/framing/view tags only",
-  "baseScenePrompt": "2-4 english background/place/lighting tags only",
-  "interactionPrompt": "2-4 english action/expression tags only",
-  "temporaryOutfitPrompt": "english outfit tags only or empty string",
-  "reason": "왜 이 순간을 골랐는지 한국어로 짧게"
+  "composition": "upper body, looking at viewer",
+  "baseScenePrompt": "office, desk, window, soft light",
+  "interactionPrompt": "standing, worried expression",
+  "temporaryOutfitPrompt": "",
+  "reason": "이 순간을 고른 이유 (한국어)"
 }`;
     }
 
@@ -1102,9 +1200,12 @@ ${guide}`.trim();
             claudeModel: 'claude-sonnet-4-5',
             glmApiKey: '',
             glmModel: 'glm-4.5-flash',
+            openrouterApiKey: '',
+            openrouterModel: 'google/gemini-2.0-flash-exp:free',
             naiApiKey: '',
             naiModel: 'nai-diffusion-4-5-full',
             folderSaveEnabled: false,
+            multiSceneCount: 1,
             geminiInstruction: getDefaultGeminiInstruction(),
 
             // 방과 무관하게 고정되는 공통 생성 설정
@@ -4068,16 +4169,20 @@ ${guide}`.trim();
         if (!markdown) return [];
 
         const children = Array.from(markdown.children || []).filter(el => {
-            if (!el || el.classList?.contains('csp-generated-scene-image')) return false;
-            if (el.matches?.('pre')) return false;
-            if (el.matches?.('p, blockquote, ul, ol, table')) return true;
-            if (el.tagName === 'DIV') {
-                const clone = el.cloneNode(true);
-                stripNonSceneNodes(clone);
-                const text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
-                return !!text;
-            }
-            return false;
+            if (!el) return false;
+            // CSP 전용 노드 제외
+            if (el.classList?.contains('csp-generated-scene-image')) return false;
+            if (el.classList?.contains('csp-image-history-row')) return false;
+            if (el.id?.startsWith('csp-')) return false;
+            // <details> 제외 — 캐릭터 정보 블록, AI 분석/삽입 위치 카운트 모두 제외
+            if (el.tagName === 'DETAILS') return false;
+            // style 속성에 background/border/padding 조합 → 인라인 스타일 상태창 제외
+            const style = el.getAttribute?.('style') || '';
+            if (style && /background|border|padding/i.test(style)) return false;
+            // 나머지는 모두 block으로 인정 — 커스텀 태그(<OceanStatus> 등) 포함
+            // 단, 텍스트 내용이 전혀 없는 빈 요소는 제외
+            const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            return text.length > 0;
         });
 
         return children;
@@ -4156,6 +4261,17 @@ ${guide}`.trim();
     function removeSceneImage(markdown) {
         if (!markdown) return;
         markdown.querySelectorAll('.csp-generated-scene-image, .csp-image-history-row').forEach(el => el.remove());
+    }
+
+    function removeAllSceneRecordsForMarkdown(markdown) {
+        // 재생성 시 해당 말풍선의 모든 다중 장면 기록(_s0, _s1, _s2 등) 삭제
+        const baseKey = getMessageKey(markdown);
+        const records = getSceneRecords();
+        let changed = false;
+        [baseKey, ...Array.from({length: 5}, (_, i) => `${baseKey}_s${i+1}`)].forEach(k => {
+            if (records[k]) { delete records[k]; changed = true; }
+        });
+        if (changed) saveSceneRecords(records);
     }
 
     function buildPromptDetailText(plan, paragraphIndex, mode, promptInfo) {
@@ -4718,7 +4834,21 @@ ${guide}`.trim();
         if (!markdown) return { ok: false, reason: 'markdown-not-found' };
 
         const blocks = getInsertableContentBlocks(markdown);
-        removeSceneImage(markdown);
+        // keepExisting: 다중 장면 모드에서 기존 이미지 유지
+        if (!options.keepExisting) {
+            removeSceneImage(markdown);
+        } else {
+            // keepExisting 모드: 같은 messageKey 이미지가 이미 있으면 스킵
+            if (options.messageKey) {
+                const dup = markdown.querySelector(`.csp-generated-scene-image[data-message-key="${CSS.escape(options.messageKey)}"]`);
+                if (dup && dup.isConnected) return { ok: false, reason: 'already-inserted' };
+            }
+        }
+        // messageKey 기준 중복 체크 (keepExisting 여부 무관)
+        if (options.messageKey) {
+            const anyDup = markdown.querySelector(`.csp-generated-scene-image[data-message-key="${CSS.escape(options.messageKey)}"]`);
+            if (anyDup && anyDup.isConnected) return { ok: false, reason: 'already-inserted' };
+        }
 
         let index = 0;
         let target = null;
@@ -5254,10 +5384,14 @@ ${guide}`.trim();
 
     function buildHttpErrorMessage({ url, status, responseText }) {
         let message = responseText || `HTTP ${status}`;
+        let rawDetail = '';
 
         try {
             const err = JSON.parse(responseText);
-            message = err.error?.message || err.message || message;
+            const raw = err.error?.metadata?.raw || '';
+            const base = err.error?.message || err.message || message;
+            rawDetail = raw;
+            message = raw ? `${base} — ${raw}` : base;
         } catch (_) {
             message = stripHtmlErrorMessage(message);
         }
@@ -5269,6 +5403,27 @@ ${guide}`.trim();
                 ? `${vertexHint}\n\n원문: ${compact.slice(0, 500)}`
                 : vertexHint;
         }
+
+        // HTTP 상태코드별 한국어 메시지
+        const detail = String(rawDetail || message || '').toLowerCase();
+        if (status === 408 || /timeout|시간이 초과/.test(detail)) return '⏱️ 타임아웃: 응답이 너무 오래 걸렸어. 다시 시도해봐.';
+        if (status === 429) {
+            const retryMatch = String(rawDetail).match(/retry\s*(?:after\s*)?(\d+)\s*sec/i);
+            const sec = retryMatch ? retryMatch[1] : '';
+            return `⚡ 요청이 너무 많아서 잠깐 막혔어.${sec ? ` ${sec}초 후 자동 재시도할게.` : ' 잠시 후 다시 시도해봐.'}`;
+        }
+        if (status === 400) {
+            if (/embedding|embed/.test(detail)) return '❌ 이 모델은 임베딩 전용이라 채팅에 못 써. 다른 모델로 바꿔줘.';
+            return '❌ 요청 형식이 잘못됐어. 모델 ID나 설정을 확인해줘.';
+        }
+        if (status === 401) return '🔑 API Key가 틀렸거나 만료됐어. 설정에서 다시 확인해줘.';
+        if (status === 403) return '🚫 이 API Key로는 접근이 안 돼. 권한을 확인해줘.';
+        if (status === 404) {
+            if (/model not found|no endpoints/.test(detail)) return '❌ 없는 모델이야. openrouter.ai/models에서 정확한 모델 ID를 확인해줘.';
+            return '❌ 요청한 주소를 찾을 수 없어. API 설정을 확인해줘.';
+        }
+        if (status === 402) return '💳 크레딧이 부족해. 충전하거나 무료 모델로 바꿔줘.';
+        if (status >= 500 && status < 600) return `🔥 서버 에러 떴어 (${status}). 잠시 후 자동 재시도할게.`;
 
         return String(message || `HTTP ${status}`).replace(/\s+/g, ' ').trim();
     }
@@ -5338,8 +5493,22 @@ ${guide}`.trim();
                                 responseText: response.responseText,
                                 responseHeaders: response.responseHeaders
                             });
+                            // 에러 원인 파악을 위해 응답 본문 전체를 별도 로그로 출력
+                            // retry_after_seconds가 있으면 에러 객체에 실어서 withRetry가 활용
+                            let retryAfterSec = null;
+                            try {
+                                const errBody = JSON.parse(response.responseText);
+                                console.error('[Crack Scene Painter] API 에러 상세:', JSON.stringify(errBody, null, 2));
+                                const ra = errBody?.error?.metadata?.retry_after_seconds;
+                                if (ra && Number.isFinite(Number(ra))) retryAfterSec = Math.ceil(Number(ra));
+                            } catch (_) {
+                                console.error('[Crack Scene Painter] API 에러 원문:', response.responseText?.slice(0, 1000));
+                            }
 
-                            finishReject(new Error(message));
+                            const httpErr = new Error(message);
+                            httpErr.httpStatus = response.status; // withRetry에서 정확히 판단하기 위해
+                            if (retryAfterSec) httpErr.retryAfterSec = retryAfterSec;
+                            finishReject(httpErr);
                             return;
                         }
 
@@ -5362,16 +5531,18 @@ ${guide}`.trim();
                         error,
                         payloadLength: requestPayload ? requestPayload.length : 0
                     });
-                    finishReject(new Error('네트워크 요청 실패: 콘솔의 [Crack Scene Painter] GM network error 로그를 확인해줘.'));
+                    finishReject(new Error('🌐 네트워크 오류: 인터넷 연결이나 API 주소를 확인해줘.'));
                 },
                 ontimeout: () => {
                     if (settled) return;
                     console.error('[Crack Scene Painter] GM request timeout:', { method, url });
-                    finishReject(new Error('요청 시간이 초과됐어요.'));
+                    const toErr = new Error('⏱️ 타임아웃: 응답이 너무 오래 걸렸어. 다시 시도해봐.');
+                    toErr.httpStatus = 408;
+                    finishReject(toErr);
                 },
                 onabort: () => {
                     if (settled) return;
-                    console.error('[Crack Scene Painter] GM request aborted:', { method, url });
+                    console.log('[Crack Scene Painter] 생성 취소됨:', { method, url });
                     finishReject(new Error('작업이 취소됐어요.'));
                 }
             });
@@ -5414,9 +5585,13 @@ ${guide}`.trim();
         }
     }
 
-    function buildGeminiUserPrompt({ targetBubble, markdown, room }) {
+    function buildGeminiUserPrompt({ targetBubble, markdown, room, paragraphRange }) {
         const global = getGlobalSettings();
-        const paragraphs = getParagraphs(markdown);
+        let paragraphs = getParagraphs(markdown);
+        // paragraphRange: { start, end } — 본문을 N등분한 구간만 전달
+        if (paragraphRange && Number.isFinite(paragraphRange.start) && Number.isFinite(paragraphRange.end)) {
+            paragraphs = paragraphs.filter(p => p.index >= paragraphRange.start && p.index <= paragraphRange.end);
+        }
         const context = collectContextForBubble(targetBubble);
 
         const characterLines = (room.characters || [])
@@ -6415,58 +6590,79 @@ ${JSON.stringify(parsedPlan, null, 2)}
         return Array.from(new Set(visible)).slice(0, 1);
     }
 
-    async function generateScenePlanWithGemini(targetBubble, markdown) {
+    async function generateScenePlanWithGemini(targetBubble, markdown, options = {}) {
         const global = getGlobalSettings();
         const room = getRoomSettings();
+        const sceneCount = options.sceneCount || Number(global.multiSceneCount || 1);
 
         const geminiRequest = getGeminiGenerateContentRequestConfig(global);
-        const url = geminiRequest.url;
-        const userPrompt = buildGeminiUserPrompt({ targetBubble, markdown, room });
+        const userPrompt = buildGeminiUserPrompt({ targetBubble, markdown, room, paragraphRange: options.paragraphRange });
+
+        const systemInstruction = getEffectiveGeminiSystemInstruction(global);
+
+        let finalUserPrompt = userPrompt;
+
+        // 다중 장면 요청 시 유저 메시지 끝에 배열 지시 추가 (시스템보다 더 잘 따름)
+        if (sceneCount > 1) {
+            finalUserPrompt += `
+
+[MULTI-SCENE REQUEST: ${sceneCount} scenes]
+You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is a separate scene from different parts of the text.
+- Use different insertAfterParagraph values for each scene (they must NOT be the same number)
+- Each scene should depict a different moment or situation
+- Format: [{ "sceneTitle": "...", "insertAfterParagraph": 0, ... }, { "sceneTitle": "...", "insertAfterParagraph": 3, ... }]
+- Do NOT return a single object. Return an ARRAY of ${sceneCount} objects.`;
+        }
 
         const payload = {
-            systemInstruction: {
-                parts: [{ text: getEffectiveGeminiSystemInstruction(global) }]
-            },
-            contents: [
-                {
-                    role: 'user',
-                    parts: [{ text: userPrompt }]
-                }
-            ],
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ role: 'user', parts: [{ text: finalUserPrompt }] }],
             generationConfig: buildGeminiGenerationConfig(geminiRequest.model, {
-                temperature: 0.2,
+                temperature: sceneCount > 1 ? 0.5 : 0.2,
                 topP: 0.8,
                 responseMimeType: 'application/json'
             })
         };
 
         const data = await requestGeminiGenerateContent(geminiRequest, payload);
-
         const responseText = extractTextFromGeminiResponseData(data);
-
         if (!responseText) throw new Error('Gemini 응답이 비어 있어요.');
 
-        const rawPlan = extractJsonLoose(responseText);
-        const normalized = normalizeGeminiScenePlan(rawPlan, room, markdown);
+        const rawParsed = extractJsonLoose(responseText);
 
-        if (!normalized.scenePrompt) {
-            const repaired = sanitizeScenePrompt(await repairScenePromptWithGemini(targetBubble, markdown, rawPlan));
-            if (repaired) {
-                normalized.baseScenePrompt = repaired;
-                normalized.interactionPrompt = '';
-                normalized.scenePrompt = repaired;
+        // 배열이면 다중 장면, 객체면 단일 plan으로 처리
+        let rawPlans;
+        if (Array.isArray(rawParsed)) {
+            rawPlans = rawParsed.slice(0, sceneCount);
+        } else {
+            // 객체 하나만 왔을 때: sceneCount > 1이면 경고 후 1개만
+            if (sceneCount > 1) {
+                console.warn('[Crack Scene Painter] 다중 장면 요청했는데 AI가 객체 1개만 반환했어요. 1장면만 생성해요.');
             }
+            rawPlans = [rawParsed];
         }
 
-        if (!normalized.scenePrompt) {
-            const fallback = sanitizeScenePrompt(buildMinimalScenePromptFallback(cleanMarkdownText(markdown), 1));
-            normalized.baseScenePrompt = fallback;
-            normalized.interactionPrompt = '';
-            normalized.scenePrompt = fallback;
-            console.warn('[Crack Scene Painter] scenePrompt empty, using fallback scene tags:', fallback);
-        }
+        // insertAfterParagraph 중복 제거 (같은 인덱스면 +1씩 밀어냄)
+        const usedIndexes = new Set();
+        rawPlans.forEach(raw => {
+            let idx = Number(raw?.insertAfterParagraph ?? 0);
+            while (usedIndexes.has(idx)) idx++;
+            raw.insertAfterParagraph = idx;
+            usedIndexes.add(idx);
+        });
 
-        return normalized;
+        const plans = rawPlans.map(raw => {
+            const normalized = normalizeGeminiScenePlan(raw, room, markdown);
+            if (!normalized.scenePrompt) {
+                const fallback = sanitizeScenePrompt(buildMinimalScenePromptFallback(cleanMarkdownText(markdown), 1));
+                normalized.baseScenePrompt = fallback;
+                normalized.interactionPrompt = '';
+                normalized.scenePrompt = fallback;
+            }
+            return normalized;
+        });
+
+        return sceneCount === 1 ? plans[0] : plans;
     }
 
     function removeVisibleNamesFromScenePrompt(prompt, visibleCharacters) {
@@ -6733,11 +6929,21 @@ ${JSON.stringify(parsedPlan, null, 2)}
         return await blobToDataUrl(extractedBlob);
     }
 
-    async function insertFinalSceneImage({ markdown, imageUrl, plan, mode, basePrompt, baseNegative, finalPrompt, finalNegative, charPrompts, referenceInfo, naiSettings }) {
-        const messageKey = getMessageKey(markdown);
+    async function insertFinalSceneImage({ markdown, imageUrl, plan, mode, basePrompt, baseNegative, finalPrompt, finalNegative, charPrompts, referenceInfo, naiSettings, keepExisting, sceneIndex }) {
+        // 다중 장면 시 각 장면을 별도 키로 저장 (sceneIndex > 0이면 키에 인덱스 붙임)
+        const baseKey = getMessageKey(markdown);
+        const messageKey = (sceneIndex && sceneIndex > 0) ? `${baseKey}_s${sceneIndex}` : baseKey;
+        // insertAfterParagraph 범위 초과 시 마지막 문단으로 clamp
+        const _blocks = getInsertableContentBlocks(markdown);
+        if (_blocks.length > 0) {
+            plan = Object.assign({}, plan, {
+                insertAfterParagraph: Math.min(Number(plan.insertAfterParagraph) || 0, _blocks.length - 1)
+            });
+        }
         const result = insertSceneImageIntoMarkdown(markdown, imageUrl, plan.insertAfterParagraph, {
             mode,
             messageKey,
+            keepExisting: !!keepExisting,
             captionHtml: buildCaption(plan, plan.insertAfterParagraph, mode, {
                 basePrompt,
                 baseNegative,
@@ -7179,7 +7385,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
         });
     }
 
-    function showScenePlanModal({ targetBubble, markdown, plan }) {
+    function showScenePlanModal({ targetBubble, markdown, plan, sceneIndex = 0 }) {
+        return new Promise((resolveModal) => {
         const existing = document.getElementById('csp-plan-modal');
         if (existing) existing.remove();
 
@@ -7773,9 +7980,11 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     finalNegative: finalNegativeForRequest,
                     charPrompts,
                     referenceInfo: referenceInfoForRequest,
-                    naiSettings
+                    naiSettings,
+                    sceneIndex,
+                    keepExisting: sceneIndex > 0
                 });
-                overlay.remove();
+                _closeModal();
             } catch (err) {
                 console.error('[Crack Scene Painter] NAI generation failed:', err);
                 showToast('⚠️ NAI 생성 실패: ' + err.message);
@@ -7785,12 +7994,17 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
         };
 
+        const _closeModal = () => { overlay.remove(); resolveModal(); };
         overlay.addEventListener('mousedown', (e) => {
-            if (e.target === overlay) overlay.remove();
+            if (e.target === overlay) _closeModal();
         });
+
+        // 취소 버튼
+        overlay.querySelector('#csp-cancel-plan')?.addEventListener('click', _closeModal);
 
         refreshAnlasBalance(true);
         document.body.appendChild(overlay);
+        }); // end Promise
     }
 
     let cspImageActionsBound = false;
@@ -7820,64 +8034,98 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 button.title = '스피드 모드 생성 중...';
             }
 
-            showToast('⚡ 스피드 모드 시작: 분석 후 바로 생성해요.');
-            showTaskHud('스피드 모드', 'Gemini 분석부터 NAI 생성까지 확인창 없이 바로 진행해.', 10);
-            const ticker = startTaskHudTicker([
-                { title: 'Gemini 분석 중', message: 'AI 답변에서 삽화로 만들 장면을 자동으로 고르는 중이야.', progress: 26 },
-                { title: '프롬프트 조립 중', message: '캐릭터 슬롯과 장면 태그를 합쳐 NAI 프롬프트를 만들고 있어.', progress: 48 },
-                { title: 'NAI 생성 중', message: '이미지를 생성하고 있어. 이 단계에서 Anlas가 소모될 수 있어.', progress: 72 },
-                { title: '이미지 삽입 중', message: '생성된 이미지를 답변 문단 사이에 넣고 기록을 저장하고 있어.', progress: 90 }
-            ]);
-
-            const plan = await generateScenePlanWithGemini(bubble, markdown);
+            const sceneCount = Number(global.multiSceneCount || 1);
+            const _providerName = getProviderDisplayName(global);
             const roomCharacters = (room.characters || []).filter(hasCharacterSlotContent);
-            const matchedFocusNames = findCharacterNamesInText(room, getSceneWindowText(markdown, plan.insertAfterParagraph, 1) || cleanMarkdownText(markdown));
-            const fallbackVisible = (plan.visibleCharacters || []).filter(Boolean);
-            const chosenVisible = fallbackVisible.find(name => findRoomCharacterSlotByName(name, room))
-                || matchedFocusNames.find(name => findRoomCharacterSlotByName(name, room))
-                || (roomCharacters[0]?.name || '');
-            plan.visibleCharacters = chosenVisible ? [chosenVisible] : [];
-            plan.charactersInScene = plan.visibleCharacters.slice();
-            plan.characterCount = Math.max(1, plan.visibleCharacters.length || 1);
-            // 스피드 모드는 의상도 자동 처리: 로그 기반 임시 의상이 잡히면 그걸 우선 사용합니다.
-            plan.useTemporaryOutfit = !!plan.temporaryOutfitPrompt;
-
-            const promptState = buildFinalPromptFromPlan(plan, room);
-            const charPrompts = promptState.charPrompts || [];
-            const referenceInfoForRequest = getReferenceSummary(charPrompts);
-
-            const generatedImageUrl = await generateImageWithNai({
-                basePrompt: promptState.basePrompt,
-                baseNegative: promptState.baseNegative,
-                finalPrompt: promptState.finalPrompt,
-                finalNegative: promptState.finalNegative,
-                charPrompts,
-                settings: naiSettings
+            // 재생성 시 기존 다중 장면 기록 전체 초기화
+            removeAllSceneRecordsForMarkdown(markdown);
+            removeSceneImage(markdown);
+            const usedParagraphsSpeed = new Set(); // 중복 문단 방지용
+            // 이미 DOM에 삽입된 이미지 위치도 피해야 함
+            Array.from(markdown.querySelectorAll('.csp-generated-scene-image')).forEach(el => {
+                const _existingKey = el.getAttribute('data-message-key');
+                if (_existingKey) {
+                    const _records = getSceneRecords();
+                    const _rec = _records[_existingKey];
+                    if (_rec && Number.isFinite(_rec.paragraphIndex)) {
+                        usedParagraphsSpeed.add(_rec.paragraphIndex);
+                    }
+                }
             });
 
-            await insertFinalSceneImage({
-                markdown,
-                imageUrl: generatedImageUrl,
-                plan,
-                mode: 'nai',
-                basePrompt: promptState.basePrompt,
-                baseNegative: promptState.baseNegative,
-                finalPrompt: promptState.finalPrompt,
-                finalNegative: promptState.finalNegative,
-                charPrompts,
-                referenceInfo: referenceInfoForRequest,
-                naiSettings
-            });
+            showToast(`⚡ 스피드 모드 시작 (${sceneCount}장면)`);
+            showTaskHud('스피드 모드', `${sceneCount}개 장면을 분석→생성→삽입 순서로 진행해.`, 5);
 
-            updateTaskHud({ title: '스피드 모드 완료', message: '분석부터 이미지 삽입까지 끝났어.', progress: 100, status: 'success' });
-            showToast('⚡ 스피드 모드 생성 완료');
+            for (let _si = 0; _si < sceneCount; _si++) {
+                const _stepLabel = sceneCount > 1 ? ` (${_si + 1}/${sceneCount})` : '';
+                const _pct = Math.round(_si / sceneCount * 100);
+
+                // 2번째 장면부터 rate limit 방지 딜레이
+                if (_si > 0) {
+                    updateTaskHud({ title: `다음 장면 준비 중${_stepLabel}`, message: '잠깐 기다렸다가 다음 장면 분석을 시작할게.', progress: _pct });
+                    await new Promise(r => setTimeout(r, 4000));
+                }
+
+                // 1. 분석 — 본문을 N등분해서 해당 구간만 전달
+                updateTaskHud({ title: `AI 분석 중${_stepLabel}`, message: `${_providerName}에게 장면 분석 요청 중이야.`, progress: _pct + 5 });
+                const _allParagraphs = getParagraphs(markdown);
+                const _totalP = _allParagraphs.length;
+                const _segSize = Math.ceil(_totalP / sceneCount);
+                const _segStart = _si * _segSize;
+                const _segEnd = Math.min(_segStart + _segSize - 1, _totalP - 1);
+                const _pRange = sceneCount > 1 ? { start: _segStart, end: _segEnd } : null;
+                let _plan = await generateScenePlanWithGemini(bubble, markdown, { sceneCount: 1, paragraphRange: _pRange });
+                if (Array.isArray(_plan)) _plan = _plan[0];
+
+                // 캐릭터 자동 처리
+                const _matchedNames = findCharacterNamesInText(room, getSceneWindowText(markdown, _plan.insertAfterParagraph, 1) || cleanMarkdownText(markdown));
+                const _fallback = (_plan.visibleCharacters || []).filter(Boolean);
+                const _chosen = _fallback.find(n => findRoomCharacterSlotByName(n, room))
+                    || _matchedNames.find(n => findRoomCharacterSlotByName(n, room))
+                    || (roomCharacters[0]?.name || '');
+                _plan.visibleCharacters = _chosen ? [_chosen] : [];
+                _plan.charactersInScene = _plan.visibleCharacters.slice();
+                _plan.characterCount = Math.max(1, _plan.visibleCharacters.length || 1);
+                _plan.useTemporaryOutfit = !!_plan.temporaryOutfitPrompt;
+
+                // 2. NAI 생성
+                updateTaskHud({ title: `NAI 생성 중${_stepLabel}`, message: `"${_plan.sceneTitle || '장면'}" — Anlas 소모 중.`, progress: _pct + 25 });
+                const _ps = buildFinalPromptFromPlan(_plan, room);
+                const _charPrompts = _ps.charPrompts || [];
+                const _imageUrl = await generateImageWithNai({
+                    basePrompt: _ps.basePrompt, baseNegative: _ps.baseNegative,
+                    finalPrompt: _ps.finalPrompt, finalNegative: _ps.finalNegative,
+                    charPrompts: _charPrompts, settings: naiSettings
+                });
+
+                // 문단 중복만 피하기 — AI가 고른 위치 최대한 존중, 겹치면 +1씩만 밀기
+                let _finalIdx = _plan.insertAfterParagraph;
+                while (usedParagraphsSpeed.has(_finalIdx)) _finalIdx++;
+                _plan.insertAfterParagraph = _finalIdx;
+                usedParagraphsSpeed.add(_finalIdx);
+
+                // 3. 삽입 (2번째 이후는 기존 이미지 유지)
+                updateTaskHud({ title: `이미지 삽입 중${_stepLabel}`, message: `문단 ${_plan.insertAfterParagraph + 1} 뒤에 삽입 중.`, progress: _pct + 28 });
+                await insertFinalSceneImage({
+                    markdown, imageUrl: _imageUrl, plan: _plan, mode: 'nai',
+                    basePrompt: _ps.basePrompt, baseNegative: _ps.baseNegative,
+                    finalPrompt: _ps.finalPrompt, finalNegative: _ps.finalNegative,
+                    charPrompts: _charPrompts, referenceInfo: getReferenceSummary(_charPrompts), naiSettings,
+                    keepExisting: _si > 0,
+                    sceneIndex: _si
+                });
+
+                showToast(`🖼️ ${_si + 1}/${sceneCount} 삽입 완료: ${_plan.sceneTitle || '장면'}`);
+            }
+
+            updateTaskHud({ title: '스피드 모드 완료 ✅', message: `${sceneCount}개 장면 모두 생성 완료!`, progress: 100, status: 'success' });
+            showToast(`⚡ 스피드 모드 완료 (${sceneCount}장면)`);
             setTimeout(() => hideTaskHud(), 420);
             markSceneButtons(messageKey, true);
         } catch (err) {
             console.error('[Crack Scene Painter] speed mode failed:', err);
-            updateTaskHud({ title: '스피드 모드 실패', message: '스피드 모드 생성에 실패했어.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-            showToast('⚠️ 스피드 모드 실패: ' + err.message);
-            setTimeout(() => hideTaskHud(), 1800);
+            showToast('⚠️ 생성 실패: ' + err.message);
+            hideTaskHud(true);
         } finally {
             if (button) {
                 button.disabled = false;
@@ -7911,11 +8159,25 @@ ${JSON.stringify(parsedPlan, null, 2)}
     }
 
     async function reapplySavedScene(markdown) {
-        const key = getMessageKey(markdown);
+        const baseKey = getMessageKey(markdown);
         const records = getSceneRecords();
+
+        // 다중 장면 복원: baseKey, baseKey_s1, baseKey_s2 순서로 복원
+        const keysToRestore = [baseKey];
+        for (let _si = 1; _si <= 5; _si++) {
+            const _k = `${baseKey}_s${_si}`;
+            if (records[_k]) keysToRestore.push(_k);
+            else break;
+        }
+
+        for (const key of keysToRestore) {
         const record = records[key];
-        if (!record) return;
-        if (markdown.querySelector('.csp-generated-scene-image')) return;
+        if (!record) continue;
+        // React 리렌더링으로 DOM이 교체된 경우를 감지:
+        // 이미지 엘리먼트가 있어도 document에 연결돼 있지 않으면(detached) 재삽입 필요
+        const existing = Array.from(markdown.querySelectorAll('.csp-generated-scene-image'))
+            .find(el => el.getAttribute('data-message-key') === key && el.isConnected);
+        if (existing) continue;
 
         normalizeSceneRecordHistory(record, key);
 
@@ -7923,10 +8185,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         if (String(imageUrl || '').startsWith('blob:')) {
             delete records[key];
             saveSceneRecords(records);
-            return;
+            continue;
         }
 
-        if (!imageUrl) return;
+        if (!imageUrl) continue;
 
         // 예전 data URL 기록이 남아 있으면 IndexedDB로 옮기고 localStorage에서는 제거합니다.
         const currentItem = getCurrentHistoryItem(record);
@@ -7944,6 +8206,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         insertSceneImageIntoMarkdown(markdown, imageUrl, record.paragraphIndex, {
             mode: record.mode || 'gemini',
             messageKey: key,
+            keepExisting: key !== baseKey,
             captionHtml: buildCaption(record.plan || {}, record.paragraphIndex, 'restore', {
                 basePrompt: record.basePrompt || '',
                 baseNegative: record.baseNegative || '',
@@ -7955,6 +8218,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             historyHtml: buildImageHistoryControls(key, record)
         });
         markSceneButtons(key, true);
+        } // end for keysToRestore
     }
 
     function makeMessageGenerateButton(bubble, markdown) {
@@ -7965,8 +8229,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
         btn.setAttribute('aria-label', 'AI 삽화 생성');
         btn.innerHTML = `
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-5-7-4 5.28-3-3.47L5 19h14l-3-7z"/>
-                <circle cx="16" cy="8.5" r="1.5"/>
+                <path d="M12 2l2.09 6.26L20 10l-5.91 1.74L12 18l-2.09-6.26L4 10l5.91-1.74L12 2z"/>
+                <path d="M19 14l1.12 3.38L23.5 18.5l-3.38 1.12L19 23l-1.12-3.38L14.5 18.5l3.38-1.12L19 14z" opacity="0.7"/>
+                <path d="M5 14l.75 2.25L8 17l-2.25.75L5 20l-.75-2.25L2 17l2.25-.75L5 14z" opacity="0.5"/>
             </svg>
         `;
 
@@ -7987,28 +8252,87 @@ ${JSON.stringify(parsedPlan, null, 2)}
             console.log('[Crack Scene Painter] image button clicked:', { key, markdown });
             btn.setAttribute('data-csp-loading', 'true');
             btn.disabled = true;
-            btn.title = 'Gemini가 장면을 분석 중...';
-            showToast('🔎 Gemini가 장면과 삽입 위치를 분석 중...');
+            const _providerName = getProviderDisplayName(getGlobalSettings());
+            btn.title = 'AI가 장면을 분석 중...';
+            showToast(`🔎 ${_providerName}이(가) 장면과 삽입 위치를 분석 중...`);
             showTaskHud('장면 분석 시작', '지금 선택한 AI 답변을 읽고, 어디에 어떤 장면을 넣을지 고르는 중이야.', 10);
             const ticker = startTaskHudTicker([
                 { title: '로그 정리 중', message: '현재 AI 답변의 문단과 장면 흐름을 정리하고 있어.', progress: 24 },
-                { title: 'Gemini 분석 요청', message: 'Gemini API에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.', progress: 46 },
+                { title: 'AI 분석 요청 중', message: `${_providerName}에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.`, progress: 46 },
                 { title: '응답 해석 중', message: '받아온 JSON을 읽고, 삽입 위치와 장면 태그를 정리하고 있어.', progress: 68 },
                 { title: '확인창 준비 중', message: '확인창과 프롬프트 초안을 만들고 있어.', progress: 84 }
             ]);
 
             try {
-                const plan = await generateScenePlanWithGemini(bubble, markdown);
-                console.log('[Crack Scene Painter] Gemini scene plan:', plan);
-                updateTaskHud({ title: '분석 완료', message: 'Gemini 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
-                showScenePlanModal({ targetBubble: bubble, markdown, plan });
-                showToast('✅ Gemini 분석 완료. 생성 전 확인창을 열었어요.');
-                setTimeout(() => hideTaskHud(), 360);
+                const _global = getGlobalSettings();
+                const _sceneCount = Number(_global.multiSceneCount || 1);
+                // 재생성 시 기존 다중 장면 기록 전체 초기화
+                removeAllSceneRecordsForMarkdown(markdown);
+                removeSceneImage(markdown);
+                const usedParagraphs = new Set();
+                // 이미 DOM에 삽입된 이미지 위치도 피해야 함
+                Array.from(markdown.querySelectorAll('.csp-generated-scene-image')).forEach(el => {
+                    const _ek = el.getAttribute('data-message-key');
+                    if (_ek) {
+                        const _er = getSceneRecords()[_ek];
+                        if (_er && Number.isFinite(_er.paragraphIndex)) usedParagraphs.add(_er.paragraphIndex);
+                    }
+                });
+
+                hideTaskHud(true);
+
+                for (let _i = 0; _i < _sceneCount; _i++) {
+                    // 2번째부터 rate limit 방지 딜레이
+                    if (_i > 0) {
+                        await new Promise(r => setTimeout(r, 4000));
+                    }
+                    // 이미 사용된 문단 힌트를 유저 메시지에 추가
+                    const _excludeHint = usedParagraphs.size > 0
+                        ? `
+
+[이미 선택된 문단 인덱스: ${[...usedParagraphs].join(', ')} — 이 인덱스는 사용하지 마.]`
+                        : '';
+
+                    // 본문 N등분해서 해당 구간만 전달
+                    const _ap = getParagraphs(markdown);
+                    const _tp = _ap.length;
+                    const _ss = Math.ceil(_tp / _sceneCount);
+                    const _pStart = _i * _ss;
+                    const _pEnd = Math.min(_pStart + _ss - 1, _tp - 1);
+                    const _pr = _sceneCount > 1 ? { start: _pStart, end: _pEnd } : null;
+
+                    showTaskHud(`장면 분석 중 (${_i + 1}/${_sceneCount})`, `AI에게 ${_i + 1}번째 장면을 분석 요청 중이야.`, 20);
+                    const _ticker = startTaskHudTicker([
+                        { title: `AI 분석 중 (${_i + 1}/${_sceneCount})`, message: 'API에 분석 요청했어. 잠깐만 기다려줘.', progress: 50 },
+                        { title: '응답 해석 중', message: '받아온 JSON을 정리하고 있어.', progress: 80 }
+                    ]);
+
+                    let _plan;
+                    try {
+                        _plan = await generateScenePlanWithGemini(bubble, markdown, { sceneCount: 1, paragraphRange: _pr });
+                        if (Array.isArray(_plan)) _plan = _plan[0];
+                    } finally {
+                        _ticker.stop();
+                    }
+
+                    // 문단 중복만 피하기 — AI가 고른 위치 최대한 존중, 겹치면 +1씩만 밀기
+                    let _adjIdx = _plan.insertAfterParagraph;
+                    while (usedParagraphs.has(_adjIdx)) _adjIdx++;
+                    _plan.insertAfterParagraph = _adjIdx;
+                    usedParagraphs.add(_adjIdx);
+                    console.log(`[Crack Scene Painter] AI scene plan ${_i + 1}/${_sceneCount}:`, _plan);
+
+                    updateTaskHud({ title: `분석 완료 (${_i + 1}/${_sceneCount})`, message: '확인창을 열어줄게. 닫으면 다음 장면 분석을 시작해.', progress: 100, status: 'success' });
+                    setTimeout(() => hideTaskHud(true), 300);
+
+                    await showScenePlanModal({ targetBubble: bubble, markdown, plan: _plan, sceneIndex: _i });
+                }
+
+                showToast(`✅ ${_sceneCount}개 장면 분석/생성 완료`);
             } catch (err) {
-                console.error('[Crack Scene Painter] Gemini 분석 실패:', err);
-                updateTaskHud({ title: '분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Crack Scene Painter] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-                showToast('⚠️ Gemini 분석 실패: ' + err.message);
-                setTimeout(() => hideTaskHud(), 1800);
+                console.error('[Crack Scene Painter] AI 분석 실패:', err);
+                showToast('⚠️ 분석 실패: ' + err.message);
+                hideTaskHud(true);
             } finally {
                 ticker.stop();
                 btn.removeAttribute('data-csp-loading');
@@ -8080,10 +8404,14 @@ ${JSON.stringify(parsedPlan, null, 2)}
             const card = document.createElement('div');
             card.className = 'csp-character-card';
             card.innerHTML = `
-                <div class="csp-character-head">
-                    <span>캐릭터 ${index + 1}</span>
-                    <button class="csp-btn csp-btn-small csp-remove-character" type="button">삭제</button>
+                <div class="csp-character-head" style="cursor:pointer;" data-csp-collapse-toggle>
+                    <span>캐릭터 ${index + 1}${getCharacterSlotName(char) ? ` — ${escapeHtml(getCharacterSlotName(char))}` : ''}</span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="csp-btn csp-btn-small csp-character-collapse-btn" type="button" title="접기/펼치기">▲</button>
+                        <button class="csp-btn csp-btn-small csp-remove-character" type="button">삭제</button>
+                    </div>
                 </div>
+                <div class="csp-character-body">
                 <div class="csp-field">
                     <label>이름</label>
                     <input class="csp-character-name" value="${escapeHtml(getCharacterSlotName(char))}" placeholder="예: 라자엘">
@@ -8136,7 +8464,30 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     </div>
                     <div class="csp-mini-note">권장: 전신 / 중립 포즈 / 단순 배경 / 얼굴이 잘 보이는 깨끗한 이미지. 업로드 시 선택된 저장 폴더의 <b>CSP_References</b> 하위 폴더에 저장돼.</div>
                 </div>
+                </div>
             `;
+
+            // 접기/펼치기
+            const collapseBtn = card.querySelector('.csp-character-collapse-btn');
+            const body = card.querySelector('.csp-character-body');
+            const head = card.querySelector('[data-csp-collapse-toggle]');
+            let collapsed = false;
+            const toggleCollapse = () => {
+                collapsed = !collapsed;
+                body.style.display = collapsed ? 'none' : '';
+                collapseBtn.textContent = collapsed ? '▼' : '▲';
+                collapseBtn.title = collapsed ? '펼치기' : '접기';
+            };
+            collapseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCollapse(); });
+            head.addEventListener('click', (e) => { if (e.target !== collapseBtn && !e.target.closest('.csp-remove-character')) toggleCollapse(); });
+
+            // 이름 변경 시 헤더 텍스트 업데이트
+            card.querySelector('.csp-character-name').addEventListener('input', (e) => {
+                const nameSpan = head.querySelector('span');
+                const idx = Array.from(container.querySelectorAll('.csp-character-card')).indexOf(card);
+                nameSpan.textContent = `캐릭터 ${idx + 1}${e.target.value ? ' — ' + e.target.value : ''}`;
+            });
+
             card.querySelector('.csp-remove-character').onclick = async () => {
                 const cards = Array.from(container.querySelectorAll('.csp-character-card'));
                 if (cards.length <= 1) {
@@ -8288,6 +8639,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                 <option value="openai" ${global.geminiProvider === 'openai' ? 'selected' : ''}>OpenAI (GPT)</option>
                                 <option value="anthropic" ${global.geminiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
                                 <option value="glm" ${global.geminiProvider === 'glm' ? 'selected' : ''}>Zhipu AI (GLM)</option>
+                                <option value="openrouter" ${global.geminiProvider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                             </select>
                         </div>
                         <div class="csp-field">
@@ -8365,6 +8717,21 @@ ${JSON.stringify(parsedPlan, null, 2)}
                             <div class="csp-field">
                                 <label>Zhipu AI API Key</label>
                                 <input id="csp-glm-key" type="password" value="${escapeHtml(global.glmApiKey||'')}" placeholder="Zhipu AI API Key">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="csp-section-subbox" id="csp-openrouter-section" style="display:none;">
+                        <div class="csp-section-title">OpenRouter 설정</div>
+                        <div class="csp-mini-note">openrouter.ai에서 API Key 발급. 무료 모델은 :free 접미사가 붙어.</div>
+                        <div class="csp-grid">
+                            <div class="csp-field">
+                                <label>OpenRouter 모델 ID</label>
+                                <input id="csp-openrouter-model" value="${escapeHtml(global.openrouterModel||'google/gemini-2.0-flash-exp:free')}" placeholder="예: google/gemini-2.0-flash-exp:free">
+                                <div class="csp-mini-note">openrouter.ai/models 에서 확인. 무료 모델은 뒤에 :free 붙여.</div>
+                            </div>
+                            <div class="csp-field">
+                                <label>OpenRouter API Key</label>
+                                <input id="csp-openrouter-key" type="password" value="${escapeHtml(global.openrouterApiKey||'')}" placeholder="sk-or-v1-...">
                             </div>
                         </div>
                     </div>
@@ -8470,6 +8837,21 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 </div>
                         </div>
                         <div class="csp-tab-panel" data-csp-tab-panel="advanced" role="tabpanel">
+                <div class="csp-section">
+                    <div class="csp-section-title">🎬 다중 장면 생성</div>
+                    <div class="csp-mini-note">한 AI 답변에서 여러 장면을 골라 각각 이미지를 만들어. 장면 수가 많을수록 Anlas 소모가 늘어.</div>
+                    <div class="csp-grid">
+                        <div class="csp-field">
+                            <label>장면 수 <span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:99px;font-weight:700;vertical-align:middle;margin-left:4px;">BETA</span></label>
+                            <select id="csp-multi-scene-count">
+                                <option value="1" ${(global.multiSceneCount||1) == 1 ? 'selected' : ''}>1장면 (기본)</option>
+                                <option value="2" ${(global.multiSceneCount||1) == 2 ? 'selected' : ''}>2장면</option>
+                                <option value="3" ${(global.multiSceneCount||1) == 3 ? 'selected' : ''}>3장면</option>
+                            </select>
+                            <div class="csp-mini-note">2장면 이상이면 분석→생성→삽입을 장면 수만큼 반복해. 스피드 모드도 동일.</div>
+                        </div>
+                    </div>
+                </div>
                 <div class="csp-section">
                     <div class="csp-section-title">공통 NAI 생성 설정</div>
                     <div class="csp-mini-note">SMEA/DYN·다중 생성은 비활성화.<br>항상 1장만 생성해.</div>
@@ -8807,6 +9189,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 claudeModel: overlay.querySelector('#csp-claude-model').value,
                 glmApiKey: overlay.querySelector('#csp-glm-key').value.trim(),
                 glmModel: overlay.querySelector('#csp-glm-model').value,
+                openrouterApiKey: overlay.querySelector('#csp-openrouter-key').value.trim(),
+                openrouterModel: overlay.querySelector('#csp-openrouter-model').value.trim(),
                 vertexProjectId: overlay.querySelector('#csp-vertex-project').value.trim(),
                 vertexLocation: overlay.querySelector('#csp-vertex-location').value.trim() || 'us-central1',
                 vertexAccessToken: overlay.querySelector('#csp-vertex-token').value.trim(),
@@ -8816,6 +9200,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 naiApiKey: overlay.querySelector('#csp-nai-key').value.trim(),
                 naiModel: overlay.querySelector('#csp-nai-model').value.trim() || 'nai-diffusion-4-5-full',
                 folderSaveEnabled: overlay.querySelector('#csp-folder-save-enabled').checked,
+                multiSceneCount: Number(overlay.querySelector('#csp-multi-scene-count')?.value || 1),
                 geminiInstruction: overlay.querySelector('#csp-gemini-instruction').value.trim(),
                 basePositive: overlay.querySelector('#csp-base-positive').value.trim(),
                 baseNegative: overlay.querySelector('#csp-base-negative').value.trim(),
