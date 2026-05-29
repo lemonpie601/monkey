@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      3.7.2
+// @version      3.7.4
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -1044,6 +1044,13 @@ Gemini 장면 태그 생성 지침:
 - 행동, 자세, 손짓, 물건 전달, 책상/문가/침대 같은 주변 구조가 중요하면 medium shot 또는 cowboy shot을 우선한다.
 - 전신 실루엣과 의상 전체가 중요할 때만 full body를 사용한다.
 - 특별한 이유가 없으면 pov는 사용하지 않는다.
+
+[로그 충실도 규칙: 반드시 지킬 것]
+- 로그에 구체적인 소품이 언급되면 반드시 interactionPrompt나 baseScenePrompt에 해당 소품 태그를 넣는다.
+  예: 탕후루 먹는 장면 → tanghulu (food), candy apple on stick / 책 읽는 장면 → holding book / 편지 쓰는 장면 → writing, letter
+- 로그에 없는 소품은 임의로 추가하지 않는다. 닭꼬치가 없으면 chicken skewer를 넣지 않는다.
+- 로그에서 명확히 언급된 행동(먹다, 잡다, 건네다, 눕다 등)을 그에 맞는 Danbooru 태그로 변환한다.
+- 장소/배경도 로그에 언급된 것을 우선한다. 언급이 없으면 분위기/맥락으로 추론한다.
 
 [interactionPrompt 규칙: 행동 먼저, 표정 뒤]
 - interactionPrompt에는 중심 인물의 행동 태그 1~2개를 먼저 넣고, 표정/감정 태그 1~2개를 뒤에 넣는다.
@@ -4195,13 +4202,16 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             return fallbackText ? [{ index: 0, text: fallbackText }] : [];
         }
 
-        return blocks
-            .map((block, index) => {
-                const clone = block.cloneNode(true);
-                stripNonSceneNodes(clone);
-                return { index, text: clone.textContent.replace(/\s+/g, ' ').trim() };
-            })
-            .filter(item => item.text);
+        const result = [];
+        blocks.forEach((block, index) => {
+            const clone = block.cloneNode(true);
+            stripNonSceneNodes(clone);
+            const text = clone.textContent.replace(/\s+/g, ' ').trim();
+            // 텍스트가 없어도 index는 DOM 순서 그대로 유지 — 빈 블록은 간략 표현으로 포함
+            // (커스텀 태그처럼 텍스트 없는 블록도 insertAfterParagraph 카운트에 반영됨)
+            result.push({ index, text: text || `[block-${index}]` });
+        });
+        return result;
     }
 
     function getSceneParagraphWindow(markdown, insertAfterParagraph, radius = 1) {
