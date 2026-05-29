@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.12.1
+// @version      3.1.2
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -136,10 +136,9 @@
 
     /** Zhipu AI (GLM) API 호출 (OpenAI 호환) */
     async function callGlmGenerateContent(request, systemText, userText) {
-        // GM_xmlhttpRequest 페이로드 한계 및 GLM 안정성을 위해 적절히 트리밍
-        // GLM 무료 모델은 128K 컨텍스트 지원이지만 실제 요청 크기는 ~20K chars 이내가 안정적
-        const MAX_SYS_CHARS = 3000;
-        const MAX_USER_CHARS = 6000;
+        // GLM 무료 모델은 128K 컨텍스트 지원, 실제 안정적 요청 크기 기준으로 트리밍
+        const MAX_SYS_CHARS = 6000;
+        const MAX_USER_CHARS = 20000;
         const trimmedSys = systemText.length > MAX_SYS_CHARS
             ? systemText.slice(0, MAX_SYS_CHARS) + '\n...(생략)'
             : systemText;
@@ -451,9 +450,13 @@
         if (provider === 'glm') {
             const systemText = String((payload?.systemInstruction?.parts || [])
                 .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
-            const userText = String((payload?.contents || [])
+            const rawUserGlm = String((payload?.contents || [])
                 .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
             const genCfg = payload?.generationConfig || {};
+            const useJsonGlm = String(genCfg.responseMimeType || '').includes('json');
+            const userText = useJsonGlm
+                ? rawUserGlm + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.'
+                : rawUserGlm;
             return await withRetry(() => callGlmGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP },
                 systemText, userText
@@ -462,8 +465,8 @@
 
         // ── OpenRouter ───────────────────────────────────────────────────
         if (provider === 'openrouter') {
-            const OR_MAX_SYS_CHARS = 3000;
-            const OR_MAX_USER_CHARS = 6000;
+            const OR_MAX_SYS_CHARS = 6000;
+            const OR_MAX_USER_CHARS = 20000;
             const rawSys = String((payload?.systemInstruction?.parts || [])
                 .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
             const rawUser = String((payload?.contents || [])
@@ -471,11 +474,15 @@
             const systemText = rawSys.length > OR_MAX_SYS_CHARS
                 ? rawSys.slice(0, OR_MAX_SYS_CHARS) + '\n...(생략)'
                 : rawSys;
-            const userText = rawUser.length > OR_MAX_USER_CHARS
-                ? rawUser.slice(0, OR_MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
-                : rawUser;
             const genCfg = payload?.generationConfig || {};
             const useJson = String(genCfg.responseMimeType || '').includes('json');
+            const trimmedUser = rawUser.length > OR_MAX_USER_CHARS
+                ? rawUser.slice(0, OR_MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
+                : rawUser;
+            // JSON 응답 강제: 유저 메시지 끝에 명시적 지시 추가 (무료 모델 호환성)
+            const userText = useJson
+                ? trimmedUser + '\n\n[IMPORTANT] Respond with ONLY a valid JSON object. No explanation, no markdown, no code block. Start your response with { and end with }.'
+                : trimmedUser;
             return await withRetry(() => callOpenAiGenerateContent(
                 { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
                   responseFormat: useJson ? { type: 'json_object' } : undefined },
@@ -991,7 +998,9 @@ ${guide}`.trim();
     }
 
     function getDefaultGeminiInstruction() {
-        return `Gemini 장면 태그 생성 지침:
+        return `You are a JSON-only response AI. You MUST output ONLY a single valid JSON object. No explanations, no markdown, no code blocks, no extra text before or after. Just the raw JSON object.
+
+Gemini 장면 태그 생성 지침:
 
 [장면 선택]
 - 채팅 로그에서 삽화로 만들 핵심 순간 하나만 선택한다.
@@ -1058,22 +1067,23 @@ ${guide}`.trim();
 - 최종 프롬프트는 코드에서 composition → interactionPrompt → baseScenePrompt → globalContext 순서로 조립한다.
 - 그러므로 각 필드는 자기 역할의 태그만 넣어야 한다.
 
+RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text):
 {
-  "sceneTitle": "한국어 장면 제목",
-  "insertAfterParagraph": 0,
-  "visibleCharacters": ["저장된 캐릭터 이름 1명"],
-  "mood": "english mood tags",
+  "sceneTitle": "장면 제목 (한국어)",
+  "insertAfterParagraph": 2,
+  "visibleCharacters": ["캐릭터이름"],
+  "mood": "tense, emotional",
   "globalContext": {
-    "locationPrompt": "english place/background tags from the whole log",
-    "timePrompt": "english time/weather tags from the whole log",
-    "atmospherePrompt": "english mood/lighting tags from the whole log",
-    "situationSummary": "전체 로그의 장소와 큰 상황을 한국어로 짧게"
+    "locationPrompt": "indoor, office",
+    "timePrompt": "daytime",
+    "atmospherePrompt": "dim lighting, quiet",
+    "situationSummary": "상황 요약 (한국어)"
   },
-  "composition": "2-3 english camera/framing/view tags only",
-  "baseScenePrompt": "2-4 english background/place/lighting tags only",
-  "interactionPrompt": "2-4 english action/expression tags only",
-  "temporaryOutfitPrompt": "english outfit tags only or empty string",
-  "reason": "왜 이 순간을 골랐는지 한국어로 짧게"
+  "composition": "upper body, looking at viewer",
+  "baseScenePrompt": "office, desk, window, soft light",
+  "interactionPrompt": "standing, worried expression",
+  "temporaryOutfitPrompt": "",
+  "reason": "이 순간을 고른 이유 (한국어)"
 }`;
     }
 
