@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      2.6.6
+// @version      2.11.1
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
+// @connect      api.openai.com
+// @connect      api.anthropic.com
+// @connect      open.bigmodel.cn
+// @connect      openrouter.ai
 // @connect      aiplatform.googleapis.com
 // @connect      *.aiplatform.googleapis.com
 // @connect      image.novelai.net
@@ -46,6 +50,177 @@
         'gemini-2.5-flash',
         'gemini-2.5-flash-lite'
     ];
+
+
+    // ──────────────────────────────────────────────────────────────────
+    // OpenAI / Anthropic Claude / OpenRouter 지원
+    // ──────────────────────────────────────────────────────────────────
+
+    const OPENAI_MODEL_OPTIONS = [
+        'gpt-4o',
+        'gpt-4o-mini',
+        'gpt-4-turbo',
+        'gpt-4.1',
+        'gpt-4.1-mini',
+        'gpt-4.1-nano',
+        'o3-mini',
+        'o4-mini'
+    ];
+
+    const CLAUDE_MODEL_OPTIONS = [
+        'claude-opus-4-5',
+        'claude-sonnet-4-5',
+        'claude-haiku-4-5',
+        'claude-opus-4',
+        'claude-sonnet-4',
+        'claude-3-7-sonnet-20250219',
+        'claude-3-5-sonnet-20241022',
+        'claude-3-5-haiku-20241022'
+    ];
+
+    function normalizeOpenAiModelId(model) {
+        const raw = String(model || 'gpt-4o').trim();
+        return OPENAI_MODEL_OPTIONS.includes(raw) ? raw : 'gpt-4o';
+    }
+
+    function normalizeClaudeModelId(model) {
+        const raw = String(model || 'claude-sonnet-4-5').trim();
+        return CLAUDE_MODEL_OPTIONS.includes(raw) ? raw : 'claude-sonnet-4-5';
+    }
+
+
+    // ── 재시도 래퍼 (429 / 5xx 일시적 에러 자동 재시도) ──────────────────
+    async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = '' } = {}) {
+        const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+        let lastErr;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return await fn();
+            } catch (err) {
+                lastErr = err;
+                const msg = String(err?.message || err || '');
+                // HTTP 상태코드 추출 시도
+                const statusMatch = msg.match(/\b(\d{3})\b/);
+                const status = statusMatch ? Number(statusMatch[1]) : 0;
+                const isRetryable = RETRYABLE.has(status) ||
+                    /rate.?limit|too many|overloaded|provider returned error|service unavailable|시간이 초과|timeout/i.test(msg);
+
+                if (!isRetryable || attempt >= maxRetries) break;
+
+                const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+                console.warn(`[Crack Scene Painter] ${label} 재시도 ${attempt + 1}/${maxRetries} — ${Math.round(delay / 1000)}초 후 재시도. 원인: ${msg.slice(0, 120)}`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+        throw lastErr;
+    }
+
+
+
+
+
+
+    /** Zhipu AI (GLM) API 호출 (OpenAI 호환) */
+    async function callGlmGenerateContent(request, systemText, userText) {
+        // GM_xmlhttpRequest 페이로드 한계 및 GLM 안정성을 위해 적절히 트리밍
+        // GLM 무료 모델은 128K 컨텍스트 지원이지만 실제 요청 크기는 ~20K chars 이내가 안정적
+        const MAX_SYS_CHARS = 3000;
+        const MAX_USER_CHARS = 6000;
+        const trimmedSys = systemText.length > MAX_SYS_CHARS
+            ? systemText.slice(0, MAX_SYS_CHARS) + '\n...(생략)'
+            : systemText;
+        const trimmedUser = userText.length > MAX_USER_CHARS
+            ? userText.slice(0, MAX_USER_CHARS) + '\n...(컨텍스트 길이 초과로 일부 생략)'
+            : userText;
+        const payload = {
+            model: request.model,
+            messages: [
+                ...(trimmedSys ? [{ role: 'system', content: trimmedSys }] : []),
+                { role: 'user', content: trimmedUser }
+            ],
+            temperature: request.temperature ?? 0.18,
+            top_p: request.topP ?? 0.75,
+            max_tokens: 16384,
+            stream: false
+        };
+        const data = await gmRequestJson({
+            method: 'POST',
+            url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${request.apiKey}`
+            },
+            data: payload
+        });
+        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
+        if (!text) {
+            console.warn('[Crack Scene Painter] GLM 응답 디버그:', JSON.stringify({
+                choices: (data?.choices || []).map(c => ({
+                    finish_reason: c.finish_reason,
+                    content: c.message?.content,
+                    role: c.message?.role
+                }))
+            }));
+        }
+        return { _glmRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** OpenAI Chat Completions API 호출 */
+    async function callOpenAiGenerateContent(request, systemText, userText) {
+        // o1/o3/o4 추론 모델은 temperature/top_p 미지원 → 생략
+        const isReasoningModel = /^o\d/.test(String(request.model || ''));
+        const payload = {
+            model: request.model,
+            messages: [
+                ...(systemText ? [{ role: 'system', content: systemText }] : []),
+                { role: 'user', content: userText }
+            ],
+            ...(isReasoningModel ? {} : {
+                temperature: request.temperature ?? 0.18,
+                top_p: request.topP ?? 0.75
+            }),
+            response_format: request.responseFormat ?? undefined
+        };
+        const data = await gmRequestJson({
+            method: 'POST',
+            url: request.url,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${request.apiKey}` },
+            data: payload
+        });
+        const text = (data?.choices || []).map(c => c.message?.content || '').join('\n').trim();
+        return { _openaiRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
+    /** Anthropic Messages API 호출 */
+    async function callAnthropicGenerateContent(request, systemText, userText) {
+        const payload = {
+            model: request.model,
+            max_tokens: 4096,
+            messages: [{ role: 'user', content: userText }],
+            ...(systemText ? { system: systemText } : {}),
+            temperature: request.temperature ?? 0.18
+        };
+        const data = await gmRequestJson({
+            method: 'POST',
+            url: 'https://api.anthropic.com/v1/messages',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': request.apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            data: payload
+        });
+        const text = (data?.content || []).map(c => c.text || '').join('\n').trim();
+        if (!text) {
+            console.warn('[Crack Scene Painter] Anthropic 응답 디버그:', JSON.stringify({
+                stop_reason: data?.stop_reason,
+                content: data?.content,
+                error: data?.error
+            }));
+        }
+        return { _anthropicRaw: data, candidates: [{ content: { parts: [{ text }] } }] };
+    }
+
 
     function normalizeGeminiModelId(model) {
         const raw = String(model || 'gemini-2.5-flash').trim().replace(/^models\//, '');
@@ -228,18 +403,87 @@
     }
 
     async function requestGeminiGenerateContent(geminiRequest, payload) {
-        const payloadWithSafetySettings = withGeminiSafetySettings(payload);
+        const provider = geminiRequest?.provider || 'ai-studio';
 
-        if (geminiRequest?.provider === 'firebase') {
-            return await callFirebaseAiLogicGenerateContent(geminiRequest, payloadWithSafetySettings);
+        // ── OpenAI ──────────────────────────────────────────────────────
+        if (provider === 'openai') {
+            const systemText = String((payload?.systemInstruction?.parts || [])
+                .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
+            const userText = String((payload?.contents || [])
+                .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const genCfg = payload?.generationConfig || {};
+            const useJson = String(genCfg.responseMimeType || '').includes('json');
+            return await withRetry(() => callOpenAiGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
+                  responseFormat: useJson ? { type: 'json_object' } : undefined },
+                systemText, userText
+            ), { label: 'OpenAI' });
         }
 
-        return await gmRequestJson({
+        // ── Anthropic Claude ─────────────────────────────────────────────
+        if (provider === 'anthropic') {
+            const systemText = String((payload?.systemInstruction?.parts || [])
+                .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
+            const userText = String((payload?.contents || [])
+                .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const genCfg = payload?.generationConfig || {};
+            return await withRetry(() => callAnthropicGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature },
+                systemText, userText
+            ), { label: 'Anthropic' });
+        }
+
+        // ── Zhipu AI (GLM) ───────────────────────────────────────────────
+        if (provider === 'glm') {
+            const systemText = String((payload?.systemInstruction?.parts || [])
+                .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
+            const userText = String((payload?.contents || [])
+                .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const genCfg = payload?.generationConfig || {};
+            return await withRetry(() => callGlmGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP },
+                systemText, userText
+            ), { label: 'GLM' });
+        }
+
+        // ── OpenRouter ───────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const systemText = String((payload?.systemInstruction?.parts || [])
+                .map(p => p?.text || '').filter(Boolean).join('\n')).trim();
+            const userText = String((payload?.contents || [])
+                .flatMap(c => c.parts || []).map(p => p?.text || '').join('\n')).trim();
+            const genCfg = payload?.generationConfig || {};
+            const useJson = String(genCfg.responseMimeType || '').includes('json');
+            return await withRetry(() => callOpenAiGenerateContent(
+                { ...geminiRequest, temperature: genCfg.temperature, topP: genCfg.topP,
+                  responseFormat: useJson ? { type: 'json_object' } : undefined },
+                systemText, userText
+            ), { label: 'OpenRouter' });
+        }
+
+        // ── Firebase / Vertex / AI Studio (기존 Gemini 경로) ────────────
+        const payloadWithSafetySettings = withGeminiSafetySettings(payload);
+        if (provider === 'firebase') {
+            return await callFirebaseAiLogicGenerateContent(geminiRequest, payloadWithSafetySettings);
+        }
+        return await withRetry(() => gmRequestJson({
             method: 'POST',
             url: geminiRequest.url,
             headers: geminiRequest.headers,
             data: payloadWithSafetySettings
-        });
+        }), { label: 'Gemini' });
+    }
+
+    /** 현재 설정된 provider의 UI 표시용 이름 반환 */
+    function getProviderDisplayName(global) {
+        const provider = String(global?.geminiProvider || 'ai-studio').trim();
+        if (provider === 'openai') return `OpenAI (${String(global?.openaiModel || 'gpt-4o').trim()})`;
+        if (provider === 'anthropic') return `Claude (${String(global?.claudeModel || 'claude-sonnet-4-5').trim()})`;
+        if (provider === 'glm') return `GLM (${String(global?.glmModel || 'glm-4.5-flash').trim()})`;
+        if (provider === 'openrouter') return `OpenRouter (${String(global?.openrouterModel || 'google/gemini-2.0-flash-exp:free').trim()})`;
+        if (provider === 'vertex') return 'Vertex AI';
+        if (['firebase', 'firebase-ai', 'firebase-ai-logic'].includes(provider)) return 'Firebase AI';
+        return `Gemini (${String(global?.googleModel || 'gemini-2.5-flash').trim()})`;
     }
 
     function getGeminiGenerateContentRequestConfig(global, options = {}) {
@@ -250,6 +494,52 @@
         // Firebase AI Logic 모드가 저장값/버전에 따라 다른 이름으로 들어와도 Firebase 경유로 처리합니다.
         if (['firebase-ai', 'firebase-ai-logic', 'firebase-ailogic', 'Firebase AI Logic Beta'].includes(provider)) {
             provider = 'firebase';
+        }
+
+        // ── OpenAI ───────────────────────────────────────────────────────
+        if (provider === 'openai') {
+            const apiKey = String(global?.openaiApiKey || '').trim();
+            const openaiModel = String(global?.openaiModel || 'gpt-4o').trim();
+            if (!apiKey) {
+                if (silent) return null;
+                throw new Error('OpenAI API Key가 비어 있어요. 설정에서 OpenAI API Key를 입력해줘.');
+            }
+            return { provider: 'openai', model: openaiModel, apiKey,
+                     url: 'https://api.openai.com/v1/chat/completions', headers: {} };
+        }
+
+        // ── Anthropic Claude ─────────────────────────────────────────────
+        if (provider === 'anthropic') {
+            const apiKey = String(global?.anthropicApiKey || '').trim();
+            const claudeModel = String(global?.claudeModel || 'claude-sonnet-4-5').trim();
+            if (!apiKey) {
+                if (silent) return null;
+                throw new Error('Anthropic API Key가 비어 있어요. 설정에서 Anthropic Claude API Key를 입력해줘.');
+            }
+            return { provider: 'anthropic', model: claudeModel, apiKey, headers: {} };
+        }
+
+        // ── Zhipu AI (GLM) ────────────────────────────────────────────────
+        if (provider === 'glm') {
+            const apiKey = String(global?.glmApiKey || '').trim();
+            const glmModel = String(global?.glmModel || 'glm-4.5-flash').trim();
+            if (!apiKey) {
+                if (silent) return null;
+                throw new Error('GLM API Key가 비어 있어요. 설정에서 Zhipu AI API Key를 입력해줘.');
+            }
+            return { provider: 'glm', model: glmModel, apiKey, headers: {} };
+        }
+
+        // ── OpenRouter ────────────────────────────────────────────────────
+        if (provider === 'openrouter') {
+            const apiKey = String(global?.openrouterApiKey || '').trim();
+            const orModel = String(global?.openrouterModel || 'google/gemini-2.0-flash-exp:free').trim();
+            if (!apiKey) {
+                if (silent) return null;
+                throw new Error('OpenRouter API Key가 비어 있어요. 설정에서 OpenRouter API Key를 입력해줘.');
+            }
+            return { provider: 'openrouter', model: orModel, apiKey,
+                     url: 'https://openrouter.ai/api/v1/chat/completions', headers: {} };
         }
 
         // 사용자가 Firebase Config를 넣어둔 상태에서 provider가 Vertex로 남아 있으면
@@ -862,6 +1152,14 @@ ${guide}`.trim();
             firebaseConfigJson: '',
             firebaseLocation: 'global',
             firebaseSdkVersion: '12.5.0',
+            openaiApiKey: '',
+            openaiModel: 'gpt-4o',
+            anthropicApiKey: '',
+            claudeModel: 'claude-sonnet-4-5',
+            glmApiKey: '',
+            glmModel: 'glm-4.5-flash',
+            openrouterApiKey: '',
+            openrouterModel: 'google/gemini-2.0-flash-exp:free',
             naiApiKey: '',
             naiModel: 'nai-diffusion-4-5-full',
             folderSaveEnabled: false,
@@ -7581,9 +7879,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
 
             showToast('⚡ 스피드 모드 시작: 분석 후 바로 생성해요.');
-            showTaskHud('스피드 모드', 'Gemini 분석부터 NAI 생성까지 확인창 없이 바로 진행해.', 10);
+            const _speedProviderName = getProviderDisplayName(getGlobalSettings());
+            showTaskHud('스피드 모드', `AI 분석부터 NAI 생성까지 확인창 없이 바로 진행해.`, 10);
             const ticker = startTaskHudTicker([
-                { title: 'Gemini 분석 중', message: 'AI 답변에서 삽화로 만들 장면을 자동으로 고르는 중이야.', progress: 26 },
+                { title: 'AI 분석 중', message: `${_speedProviderName}에게 장면 분석을 요청했어. 잠깐만 기다려줘.`, progress: 26 },
                 { title: '프롬프트 조립 중', message: '캐릭터 슬롯과 장면 태그를 합쳐 NAI 프롬프트를 만들고 있어.', progress: 48 },
                 { title: 'NAI 생성 중', message: '이미지를 생성하고 있어. 이 단계에서 Anlas가 소모될 수 있어.', progress: 72 },
                 { title: '이미지 삽입 중', message: '생성된 이미지를 답변 문단 사이에 넣고 기록을 저장하고 있어.', progress: 90 }
@@ -7675,7 +7974,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const records = getSceneRecords();
         const record = records[key];
         if (!record) return;
-        if (markdown.querySelector('.csp-generated-scene-image')) return;
+        // React 리렌더링으로 DOM이 교체된 경우를 감지:
+        // 이미지 엘리먼트가 있어도 document에 연결돼 있지 않으면(detached) 재삽입 필요
+        const existing = markdown.querySelector('.csp-generated-scene-image');
+        if (existing && existing.isConnected) return;
 
         normalizeSceneRecordHistory(record, key);
 
@@ -7747,27 +8049,28 @@ ${JSON.stringify(parsedPlan, null, 2)}
             console.log('[Crack Scene Painter] image button clicked:', { key, markdown });
             btn.setAttribute('data-csp-loading', 'true');
             btn.disabled = true;
-            btn.title = 'Gemini가 장면을 분석 중...';
-            showToast('🔎 Gemini가 장면과 삽입 위치를 분석 중...');
+            const _providerName = getProviderDisplayName(getGlobalSettings());
+            btn.title = 'AI가 장면을 분석 중...';
+            showToast(`🔎 ${_providerName}이(가) 장면과 삽입 위치를 분석 중...`);
             showTaskHud('장면 분석 시작', '지금 선택한 AI 답변을 읽고, 어디에 어떤 장면을 넣을지 고르는 중이야.', 10);
             const ticker = startTaskHudTicker([
                 { title: '로그 정리 중', message: '현재 AI 답변의 문단과 장면 흐름을 정리하고 있어.', progress: 24 },
-                { title: 'Gemini 분석 요청', message: 'Gemini API에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.', progress: 46 },
+                { title: 'AI 분석 요청 중', message: `${_providerName}에 장면 분석을 요청했어. 이 단계가 길어지면 API 응답 대기 중일 수 있어.`, progress: 46 },
                 { title: '응답 해석 중', message: '받아온 JSON을 읽고, 삽입 위치와 장면 태그를 정리하고 있어.', progress: 68 },
                 { title: '확인창 준비 중', message: '확인창과 프롬프트 초안을 만들고 있어.', progress: 84 }
             ]);
 
             try {
                 const plan = await generateScenePlanWithGemini(bubble, markdown);
-                console.log('[Crack Scene Painter] Gemini scene plan:', plan);
-                updateTaskHud({ title: '분석 완료', message: 'Gemini 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
+                console.log('[Crack Scene Painter] AI scene plan:', plan);
+                updateTaskHud({ title: '분석 완료', message: 'AI 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
                 showScenePlanModal({ targetBubble: bubble, markdown, plan });
-                showToast('✅ Gemini 분석 완료. 생성 전 확인창을 열었어요.');
+                showToast('✅ AI 분석 완료. 생성 전 확인창을 열었어요.');
                 setTimeout(() => hideTaskHud(), 360);
             } catch (err) {
-                console.error('[Crack Scene Painter] Gemini 분석 실패:', err);
+                console.error('[Crack Scene Painter] AI 분석 실패:', err);
                 updateTaskHud({ title: '분석 실패', message: '버튼을 눌렀는데 아무 창도 안 뜨면 보통 이 단계에서 실패한 거야.\n콘솔의 [Crack Scene Painter] 로그와 오류 메시지를 확인해줘.\n\n사유: ' + err.message, progress: 100, status: 'error' });
-                showToast('⚠️ Gemini 분석 실패: ' + err.message);
+                showToast('⚠️ AI 분석 실패: ' + err.message);
                 setTimeout(() => hideTaskHud(), 1800);
             } finally {
                 ticker.stop();
@@ -8045,6 +8348,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                 <option value="ai-studio" ${(global.geminiProvider || 'ai-studio') === 'ai-studio' ? 'selected' : ''}>Google AI Studio API Key</option>
                                 <option value="vertex" ${global.geminiProvider === 'vertex' ? 'selected' : ''}>Vertex AI OAuth</option>
                                 <option value="firebase" ${global.geminiProvider === 'firebase' ? 'selected' : ''}>Firebase AI Logic Beta</option>
+                                <option value="openai" ${global.geminiProvider === 'openai' ? 'selected' : ''}>OpenAI (GPT)</option>
+                                <option value="anthropic" ${global.geminiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                                <option value="glm" ${global.geminiProvider === 'glm' ? 'selected' : ''}>Zhipu AI (GLM)</option>
+                                <option value="openrouter" ${global.geminiProvider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                             </select>
                         </div>
                         <div class="csp-field">
@@ -8063,6 +8370,82 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     <div class="csp-field">
                         <label>Google Gemini API Key</label>
                         <input id="csp-google-key" type="password" value="${escapeHtml(global.googleApiKey)}" placeholder="AI Studio API 키">
+                    </div>
+                    <div class="csp-section-subbox" id="csp-openai-section" style="display:none;">
+                        <div class="csp-section-title">OpenAI 설정</div>
+                        <div class="csp-grid">
+                            <div class="csp-field">
+                                <label>OpenAI 모델</label>
+                                <select id="csp-openai-model">
+                                    <option value="gpt-4o" ${(global.openaiModel||'gpt-4o')==='gpt-4o'?'selected':''}>gpt-4o</option>
+                                    <option value="gpt-4o-mini" ${global.openaiModel==='gpt-4o-mini'?'selected':''}>gpt-4o-mini</option>
+                                    <option value="gpt-4-turbo" ${global.openaiModel==='gpt-4-turbo'?'selected':''}>gpt-4-turbo</option>
+                                    <option value="gpt-4.1" ${global.openaiModel==='gpt-4.1'?'selected':''}>gpt-4.1</option>
+                                    <option value="gpt-4.1-mini" ${global.openaiModel==='gpt-4.1-mini'?'selected':''}>gpt-4.1-mini</option>
+                                    <option value="gpt-4.1-nano" ${global.openaiModel==='gpt-4.1-nano'?'selected':''}>gpt-4.1-nano</option>
+                                    <option value="o3-mini" ${global.openaiModel==='o3-mini'?'selected':''}>o3-mini</option>
+                                    <option value="o4-mini" ${global.openaiModel==='o4-mini'?'selected':''}>o4-mini</option>
+                                </select>
+                            </div>
+                            <div class="csp-field">
+                                <label>OpenAI API Key</label>
+                                <input id="csp-openai-key" type="password" value="${escapeHtml(global.openaiApiKey||'')}" placeholder="sk-...">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="csp-section-subbox" id="csp-anthropic-section" style="display:none;">
+                        <div class="csp-section-title">Anthropic Claude 설정</div>
+                        <div class="csp-grid">
+                            <div class="csp-field">
+                                <label>Claude 모델</label>
+                                <select id="csp-claude-model">
+                                    <option value="claude-opus-4-5" ${(global.claudeModel||'claude-sonnet-4-5')==='claude-opus-4-5'?'selected':''}>claude-opus-4-5</option>
+                                    <option value="claude-sonnet-4-5" ${(global.claudeModel||'claude-sonnet-4-5')==='claude-sonnet-4-5'?'selected':''}>claude-sonnet-4-5</option>
+                                    <option value="claude-haiku-4-5" ${global.claudeModel==='claude-haiku-4-5'?'selected':''}>claude-haiku-4-5</option>
+                                    <option value="claude-opus-4" ${global.claudeModel==='claude-opus-4'?'selected':''}>claude-opus-4</option>
+                                    <option value="claude-sonnet-4" ${global.claudeModel==='claude-sonnet-4'?'selected':''}>claude-sonnet-4</option>
+                                    <option value="claude-3-7-sonnet-20250219" ${global.claudeModel==='claude-3-7-sonnet-20250219'?'selected':''}>claude-3-7-sonnet-20250219</option>
+                                    <option value="claude-3-5-sonnet-20241022" ${global.claudeModel==='claude-3-5-sonnet-20241022'?'selected':''}>claude-3-5-sonnet-20241022</option>
+                                    <option value="claude-3-5-haiku-20241022" ${global.claudeModel==='claude-3-5-haiku-20241022'?'selected':''}>claude-3-5-haiku-20241022</option>
+                                </select>
+                            </div>
+                            <div class="csp-field">
+                                <label>Anthropic API Key</label>
+                                <input id="csp-anthropic-key" type="password" value="${escapeHtml(global.anthropicApiKey||'')}" placeholder="sk-ant-...">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="csp-section-subbox" id="csp-glm-section" style="display:none;">
+                        <div class="csp-section-title">Zhipu AI (GLM) 설정</div>
+                        <div class="csp-mini-note">bigmodel.cn에서 API Key 발급. 무료 모델은 속도가 느릴 수 있어.</div>
+                        <div class="csp-grid">
+                            <div class="csp-field">
+                                <label>GLM 모델</label>
+                                <select id="csp-glm-model">
+                                    <option value="glm-4.5-flash" ${(global.glmModel||'glm-4.5-flash')==='glm-4.5-flash'?'selected':''}>GLM-4.5-Flash (무료)</option>
+                                    <option value="glm-4.7-flash" ${global.glmModel==='glm-4.7-flash'?'selected':''}>GLM-4.7-Flash (무료)</option>
+                                </select>
+                            </div>
+                            <div class="csp-field">
+                                <label>Zhipu AI API Key</label>
+                                <input id="csp-glm-key" type="password" value="${escapeHtml(global.glmApiKey||'')}" placeholder="Zhipu AI API Key">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="csp-section-subbox" id="csp-openrouter-section" style="display:none;">
+                        <div class="csp-section-title">OpenRouter 설정</div>
+                        <div class="csp-mini-note">openrouter.ai에서 API Key 발급. 무료 모델은 :free 접미사가 붙어.</div>
+                        <div class="csp-grid">
+                            <div class="csp-field">
+                                <label>OpenRouter 모델 ID</label>
+                                <input id="csp-openrouter-model" value="${escapeHtml(global.openrouterModel||'google/gemini-2.0-flash-exp:free')}" placeholder="예: google/gemini-2.0-flash-exp:free">
+                                <div class="csp-mini-note">openrouter.ai/models 에서 확인. 무료 모델은 뒤에 :free 붙여.</div>
+                            </div>
+                            <div class="csp-field">
+                                <label>OpenRouter API Key</label>
+                                <input id="csp-openrouter-key" type="password" value="${escapeHtml(global.openrouterApiKey||'')}" placeholder="sk-or-v1-...">
+                            </div>
+                        </div>
                     </div>
                     <div class="csp-grid">
                         <div class="csp-field">
@@ -8448,11 +8831,63 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         refreshFolderStatus();
 
+        // ── 제공자별 설정 섹션 토글 ──────────────────────────────────────
+        function updateProviderSections() {
+            const provider = overlay.querySelector('#csp-gemini-provider').value;
+            const isGemini = ['ai-studio', 'vertex', 'firebase'].includes(provider);
+
+            // csp-google-model 필드만 숨김 (provider select와 같은 grid이므로 grid 전체는 건드리지 않음)
+            const googleModelField = overlay.querySelector('#csp-google-model');
+            if (googleModelField) {
+                const wrap = googleModelField.closest('.csp-field');
+                if (wrap) wrap.style.display = isGemini ? '' : 'none';
+            }
+
+            // 나머지 Gemini 전용 필드들 (각자 .csp-field 또는 .csp-section-subbox 단위로 숨김)
+            const geminiOnlyIds = ['csp-google-key',
+                'csp-vertex-project', 'csp-vertex-location', 'csp-vertex-token',
+                'csp-firebase-config', 'csp-firebase-location', 'csp-firebase-sdk-version'];
+            geminiOnlyIds.forEach(id => {
+                const el = overlay.querySelector('#' + id);
+                if (!el) return;
+                const wrap = el.closest('.csp-field') || el.closest('.csp-section-subbox');
+                if (wrap) wrap.style.display = isGemini ? '' : 'none';
+            });
+
+            // Vertex grid (Project ID + Location 묶음), Firebase sdk grid 숨김
+            ['csp-vertex-project', 'csp-firebase-location'].forEach(id => {
+                const el = overlay.querySelector('#' + id);
+                if (!el) return;
+                const grid = el.closest('.csp-grid');
+                if (grid) grid.style.display = isGemini ? '' : 'none';
+            });
+
+            // 새 제공자 섹션 표시
+            const openaiSection = overlay.querySelector('#csp-openai-section');
+            const anthropicSection = overlay.querySelector('#csp-anthropic-section');
+            const openrouterSection = overlay.querySelector('#csp-openrouter-section');
+            if (openaiSection) openaiSection.style.display = provider === 'openai' ? '' : 'none';
+            if (anthropicSection) anthropicSection.style.display = provider === 'anthropic' ? '' : 'none';
+            if (openrouterSection) openrouterSection.style.display = provider === 'openrouter' ? '' : 'none';
+            const glmSection = overlay.querySelector('#csp-glm-section');
+            if (glmSection) glmSection.style.display = provider === 'glm' ? '' : 'none';
+        }
+        overlay.querySelector('#csp-gemini-provider').addEventListener('change', updateProviderSections);
+        updateProviderSections(); // 초기 상태 적용
+
         function collectGlobal() {
             return {
                 geminiProvider: overlay.querySelector('#csp-gemini-provider').value,
                 googleApiKey: overlay.querySelector('#csp-google-key').value.trim(),
                 googleModel: normalizeGeminiModelId(overlay.querySelector('#csp-google-model').value),
+                openaiApiKey: overlay.querySelector('#csp-openai-key').value.trim(),
+                openaiModel: overlay.querySelector('#csp-openai-model').value,
+                anthropicApiKey: overlay.querySelector('#csp-anthropic-key').value.trim(),
+                claudeModel: overlay.querySelector('#csp-claude-model').value,
+                glmApiKey: overlay.querySelector('#csp-glm-key').value.trim(),
+                glmModel: overlay.querySelector('#csp-glm-model').value,
+                openrouterApiKey: overlay.querySelector('#csp-openrouter-key').value.trim(),
+                openrouterModel: overlay.querySelector('#csp-openrouter-model').value.trim(),
                 vertexProjectId: overlay.querySelector('#csp-vertex-project').value.trim(),
                 vertexLocation: overlay.querySelector('#csp-vertex-location').value.trim() || 'us-central1',
                 vertexAccessToken: overlay.querySelector('#csp-vertex-token').value.trim(),
