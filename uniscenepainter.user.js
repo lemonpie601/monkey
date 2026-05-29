@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      3.1.3
+// @version      3.1.4
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -8112,8 +8112,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
         btn.setAttribute('aria-label', 'AI 삽화 생성');
         btn.innerHTML = `
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-5-7-4 5.28-3-3.47L5 19h14l-3-7z"/>
-                <circle cx="16" cy="8.5" r="1.5"/>
+                <path d="M12 2l2.09 6.26L20 10l-5.91 1.74L12 18l-2.09-6.26L4 10l5.91-1.74L12 2z"/>
+                <path d="M19 14l1.12 3.38L23.5 18.5l-3.38 1.12L19 23l-1.12-3.38L14.5 18.5l3.38-1.12L19 14z" opacity="0.7"/>
+                <path d="M5 14l.75 2.25L8 17l-2.25.75L5 20l-.75-2.25L2 17l2.25-.75L5 14z" opacity="0.5"/>
             </svg>
         `;
 
@@ -8227,10 +8228,14 @@ ${JSON.stringify(parsedPlan, null, 2)}
             const card = document.createElement('div');
             card.className = 'csp-character-card';
             card.innerHTML = `
-                <div class="csp-character-head">
-                    <span>캐릭터 ${index + 1}</span>
-                    <button class="csp-btn csp-btn-small csp-remove-character" type="button">삭제</button>
+                <div class="csp-character-head" style="cursor:pointer;" data-csp-collapse-toggle>
+                    <span>캐릭터 ${index + 1}${getCharacterSlotName(char) ? ` — ${escapeHtml(getCharacterSlotName(char))}` : ''}</span>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="csp-btn csp-btn-small csp-character-collapse-btn" type="button" title="접기/펼치기">▲</button>
+                        <button class="csp-btn csp-btn-small csp-remove-character" type="button">삭제</button>
+                    </div>
                 </div>
+                <div class="csp-character-body">
                 <div class="csp-field">
                     <label>이름</label>
                     <input class="csp-character-name" value="${escapeHtml(getCharacterSlotName(char))}" placeholder="예: 라자엘">
@@ -8283,7 +8288,30 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     </div>
                     <div class="csp-mini-note">권장: 전신 / 중립 포즈 / 단순 배경 / 얼굴이 잘 보이는 깨끗한 이미지. 업로드 시 선택된 저장 폴더의 <b>CSP_References</b> 하위 폴더에 저장돼.</div>
                 </div>
+                </div>
             `;
+
+            // 접기/펼치기
+            const collapseBtn = card.querySelector('.csp-character-collapse-btn');
+            const body = card.querySelector('.csp-character-body');
+            const head = card.querySelector('[data-csp-collapse-toggle]');
+            let collapsed = false;
+            const toggleCollapse = () => {
+                collapsed = !collapsed;
+                body.style.display = collapsed ? 'none' : '';
+                collapseBtn.textContent = collapsed ? '▼' : '▲';
+                collapseBtn.title = collapsed ? '펼치기' : '접기';
+            };
+            collapseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCollapse(); });
+            head.addEventListener('click', (e) => { if (e.target !== collapseBtn && !e.target.closest('.csp-remove-character')) toggleCollapse(); });
+
+            // 이름 변경 시 헤더 텍스트 업데이트
+            card.querySelector('.csp-character-name').addEventListener('input', (e) => {
+                const nameSpan = head.querySelector('span');
+                const idx = Array.from(container.querySelectorAll('.csp-character-card')).indexOf(card);
+                nameSpan.textContent = `캐릭터 ${idx + 1}${e.target.value ? ' — ' + e.target.value : ''}`;
+            });
+
             card.querySelector('.csp-remove-character').onclick = async () => {
                 const cards = Array.from(container.querySelectorAll('.csp-character-card'));
                 if (cards.length <= 1) {
