@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      3.7.5
+// @version      3.8.4
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -1005,7 +1005,8 @@ Gemini 장면 태그 생성 지침:
 [장면 선택]
 - 채팅 로그에서 삽화로 만들 핵심 순간 하나만 선택한다.
 - 로그 전체 요약, 단체 장면, 모든 캐릭터 모음 장면을 만들지 않는다.
-- visibleCharacters에는 화면 중심에 실제로 보일 저장 캐릭터 이름 1명만 넣는다.
+- insertAfterParagraph로 고를 문단은 반드시 저장된 Character Prompt 슬롯에 있는 캐릭터가 실제로 행동하거나 표정이 묘사되는 문단이어야 한다. 슬롯에 없는 캐릭터가 행동하는 문단은 절대 고르지 말 것.
+- visibleCharacters에는 화면 중심에 실제로 보일 저장 캐릭터 이름 1명만 넣는다. 슬롯에 없는 이름은 절대 넣지 말 것.
 - 단순 언급, 회상, 주변 반응, 멀리 있는 인물은 visibleCharacters에서 제외한다.
 - 사용자의 캐릭터는 화면 밖 상호작용 대상으로 간주하고 visibleCharacters에 넣지 않는다.
 - 코드블록, 상태창, info 박스, 시간/관계/소지품 같은 메타 정보는 장면 본문이 아니므로 핵심 장면 선택에서 제외한다.
@@ -2250,6 +2251,57 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         markSceneButtons(messageKey, false);
     }
 
+
+    async function migrateHashKeysToStableIds() {
+        // data-message-id 기반 키가 도입되기 전에 저장된 해시 키 기록을 새 키로 이전
+        const records = getSceneRecords();
+        const hashKeys = Object.keys(records).filter(k =>
+            // data-message-id는 uuid 패턴, 해시는 숫자+영문 짧은 문자열
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(k) &&
+            !k.includes('::')  // 다중 장면 suffix 제외
+        );
+        if (!hashKeys.length) return;
+
+        // 현재 DOM의 메시지 목록에서 해시 계산해 매핑
+        const markdowns = Array.from(document.querySelectorAll('[data-message-id]'));
+        const migrated = [];
+
+        for (const el of markdowns) {
+            const stableId = el.getAttribute('data-message-id');
+            if (!stableId) continue;
+
+            // 이미 stable ID로 기록이 있으면 skip
+            if (records[stableId]) continue;
+
+            // 마크다운 엘리먼트 찾기
+            const mdEl = el.querySelector('div.space-y-3') || el;
+            const text = cleanMarkdownText(mdEl);
+            const hashKey = hashText(text.slice(0, 1500));
+
+            if (!records[hashKey]) continue;
+
+            // 해시 키 기록을 stable ID로 복사
+            records[stableId] = records[hashKey];
+
+            // 다중 장면(_s1, _s2...) 도 함께 이전
+            for (let i = 1; i <= 5; i++) {
+                const suffix = `_s${i}`;
+                if (records[hashKey + suffix]) {
+                    records[stableId + suffix] = records[hashKey + suffix];
+                    delete records[hashKey + suffix];
+                }
+            }
+
+            delete records[hashKey];
+            migrated.push(hashKey + ' → ' + stableId);
+        }
+
+        if (migrated.length) {
+            saveSceneRecords(records);
+            console.log('[CSP] 해시 키 마이그레이션 완료:', migrated);
+        }
+    }
+
     async function migrateSceneImagesToIndexedDb() {
         const keys = Object.keys(localStorage).filter(key => key.startsWith(`${CSP_PREFIX}_scene_records_`));
         for (const storageKey of keys) {
@@ -2552,6 +2604,12 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
     }
 
     function getMessageKey(markdown) {
+        if (!markdown) return '';
+        // data-message-id가 있으면 그걸 키로 사용 (새로고침 후에도 안정적)
+        const group = markdown.closest?.('[data-message-id]') || (markdown.matches?.('[data-message-id]') ? markdown : null);
+        const stableId = group?.getAttribute('data-message-id');
+        if (stableId) return stableId;
+        // fallback: 텍스트 해시 (기존 방식)
         const text = cleanMarkdownText(markdown);
         return hashText(text.slice(0, 1500));
     }
@@ -2701,10 +2759,6 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 </div>
                 <div class="csp-task-hud-message"></div>
                 <div class="csp-task-hud-bar"><div class="csp-task-hud-bar-fill"></div></div>
-                <div class="csp-task-hud-footer">
-                    <span class="csp-task-hud-progress-label"></span>
-                    <span>오래 걸리면 콘솔 확인</span>
-                </div>
             </div>
         `;
 
@@ -2745,7 +2799,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         if (progress !== undefined) {
             const pct = Math.max(0, Math.min(100, Number(progress) || 0));
             currentTaskHud.barEl.style.width = `${pct}%`;
-            currentTaskHud.labelEl.textContent = `${Math.round(pct)}%`;
+            if (currentTaskHud.labelEl) currentTaskHud.labelEl.textContent = `${Math.round(pct)}%`;
         }
 
         const box = currentTaskHud.el.querySelector('.csp-task-hud');
@@ -2805,7 +2859,13 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 --csp-border: rgba(255,255,255,0.16);
                 --csp-input: rgba(0,0,0,0.34);
                 --csp-input-text: #f5f5f5;
-                --csp-shadow: rgba(0,0,0,0.45);
+                --csp-shadow: rgba(0,0,0,0.55);
+                --csp-accent: #fb7185;
+                --csp-accent-soft: rgba(251,113,133,0.13);
+                --csp-accent-text: #f5b400;
+                --csp-green: #22c55e;
+                --csp-blue: #60a5fa;
+                --csp-yellow: #f59e0b;
                 position: fixed;
                 inset: 0;
                 z-index: 999999;
@@ -2836,7 +2896,13 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 --csp-border: rgba(255,255,255,0.16);
                 --csp-input: rgba(0,0,0,0.34);
                 --csp-input-text: #f5f5f5;
-                --csp-shadow: rgba(0,0,0,0.45);
+                --csp-shadow: rgba(0,0,0,0.55);
+                --csp-accent: #fb7185;
+                --csp-accent-soft: rgba(251,113,133,0.13);
+                --csp-accent-text: #f5b400;
+                --csp-green: #22c55e;
+                --csp-blue: #60a5fa;
+                --csp-yellow: #f59e0b;
             }
             .csp-modal {
                 width: 820px;
@@ -2863,11 +2929,11 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-section {
                 border: 1px solid var(--csp-border);
                 border-radius: 14px;
-                padding: 14px;
-                margin-top: 12px;
+                padding: 12px 14px;
+                margin-top: 10px;
                 background: var(--csp-surface-2);
             }
-            .csp-section-title { font-size: 13px; font-weight: 800; margin-bottom: 10px; color: var(--csp-text); }
+            .csp-section-title { font-size: 11px; font-weight: 800; margin-bottom: 10px; color: var(--csp-accent-text, #ff7060); letter-spacing: 0.06em; text-transform: uppercase; }
             .csp-section-subbox {
                 margin-top: 12px;
                 padding: 12px;
@@ -3022,8 +3088,9 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
             .csp-field label {
                 font-size: 12px;
-                font-weight: 800;
-                color: var(--csp-muted);
+                font-weight: 600;
+                color: var(--csp-text);
+                opacity: 0.7;
                 white-space: normal;
                 word-break: keep-all;
                 overflow-wrap: anywhere;
@@ -3052,8 +3119,8 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-field input:focus,
             .csp-field textarea:focus,
             .csp-field select:focus {
-                border-color: var(--primary, #ff4432);
-                box-shadow: 0 0 0 3px rgba(255, 68, 50, 0.18);
+                border-color: #fb7185;
+                box-shadow: 0 0 0 3px rgba(251,113,133,0.22);
             }
             .csp-actions {
                 display: flex;
@@ -3081,7 +3148,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             }
             .csp-anlas-chip:hover { background: var(--csp-surface-2); }
             .csp-anlas-chip.csp-anlas-cost,
-            .csp-anlas-chip.is-active { color: #ef4444; }
+            .csp-anlas-chip.is-active { color: #fb7185; }
             .csp-anlas-chip[hidden] { display: none !important; }
             .csp-btn {
                 border: 1px solid var(--csp-border);
@@ -3095,9 +3162,9 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             }
             .csp-btn:hover { background: rgba(255,255,255,0.13); }
             .csp-btn-primary {
-                background: var(--primary, #ff4432);
+                background: #fb7185;
                 color: var(--primary-foreground, #fff);
-                border-color: var(--primary, #ff4432);
+                border-color: #fb7185;
             }
             .csp-btn-danger {
                 background: rgba(255, 80, 80, 0.16);
@@ -3325,7 +3392,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 width: 6px;
                 height: 6px;
                 border-radius: 999px;
-                background: var(--primary, #ff4432);
+                background: #fb7185;
             }
             .csp-message-generate-btn[data-csp-loading="true"],
             .csp-message-speed-btn[data-csp-loading="true"] { opacity: 0.55; pointer-events: none; }
@@ -3418,83 +3485,88 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-task-hud-backdrop {
                 position: fixed;
                 left: 50%;
-                bottom: 22px;
+                bottom: 24px;
                 transform: translateX(-50%);
                 z-index: 2147483645;
-                width: min(430px, calc(100vw - 28px));
+                width: min(340px, calc(100vw - 28px));
                 pointer-events: none;
             }
             .csp-task-hud {
                 width: 100%;
-                border-radius: 18px;
-                background: rgba(22, 22, 26, 0.96);
+                border-radius: 14px;
+                background: rgba(20, 20, 23, 0.97);
                 border: 1px solid rgba(255,255,255,0.10);
-                box-shadow: 0 20px 80px rgba(0,0,0,0.35);
-                padding: 15px 16px 14px;
-                color: #f4f4f5;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+                padding: 12px 14px 10px;
+                color: #f0f0f0;
                 pointer-events: auto;
+                backdrop-filter: blur(8px);
             }
             body[data-theme="light"] .csp-task-hud {
-                background: rgba(255,255,255,0.98);
+                background: rgba(255,255,255,0.97);
                 color: #111827;
-                border-color: rgba(31,35,40,0.15);
-                box-shadow: 0 20px 80px rgba(31,35,40,0.18);
+                border-color: rgba(31,35,40,0.12);
+                box-shadow: 0 8px 32px rgba(31,35,40,0.16);
             }
             .csp-task-hud-header {
                 display: grid;
                 grid-template-columns: auto 1fr auto;
                 align-items: center;
-                gap: 12px;
-                margin-bottom: 12px;
+                gap: 10px;
+                margin-bottom: 6px;
             }
             .csp-task-hud-cancel {
-                width: 26px;
-                height: 26px;
+                width: 22px;
+                height: 22px;
                 border-radius: 999px;
-                border: 1px solid rgba(255,255,255,0.16);
-                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.14);
+                background: rgba(255,255,255,0.06);
                 color: inherit;
                 cursor: pointer;
-                font-size: 16px;
+                font-size: 14px;
                 line-height: 1;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
+                opacity: 0.7;
+                transition: opacity 140ms, background 140ms;
             }
-            .csp-task-hud-cancel:hover { background: rgba(255, 68, 50, 0.18); }
+            .csp-task-hud-cancel:hover { opacity: 1; background: rgba(251,113,133,0.18); }
             body[data-theme="light"] .csp-task-hud-cancel {
-                border-color: rgba(31,35,40,0.16);
+                border-color: rgba(31,35,40,0.14);
                 background: rgba(31,35,40,0.04);
             }
             .csp-task-hud-spinner {
-                width: 20px;
-                height: 20px;
+                width: 16px;
+                height: 16px;
                 border-radius: 999px;
-                border: 2px solid rgba(255,255,255,0.22);
-                border-top-color: rgba(255,255,255,0.92);
-                animation: csp-spin 0.8s linear infinite;
+                border: 2px solid rgba(255,255,255,0.15);
+                border-top-color: #fb7185;
+                animation: csp-spin 0.75s linear infinite;
                 flex: 0 0 auto;
             }
             body[data-theme="light"] .csp-task-hud-spinner {
-                border-color: rgba(31,35,40,0.18);
-                border-top-color: rgba(31,35,40,0.76);
+                border-color: rgba(31,35,40,0.14);
+                border-top-color: #fb7185;
             }
             .csp-task-hud-title {
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 700;
-                line-height: 1.25;
+                line-height: 1.3;
             }
             .csp-task-hud-message {
-                font-size: 12px;
-                opacity: 0.72;
-                margin-bottom: 12px;
+                font-size: 11px;
+                opacity: 0.58;
+                margin-bottom: 8px;
                 line-height: 1.45;
-                white-space: pre-wrap;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 word-break: keep-all;
             }
             .csp-task-hud-bar {
                 width: 100%;
-                height: 8px;
+                height: 3px;
                 border-radius: 999px;
                 background: rgba(255,255,255,0.08);
                 overflow: hidden;
@@ -3503,27 +3575,20 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 height: 100%;
                 width: 0%;
                 border-radius: inherit;
-                background: linear-gradient(90deg, #ff6b35 0%, #ff9c63 100%);
+                background: linear-gradient(90deg, #fb7185 0%, #f5b400 100%);
                 transition: width 220ms ease;
-            }
-            .csp-task-hud-footer {
-                margin-top: 8px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 10px;
-                font-size: 11px;
-                opacity: 0.65;
             }
             .csp-task-hud-status-success .csp-task-hud-spinner {
                 animation: none;
-                border-color: rgba(34,197,94,0.28);
-                background: rgba(34,197,94,0.9);
+                border-color: transparent;
+                border-top-color: transparent;
+                background: #22c55e;
             }
             .csp-task-hud-status-error .csp-task-hud-spinner {
                 animation: none;
-                border-color: rgba(239,68,68,0.28);
-                background: rgba(239,68,68,0.9);
+                border-color: transparent;
+                border-top-color: transparent;
+                background: #fb7185;
             }
             .csp-generated-scene-image img {
                 cursor: zoom-in;
@@ -3539,7 +3604,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 font-size: 11px;
                 font-weight: 900;
                 color: var(--primary-foreground, #fff);
-                background: var(--primary, #ff4432);
+                background: #fb7185;
                 line-height: 1;
             }
             /* univers.chat 탭 행에 추가되는 🎨 삽화 탭 버튼 */
@@ -3797,36 +3862,208 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-tab-list {
                 display: flex;
                 gap: 4px;
-                border-bottom: 1px solid var(--csp-border);
-                padding-bottom: 0;
+                padding-bottom: 4px;
                 flex-wrap: wrap;
+                gap: 4px;
             }
             .csp-tab-btn {
-                border: 1px solid transparent;
+                border: none;
                 background: transparent;
                 color: var(--csp-muted);
                 padding: 8px 14px;
-                border-radius: 10px 10px 0 0;
+                border-radius: 8px;
                 cursor: pointer;
                 font-size: 13px;
                 font-weight: 700;
-                border-bottom: none;
-                margin-bottom: -1px;
+                transition: background 140ms, color 140ms;
             }
-            .csp-tab-btn:hover { background: var(--csp-surface-2); }
+            .csp-tab-btn:hover { background: var(--csp-surface-2); color: var(--csp-text); }
             .csp-tab-btn.is-active {
-                background: var(--csp-surface);
-                color: var(--csp-text);
-                border-color: var(--csp-border);
-                border-bottom-color: var(--csp-surface);
+                background: var(--csp-accent-soft, rgba(255,68,50,0.12));
+                color: var(--csp-accent-text, #ff7060);
+                font-weight: 800;
             }
             .csp-tab-panels { margin-top: 12px; }
             .csp-tab-panel { display: none; }
             .csp-tab-panel.is-active { display: block; }
+            .csp-confirm-backdrop {
+                position: fixed;
+                inset: 0;
+                z-index: 9999999;
+                background: rgba(0,0,0,0.60);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .csp-confirm-box {
+                --csp-surface:#1e1d1b;--csp-text:#f0f0f0;--csp-border:rgba(255,255,255,0.12);
+                background: var(--csp-surface);
+                color: var(--csp-text);
+                border: 1px solid var(--csp-border);
+                border-radius: 16px;
+                padding: 22px 24px 18px;
+                width: 320px;
+                max-width: calc(100vw - 32px);
+                box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+                font-family: inherit;
+            }
+            .csp-confirm-box p {
+                margin: 0 0 18px;
+                font-size: 14px;
+                line-height: 1.65;
+                color: var(--csp-text);
+            }
+            .csp-confirm-actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: 8px;
+            }
 
         `;
         document.head.appendChild(style);
     }
+
+
+    function cspRerollGuidance() {
+        return new Promise(resolve => {
+            const backdrop = document.createElement('div');
+            backdrop.className = 'csp-confirm-backdrop';
+            backdrop.innerHTML = `
+                <div class="csp-confirm-box" style="width:300px;">
+                    <p style="margin:0 0 8px;font-size:13px;font-weight:700;opacity:0.9;">리롤 가이던스 <span style="font-weight:400;opacity:0.5;font-size:11px;">선택 · 비우면 바로 리롤</span></p>
+                    <textarea id="csp-guidance-input" rows="2" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(0,0,0,0.30);color:#f0f0f0;padding:8px 10px;font-size:12px;outline:none;font-family:inherit;resize:none;" placeholder="눈물을 흘리며..."></textarea>
+                    <div class="csp-confirm-actions" style="margin-top:10px;">
+                        <button class="csp-btn" id="csp-guidance-cancel" style="font-size:12px;padding:7px 10px;">취소</button>
+                        <button class="csp-btn csp-btn-primary" id="csp-guidance-ok" style="font-size:12px;padding:7px 10px;">리롤</button>
+                    </div>
+                </div>
+            `;
+            const input = backdrop.querySelector('#csp-guidance-input');
+            backdrop.querySelector('#csp-guidance-ok').onclick = () => { backdrop.remove(); resolve(input.value.trim()); };
+            backdrop.querySelector('#csp-guidance-cancel').onclick = () => { backdrop.remove(); resolve(null); };
+            backdrop.addEventListener('mousedown', e => { if (e.target === backdrop) { backdrop.remove(); resolve(null); } });
+            backdrop.addEventListener('keydown', e => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { backdrop.remove(); resolve(input.value.trim()); }
+                if (e.key === 'Escape') { backdrop.remove(); resolve(null); }
+            });
+            document.body.appendChild(backdrop);
+            setTimeout(() => input?.focus(), 50);
+        });
+    }
+
+
+    async function applyGuidanceToPrompt(guidance, currentFinalPrompt, currentPlan) {
+        const global = getGlobalSettings();
+        const geminiRequest = getGeminiGenerateContentRequestConfig(global);
+
+        // scenePrompt만 추출해서 변환 — 아티스트/퀄리티/캐릭터 태그는 건드리지 않음
+        // plan의 scenePrompt가 있으면 그걸 사용, 없으면 finalPrompt에서 추출 시도
+        const scenePrompt = String(currentPlan?.scenePrompt || currentPlan?.baseScenePrompt || '').trim()
+            || currentFinalPrompt;
+
+        const systemText = `You are a NovelAI image prompt specialist with deep knowledge of Danbooru tags.
+Your job is to take an existing SCENE/POSE/EXPRESSION prompt (NOT artist or quality tags) and add or adjust tags based on a natural language guidance hint.
+Output ONLY the modified scene prompt as a comma-separated list of Danbooru tags. No explanation, no markdown, no JSON. Just the raw tag string.
+
+Rules:
+- KEEP all existing scene/pose/expression tags
+- ADD new tags or REPLACE conflicting tags based on the guidance
+- REMOVE tags that directly conflict with the new guidance (e.g. if adding "closed eyes", remove "looking at viewer", "eye contact"; if adding "sleeping", remove "looking at viewer"; if adding "from behind", remove "looking at viewer", "front view")
+- Do NOT output artist tags (artist:xxx), quality tags (score_9, masterpiece etc), or character appearance tags
+- Only output scene, pose, expression, background, lighting, composition tags
+- Always translate natural language to accurate Danbooru tags
+- All output must be English Danbooru tags only
+
+Conflict resolution examples:
+- closed eyes → remove: looking at viewer, eye contact, open eyes
+- eyes closed, sleeping → remove: looking at viewer
+- from behind → remove: looking at viewer, front view, facing viewer
+- turned away → remove: looking at viewer
+- side profile → remove: front view, facing viewer
+
+Natural language → Danbooru tag examples:
+- 정면을 바라보며 → looking at viewer, front view
+- 옆모습 → from side, profile
+- 화난 표정 → angry, furrowed brow
+- 웃는 → smile, happy
+- 울고 있는 / 눈물 → crying, tears, teary eyes
+- 눈을 감은 → closed eyes
+- 앉아있는 → sitting
+- 서있는 → standing
+- 손을 뻗는 → outstretched arm
+- 밤 배경 → night, dark sky
+- 비가 오는 → rain, wet
+- 클로즈업 → close-up, portrait
+- 전신샷 → full body
+- 부드러운 조명 → soft lighting
+- 역광 → backlighting, silhouette`;
+
+        const userText = `Existing scene/pose/expression tags:
+${scenePrompt}
+
+Guidance (natural language):
+${guidance}
+
+Output the modified scene prompt only (no artist/quality/character tags):`;
+
+        const payload = {
+            systemInstruction: { parts: [{ text: systemText }] },
+            contents: [{ role: 'user', parts: [{ text: userText }] }],
+            generationConfig: buildGeminiGenerationConfig(geminiRequest.model, {
+                temperature: 0.3,
+                topP: 0.8
+            })
+        };
+
+        const data = await requestGeminiGenerateContent(geminiRequest, payload);
+        const result = extractTextFromGeminiResponseData(data).trim();
+        if (!result) throw new Error('AI 가이던스 변환 응답이 비어 있어요.');
+        const newScenePrompt = normalizeNaiWeightSyntax(normalizePrompt(result));
+
+        // scenePrompt를 교체해서 finalPrompt 재조립
+        // plan이 있으면 plan.scenePrompt를 교체 후 buildFinalPromptFromPlan로 재조립
+        if (currentPlan?.scenePrompt || currentPlan?.baseScenePrompt) {
+            const room = getRoomSettings();
+            const modifiedPlan = Object.assign({}, currentPlan, {
+                // scenePrompt를 직접 주입하고 하위 필드들은 비워서 scenePrompt가 최우선 사용되도록
+                scenePrompt: newScenePrompt,
+                baseScenePrompt: newScenePrompt,
+                interactionPrompt: '',
+                composition: '',
+                globalContext: null  // globalContext도 이미 scenePrompt에 반영됐으므로 비움
+            });
+            const rebuilt = buildFinalPromptFromPlan(modifiedPlan, room);
+            return { finalPrompt: rebuilt.finalPrompt, basePrompt: rebuilt.basePrompt };
+        }
+
+        // plan 없으면 newScenePrompt를 추가하는 방식으로 fallback
+        const guidedFinal = scenePrompt && currentFinalPrompt.includes(scenePrompt)
+            ? normalizeNaiWeightSyntax(normalizePrompt(currentFinalPrompt.replace(scenePrompt, newScenePrompt)))
+            : normalizeNaiWeightSyntax(normalizePrompt(buildCommaPrompt([currentFinalPrompt, newScenePrompt])));
+        return { finalPrompt: guidedFinal, basePrompt: null };
+    }
+
+    function cspConfirm(message) {
+        return new Promise(resolve => {
+            const backdrop = document.createElement('div');
+            backdrop.className = 'csp-confirm-backdrop';
+            backdrop.innerHTML = `
+                <div class="csp-confirm-box">
+                    <p></p>
+                    <div class="csp-confirm-actions">
+                        <button class="csp-btn" id="csp-confirm-cancel">취소</button>
+                        <button class="csp-btn csp-btn-danger" id="csp-confirm-ok">확인</button>
+                    </div>
+                </div>
+            `;
+            backdrop.querySelector('p').textContent = message;
+            backdrop.querySelector('#csp-confirm-ok').onclick = () => { backdrop.remove(); resolve(true); };
+            backdrop.querySelector('#csp-confirm-cancel').onclick = () => { backdrop.remove(); resolve(false); };
+            backdrop.addEventListener('mousedown', e => { if (e.target === backdrop) { backdrop.remove(); resolve(false); } });
+            document.body.appendChild(backdrop);
+        });
+    }
+
 
     function hasAllClasses(el, classes) {
         if (!el || !el.classList) return false;
@@ -4467,6 +4704,14 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 <div class="csp-desc">공통 설정과 캐릭터 슬롯 원본은 건드리지 않고, 이 이미지 기록만 수정해서 다시 생성해.</div>
 
                 <div class="csp-section">
+                    <div class="csp-section-title">리롤 가이던스</div>
+                    <div class="csp-field">
+                        <textarea id="csp-edit-guidance" rows="2" placeholder="AI가 다른 방향으로 응답하도록 힌트를 입력하세요. (선택)&#10;예: 더 유머러스하게, 캐릭터가 화난 상태로, 다른 선택을 해줘..."></textarea>
+                        <div class="csp-mini-note">입력한 텍스트가 Final Prompt 뒤에 추가돼요.</div>
+                    </div>
+                </div>
+
+                <div class="csp-section">
                     <div class="csp-section-title">Prompt</div>
                     <div class="csp-field">
                         <label>Base Prompt</label>
@@ -4734,10 +4979,17 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 btn.disabled = true;
                 btn.textContent = '리롤 중...';
                 const targetImg = img || targetBox?.querySelector('img');
+                const _editGuidance = overlay.querySelector('#csp-edit-guidance')?.value.trim() || '';
+                let _editFinalPrompt = state.finalPrompt;
+                if (_editGuidance) {
+                    btn.textContent = 'AI 변환 중...';
+                    _editFinalPrompt = await applyGuidanceToPrompt(_editGuidance, state.finalPrompt, record.plan || {});
+                    btn.textContent = '리롤 중...';
+                }
                 const nextImageUrl = await generateImageWithNai({
                     basePrompt: state.basePrompt,
                     baseNegative: state.baseNegative,
-                    finalPrompt: state.finalPrompt,
+                    finalPrompt: _editFinalPrompt,
                     finalNegative: state.finalNegative,
                     charPrompts: state.charPrompts,
                     settings
@@ -5306,7 +5558,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 }
 
                 if (action === 'delete') {
-                    const ok = confirm('현재 보고 있는 갤러리 이미지를 삭제할까요?\n채팅창에 삽입된 이미지도 같은 기록이면 함께 갱신돼요.');
+                    const ok = await cspConfirm('현재 보고 있는 갤러리 이미지를 삭제할까요?\n채팅창에 삽입된 이미지도 같은 기록이면 함께 갱신돼요.');
                     if (!ok) return;
                     const result = await deleteGalleryHistoryImage(messageKey, galleryIndex);
                     if (!result?.removedAll) {
@@ -5609,6 +5861,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .map((c, i) => `캐릭터 ${i + 1}\n이름: ${c.name || '(이름 없음)'}\n외형 태그: ${c.appearanceTags || c.tags || '(태그 없음)'}\n기본 의상 태그: ${c.outfitTags || '(없음)'}\nUC: ${c.uc || '(없음)'}\nReference: ${c.referenceEnabled && c.referenceAssetId ? getReferenceTypeLabel(c.referenceType) : '(없음)'}`)
             .join('\n\n');
 
+        console.log('[CSP] buildGeminiUserPrompt 슬롯:', (room.characters||[]).filter(hasCharacterSlotContent).map(c=>c.name));
         return `아래 Crack 채팅 로그를 분석해서, 현재 사용자가 누른 AI 답변 안에 삽화를 넣을 위치와 장면 태그를 결정해줘.
 
 [현재 채팅방 Character Prompt 슬롯]
@@ -5627,9 +5880,12 @@ ${JSON.stringify(paragraphs, null, 2)}
 - 대상 AI 답변 전체를 복제하지 말고, 삽화로 만들 핵심 순간 하나만 고른다.
 - insertAfterParagraph는 반드시 대상 AI 답변 문단 목록에 있는 index 중 하나여야 함.
 - 상태창/시간 표시/코드블록/메타 정보가 아니라 실제 행동/표정/감정이 드러나는 본문 문단 뒤를 우선한다.
-- visibleCharacters는 네가 고른 핵심 순간의 화면 중심 저장 캐릭터 1명만 넣는다.
-- 같은 답변 안에 이름이 언급되어도, 선택한 순간의 중심 인물이 아니면 visibleCharacters에서 제외한다.
-- 캐릭터 슬롯이 여러 개 있어도 모든 저장 캐릭터를 억지로 넣지 않는다.
+- insertAfterParagraph로 고를 문단은 반드시 위 [Character Prompt 슬롯]에 있는 캐릭터가 실제로 행동하거나 표정이 묘사되는 문단이어야 한다.
+- 슬롯에 없는 캐릭터(예: 령, 민수 등 슬롯 목록에 없는 이름)가 행동하는 문단은 절대 고르지 말 것.
+- 슬롯 캐릭터가 등장하는 문단이 없으면 슬롯 캐릭터가 가장 가까이 언급된 문단을 고른다.
+- visibleCharacters에는 위 [Character Prompt 슬롯] 목록에 있는 이름만 넣을 수 있다. 슬롯에 없는 이름은 절대 넣지 말 것.
+- 선택한 문단에서 실제로 행동·표정이 묘사된 슬롯 캐릭터 1명만 visibleCharacters에 넣는다.
+- 슬롯 이름 중 해당 장면에 등장하는 인물이 없으면 visibleCharacters는 빈 배열로 둔다.
 - 전체 프롬프트를 만들지 말고 globalContext / baseScenePrompt / composition / interactionPrompt / temporaryOutfitPrompt / visibleCharacters만 생성해야 함.
 - globalContext에는 전체 답변에서 파악한 장소/시간대/큰 상황/분위기를 저장한다.
 - composition은 2~3개만 생성한다: 카메라 거리 1개 + 시점/시선 1~2개.
@@ -5654,7 +5910,7 @@ ${JSON.stringify(paragraphs, null, 2)}
   "sceneTitle": "장면 제목",
   "insertAfterParagraph": 0,
   "characterCount": 1,
-  "visibleCharacters": ["저장된 캐릭터 이름 1명"],
+  "visibleCharacters": ["위 슬롯 목록에서 이 장면에 실제 등장하는 캐릭터 이름 1개, 없으면 빈 배열"],
   "mood": "english mood tags",
   "globalContext": {
     "locationPrompt": "english place/background tags from the whole log",
@@ -6440,9 +6696,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         let selected = [];
 
         if (visibleNames.length) {
+            // 정확 일치 우선
             selected = characters.filter(c => {
                 const cname = String(c.name || '').trim().toLowerCase();
-                return cname && visibleNames.some(n => n === cname || n.includes(cname) || cname.includes(n));
+                return cname && visibleNames.some(n => n === cname);
             });
         }
 
@@ -6551,14 +6808,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const low = raw.toLowerCase();
         const characters = (room.characters || []).filter(hasCharacterSlotContent);
 
+        // 정확 일치만 허용. 부분 포함(fuzzy)은 다른 캐릭터를 잘못 매칭할 수 있어서 제거.
         const exact = characters.find(c => String(c.name || '').trim().toLowerCase() === low);
-        if (exact?.name) return String(exact.name).trim();
-
-        const fuzzy = characters.find(c => {
-            const cname = String(c.name || '').trim().toLowerCase();
-            return cname && (low.includes(cname) || cname.includes(low));
-        });
-        return fuzzy?.name ? String(fuzzy.name).trim() : '';
+        return exact?.name ? String(exact.name).trim() : '';
     }
 
     function normalizeVisibleCharacters(plan, room, markdown, insertAfterParagraph) {
@@ -6574,18 +6826,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         let visible = Array.from(new Set(canonicalFromPlan));
 
-        // Gemini가 전체 답변에 나온 캐릭터를 과하게 넣는 경우를 막기 위해,
-        // 삽입 문단 주변에 실제 이름이 잡히면 그 주변 문단 기준으로 한 번 더 거릅니다.
-        if (namesInSceneWindow.length) {
-            const sceneSet = new Set(namesInSceneWindow.map(name => name.toLowerCase()));
-            visible = visible.filter(name => sceneSet.has(name.toLowerCase()));
-
-            if (!visible.length) {
-                visible = namesInSceneWindow;
-            }
-        }
-
-        // Gemini가 비웠을 때만 삽입 문단 주변 이름으로 보조 추론합니다.
+        // AI가 슬롯 이름을 정확히 반환했으면 그걸 신뢰.
+        // sceneWindow 추론은 AI 응답이 완전히 비어 매칭 실패했을 때만 fallback으로 사용.
         if (!visible.length) {
             visible = namesInSceneWindow;
         }
@@ -7116,42 +7358,50 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 return;
             }
 
+            const _guidance = await cspRerollGuidance();
+            if (_guidance === null) return; // 취소
+
             const oldText = rerollBtn.textContent;
             rerollBtn.disabled = true;
             rerollBtn.setAttribute('data-csp-loading', 'true');
             rerollBtn.textContent = '⏳';
-            showToast('🎲 최신 설정으로 다시 생성 중...');
+            showTaskHud(_guidance ? 'AI 가이던스 적용 중' : '리롤 중', _guidance ? '자연어 힌트를 프롬프트로 변환하고 있어.' : '최신 설정으로 이미지를 다시 생성 중이야.', 10);
 
             try {
                 const currentGlobal = getGlobalSettings();
                 const currentRoom = getRoomSettings();
                 const settings = Object.assign({}, getDefaultGlobalSettings().naiSettings, currentGlobal.naiSettings || {});
 
-                let nextPromptState = {
-                    basePrompt: record.basePrompt || '',
-                    baseNegative: record.baseNegative || '',
-                    finalPrompt: record.finalPrompt,
-                    finalNegative: record.finalNegative || '',
-                    charPrompts: record.charPrompts || []
-                };
-
+                // 항상 현재 설정 기준으로 재계산
+                let nextPromptState;
                 if (record.plan) {
                     nextPromptState = buildFinalPromptFromPlan(record.plan, currentRoom);
                 } else {
-                    nextPromptState.basePrompt = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.basePositive || ''));
-                    nextPromptState.baseNegative = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.baseNegative || ''));
-                    nextPromptState.finalNegative = buildCommaPrompt([
-                        nextPromptState.baseNegative,
-                        buildCommaPrompt((currentRoom.characters || []).map(char => char.uc || ''))
-                    ]);
+                    const _basePrompt = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.basePositive || ''));
+                    const _baseNegative = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.baseNegative || ''));
+                    const _charUc = buildCommaPrompt((currentRoom.characters || []).map(char => char.uc || ''));
+                    nextPromptState = {
+                        basePrompt: _basePrompt,
+                        baseNegative: _baseNegative,
+                        finalPrompt: record.finalPrompt || '',
+                        finalNegative: buildCommaPrompt([_baseNegative, _charUc]),
+                        charPrompts: record.charPrompts || []
+                    };
                 }
 
-                console.log('[Crack Scene Painter] reroll negative:', nextPromptState.finalNegative);
+                let _guidedFinalPrompt = nextPromptState.finalPrompt;
+                let _guidedBasePrompt = nextPromptState.basePrompt || '';
+                if (_guidance) {
+                    const _guidedResult = await applyGuidanceToPrompt(_guidance, nextPromptState.finalPrompt, record.plan || {});
+                    _guidedFinalPrompt = typeof _guidedResult === 'string' ? _guidedResult : (_guidedResult?.finalPrompt || nextPromptState.finalPrompt);
+                    _guidedBasePrompt = (typeof _guidedResult === 'object' && _guidedResult?.basePrompt) ? _guidedResult.basePrompt : _guidedBasePrompt;
+                }
+                updateTaskHud({ title: 'NAI 생성 중', message: '이미지를 생성하고 있어.', progress: 50 });
 
                 const nextImageUrl = await generateImageWithNai({
-                    basePrompt: nextPromptState.basePrompt || '',
+                    basePrompt: _guidedBasePrompt,
                     baseNegative: nextPromptState.baseNegative || '',
-                    finalPrompt: nextPromptState.finalPrompt,
+                    finalPrompt: _guidedFinalPrompt,
                     finalNegative: nextPromptState.finalNegative,
                     charPrompts: nextPromptState.charPrompts || [],
                     settings
@@ -7166,9 +7416,9 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                         Number.isFinite(record.paragraphIndex) ? record.paragraphIndex : (record.plan?.insertAfterParagraph || 0),
                         'nai',
                         {
-                            basePrompt: nextPromptState.basePrompt || '',
+                            basePrompt: _guidedBasePrompt,
                             baseNegative: nextPromptState.baseNegative || '',
-                            finalPrompt: nextPromptState.finalPrompt,
+                            finalPrompt: _guidedFinalPrompt,
                             charPrompts: nextPromptState.charPrompts || [],
                             referenceInfo: getReferenceSummary(nextPromptState.charPrompts || []),
                             naiSettings: settings
@@ -7180,9 +7430,9 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 const currentHistoryItem = await appendSceneHistoryImage(messageKey, record, nextImageUrl);
 
                 record.mode = 'nai';
-                record.basePrompt = nextPromptState.basePrompt || '';
+                record.basePrompt = _guidedBasePrompt;
                 record.baseNegative = nextPromptState.baseNegative || '';
-                record.finalPrompt = nextPromptState.finalPrompt;
+                record.finalPrompt = _guidedFinalPrompt;
                 record.finalNegative = nextPromptState.finalNegative || '';
                 record.charPrompts = nextPromptState.charPrompts || [];
                 record.referenceInfo = getReferenceSummary(nextPromptState.charPrompts || []);
@@ -7201,10 +7451,15 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 records[messageKey] = record;
                 saveSceneRecords(records);
                 refreshImageHistoryControls(messageKey, box, record);
+                updateTaskHud({ title: '리롤 완료 ✅', message: '', progress: 100, status: 'success' });
+                setTimeout(() => hideTaskHud(), 400);
                 showToast('🔄 리롤 완료');
             } catch (err) {
                 console.error('[Crack Scene Painter] reroll failed:', err);
-                showToast('⚠️ 리롤 실패: ' + err.message);
+                hideTaskHud(true);
+                if (!String(err?.message || '').includes('aborted')) {
+                    showToast('⚠️ 리롤 실패: ' + err.message);
+                }
             } finally {
                 rerollBtn.disabled = false;
                 rerollBtn.removeAttribute('data-csp-loading');
@@ -7561,7 +7816,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                                             <input id="csp-nai-steps-range" type="range" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                             <input id="csp-nai-steps" class="csp-range-number" type="text" inputmode="decimal" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                         </div>
-                                        <div class="csp-mini-note">29 이상부터 추가 Anlas 소모.</div>
+
                                     </div>
                                     <div class="csp-field">
                                         <div class="csp-label-row"><label>Prompt Guidance</label><span class="csp-value-chip" id="csp-nai-scale-value">${escapeHtml(Number(settings.scale ?? 6.5).toFixed(1))}</span></div>
@@ -7939,7 +8194,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             saveGlobalSettings(nextGlobal);
         }
 
-        overlay.querySelector('#csp-plan-close').onclick = () => overlay.remove();
+        overlay.querySelector('#csp-plan-close').onclick = () => _closeModal('cancelled');
 
         overlay.querySelector('#csp-copy-final').onclick = async () => {
             await navigator.clipboard.writeText(finalPromptEl.value);
@@ -7963,7 +8218,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             try {
                 const finalNegativeForRequest = finalNegativeEl.value.trim();
                 if (!finalNegativeForRequest) {
-                    const proceed = confirm('현재 Negative / UC가 비어 있어요. 그대로 생성할까요?');
+                    const proceed = await cspConfirm('Negative / UC가 비어 있어요. 그대로 생성할까요?');
                     if (!proceed) return;
                 }
 
@@ -7994,7 +8249,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     sceneIndex,
                     keepExisting: sceneIndex > 0
                 });
-                _closeModal();
+                _closeModal('done');
             } catch (err) {
                 console.error('[Crack Scene Painter] NAI generation failed:', err);
                 showToast('⚠️ NAI 생성 실패: ' + err.message);
@@ -8004,13 +8259,13 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             }
         };
 
-        const _closeModal = () => { overlay.remove(); resolveModal(); };
+        const _closeModal = (reason = 'cancelled') => { overlay.remove(); resolveModal(reason); };
         overlay.addEventListener('mousedown', (e) => {
-            if (e.target === overlay) _closeModal();
+            if (e.target === overlay) _closeModal('cancelled');
         });
 
         // 취소 버튼
-        overlay.querySelector('#csp-cancel-plan')?.addEventListener('click', _closeModal);
+        overlay.querySelector('#csp-cancel-plan')?.addEventListener('click', () => _closeModal('cancelled'));
 
         refreshAnlasBalance(true);
         document.body.appendChild(overlay);
@@ -8097,6 +8352,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 _plan.charactersInScene = _plan.visibleCharacters.slice();
                 _plan.characterCount = Math.max(1, _plan.visibleCharacters.length || 1);
                 _plan.useTemporaryOutfit = !!_plan.temporaryOutfitPrompt;
+                showToast(`🔍 [스피드] AI원본: [${(_fallback).join(', ')||'없음'}] → 최종: [${_chosen||'없음'}]`);
 
                 // 2. NAI 생성
                 updateTaskHud({ title: `NAI 생성 중${_stepLabel}`, message: `"${_plan.sceneTitle || '장면'}" — Anlas 소모 중.`, progress: _pct + 25 });
@@ -8168,9 +8424,15 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
         return btn;
     }
 
+    const _reapplyInProgress = new WeakSet();
     async function reapplySavedScene(markdown) {
+        if (!markdown) return;
+        if (_reapplyInProgress.has(markdown)) return;
+        _reapplyInProgress.add(markdown);
+        try {
         const baseKey = getMessageKey(markdown);
         const records = getSceneRecords();
+
 
         // 다중 장면 복원: baseKey, baseKey_s1, baseKey_s2 순서로 복원
         const keysToRestore = [baseKey];
@@ -8229,6 +8491,9 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
         });
         markSceneButtons(key, true);
         } // end for keysToRestore
+        } finally {
+            _reapplyInProgress.delete(markdown);
+        }
     }
 
     function makeMessageGenerateButton(bubble, markdown) {
@@ -8331,11 +8596,14 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     _plan.insertAfterParagraph = _adjIdx;
                     usedParagraphs.add(_adjIdx);
                     console.log(`[Crack Scene Painter] AI scene plan ${_i + 1}/${_sceneCount}:`, _plan);
+                    showToast(`🔍 AI가 고른 캐릭터: [${(_plan.visibleCharacters || []).join(', ') || '없음'}]`);
 
                     updateTaskHud({ title: `분석 완료 (${_i + 1}/${_sceneCount})`, message: '확인창을 열어줄게. 닫으면 다음 장면 분석을 시작해.', progress: 100, status: 'success' });
                     setTimeout(() => hideTaskHud(true), 300);
 
-                    await showScenePlanModal({ targetBubble: bubble, markdown, plan: _plan, sceneIndex: _i });
+                    showToast(`🔍 [모달] AI 반환: [${(_plan.visibleCharacters||[]).join(', ')||'없음'}]`);
+                    const _modalResult = await showScenePlanModal({ targetBubble: bubble, markdown, plan: _plan, sceneIndex: _i });
+                    if (_modalResult === 'cancelled') break;
                 }
 
                 showToast(`✅ ${_sceneCount}개 장면 분석/생성 완료`);
@@ -8624,9 +8892,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
         overlay.innerHTML = `
             <div class="csp-modal" role="dialog" aria-modal="true">
                 <h2>🎨 Uni Scene Painter 설정</h2>
-                <div class="csp-desc">
-                    Gemini: 장면/삽입 위치 분석<br>NAI: 실제 이미지 생성<br>채팅방 ID: <b>${escapeHtml(roomId)}</b>
-                </div>
+                <div class="csp-desc">채팅방 <b>${escapeHtml(roomId)}</b></div>
 
                 <div class="csp-tab-shell">
                     <div class="csp-tab-list" role="tablist" aria-label="Scene Painter 설정 탭">
@@ -8715,7 +8981,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     </div>
                     <div class="csp-section-subbox" id="csp-glm-section" style="display:none;">
                         <div class="csp-section-title">Zhipu AI (GLM) 설정</div>
-                        <div class="csp-mini-note">bigmodel.cn에서 API Key 발급. 무료 모델은 속도가 느릴 수 있어.</div>
+
                         <div class="csp-grid">
                             <div class="csp-field">
                                 <label>GLM 모델</label>
@@ -8732,12 +8998,12 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     </div>
                     <div class="csp-section-subbox" id="csp-openrouter-section" style="display:none;">
                         <div class="csp-section-title">OpenRouter 설정</div>
-                        <div class="csp-mini-note">openrouter.ai에서 API Key 발급. 무료 모델은 :free 접미사가 붙어.</div>
+
                         <div class="csp-grid">
                             <div class="csp-field">
                                 <label>OpenRouter 모델 ID</label>
                                 <input id="csp-openrouter-model" value="${escapeHtml(global.openrouterModel||'google/gemini-2.0-flash-exp:free')}" placeholder="예: google/gemini-2.0-flash-exp:free">
-                                <div class="csp-mini-note">openrouter.ai/models 에서 확인. 무료 모델은 뒤에 :free 붙여.</div>
+
                             </div>
                             <div class="csp-field">
                                 <label>OpenRouter API Key</label>
@@ -8758,12 +9024,12 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     <div class="csp-field">
                         <label>Vertex OAuth Access Token</label>
                         <input id="csp-vertex-token" type="password" value="${escapeHtml(global.vertexAccessToken || '')}" placeholder="ya29...">
-                        <div class="csp-mini-note">Vertex AI 사용 시 입력해.<br>Gemini 3.x에서 404가 나면 Vertex Location을 global로 바꿔봐.</div>
+                        <div class="csp-mini-note">Gemini 3.x 404 오류 시 Location → global</div>
                     </div>
                     <div class="csp-field">
-                        <label>Firebase Config JSON / JS 객체 <span class="csp-mini-note">(Beta)</span></label>
+                        <label>Firebase Config <span style="opacity:0.5;font-weight:400;">(Beta)</span></label>
                         <textarea id="csp-firebase-config" placeholder='const firebaseConfig = { apiKey: "...", authDomain: "...", projectId: "...", appId: "..." };'>${escapeHtml(global.firebaseConfigJson || '')}</textarea>
-                        <div class="csp-mini-note">Firebase AI Logic Beta용이야.<br>Firebase 콘솔에서 복사한 firebaseConfig 객체를 그대로 붙여넣어.<br>이 모드에서는 Vertex OAuth Access Token을 쓰지 않아.</div>
+                        <div class="csp-mini-note">Firebase 콘솔의 firebaseConfig 객체를 붙여넣기</div>
                     </div>
                     <div class="csp-grid">
                         <div class="csp-field">
@@ -8790,13 +9056,13 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                         <div class="csp-tab-panel" data-csp-tab-panel="characters" role="tabpanel">
                 <div class="csp-section">
                     <div class="csp-section-title">현재 채팅방 Character Prompt 슬롯</div>
-                    <div class="csp-mini-note">이 방에만 저장되는 캐릭터 슬롯이야. 여러 방에서 같은 캐릭터를 쓸 땐 아래 퀵 슬롯으로 저장/불러오기 가능.</div>
+
                     <div id="csp-character-list"></div>
                     <button class="csp-btn csp-btn-small" id="csp-add-character" type="button">+ 캐릭터 추가</button>
 
                     <div class="csp-section-subbox">
                         <div class="csp-section-title">퀵 슬롯</div>
-                        <div class="csp-mini-note">현재 캐릭터 슬롯 묶음을 전역 저장해두고, 다른 채팅방에서 바로 불러올 수 있어.</div>
+
                         <div class="csp-grid csp-quick-slot-grid">
                             <div class="csp-field">
                                 <label>저장 / 덮어쓰기 이름</label>
@@ -8830,26 +9096,25 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                             </select>
                         </div>
                         <textarea id="csp-base-negative" class="csp-long" placeholder="bad anatomy, blurry...">${escapeHtml(global.baseNegative || '')}</textarea>
-                        <div class="csp-mini-note">기본 생성/리롤 설정에 사용할 NAI UC 프리셋. 실제 생성 시 직접 쓴 UC와 합쳐서 전송돼.</div>
+
                     </div>
                     <div class="csp-field">
-                        <label>Gemini 장면 태그 지침</label>
-                        <div class="csp-mini-note">장면 태그 생성용 보조 지침.<br>짧고 안정적인 태그를 만들 때 사용해.</div>
+                        <label>Gemini 태그 지침 (보조)</label>
                         <textarea id="csp-nai-prompt-guide" class="csp-long">${escapeHtml(global.naiPromptGuide || getDefaultNaiPromptGuide())}</textarea>
                     </div>
                 </div>
                 <div class="csp-section">
                     <div class="csp-section-title">Gemini 분석 지침</div>
                     <div class="csp-field">
-                        <label>Gemini 분석 지침<br><span class="csp-mini-note">로그를 읽고 장면 태그를 만들 때 사용</span></label>
+                        <label>Gemini 분석 지침</label>
                         <textarea id="csp-gemini-instruction" class="csp-long">${escapeHtml(global.geminiInstruction)}</textarea>
                     </div>
                 </div>
                         </div>
                         <div class="csp-tab-panel" data-csp-tab-panel="advanced" role="tabpanel">
                 <div class="csp-section">
-                    <div class="csp-section-title">🎬 다중 장면 생성</div>
-                    <div class="csp-mini-note">한 AI 답변에서 여러 장면을 골라 각각 이미지를 만들어. 장면 수가 많을수록 Anlas 소모가 늘어.</div>
+                    <div class="csp-section-title">다중 장면 생성</div>
+
                     <div class="csp-grid">
                         <div class="csp-field">
                             <label>장면 수 <span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:99px;font-weight:700;vertical-align:middle;margin-left:4px;">BETA</span></label>
@@ -8858,13 +9123,13 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                                 <option value="2" ${(global.multiSceneCount||1) == 2 ? 'selected' : ''}>2장면</option>
                                 <option value="3" ${(global.multiSceneCount||1) == 3 ? 'selected' : ''}>3장면</option>
                             </select>
-                            <div class="csp-mini-note">2장면 이상이면 분석→생성→삽입을 장면 수만큼 반복해. 스피드 모드도 동일.</div>
+
                         </div>
                     </div>
                 </div>
                 <div class="csp-section">
                     <div class="csp-section-title">공통 NAI 생성 설정</div>
-                    <div class="csp-mini-note">SMEA/DYN·다중 생성은 비활성화.<br>항상 1장만 생성해.</div>
+
                     <div class="csp-grid">
                         <div class="csp-field">
                             <label>Resolution</label>
@@ -8889,7 +9154,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                                 <input id="csp-default-steps-range" type="range" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                 <input id="csp-default-steps" class="csp-range-number" type="text" inputmode="decimal" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                             </div>
-                            <div class="csp-mini-note">29 이상부터 추가 Anlas 소모.</div>
+
                         </div>
                         <div class="csp-field">
                             <div class="csp-label-row"><label>Prompt Guidance</label><span class="csp-value-chip" id="csp-default-scale-value">${escapeHtml(Number(settings.scale ?? 6.5).toFixed(1))}</span></div>
@@ -8934,7 +9199,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                     <div class="csp-section-title">이미지 저장</div>
                     <label class="csp-check-row">
                         <input id="csp-folder-save-enabled" type="checkbox" ${global.folderSaveEnabled ? 'checked' : ''}>
-                        NAI 생성 이미지를 선택 폴더에도 자동 저장<br><span class="csp-mini-note">Reference 이미지는 CSP_References 폴더 사용</span>
+                        NAI 생성 이미지를 선택 폴더에도 자동 저장
                     </label>
                     <div class="csp-actions-left">
                         <button class="csp-btn csp-btn-small" id="csp-choose-image-folder" type="button">이미지 저장 폴더 선택</button>
@@ -8944,16 +9209,11 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 </div>
                 <div class="csp-section">
                     <div class="csp-section-title">저장소 관리</div>
-                    <div class="csp-mini-note">
-                        v4.23부터 설정/삽화 기록은 자동 압축 저장하고, 긴 프롬프트 상세는 IndexedDB 보조 저장소로 분리해 localStorage 용량 초과를 줄여.
-                    </div>
                     <div class="csp-storage-status" id="csp-storage-status">저장소 상태 확인 중...</div>
                     <div class="csp-actions-left">
                         <button class="csp-btn csp-btn-small" id="csp-storage-refresh" type="button">저장소 진단</button>
                         <button class="csp-btn csp-btn-small" id="csp-storage-compress" type="button">기존 기록 압축</button>
-                    </div>
-                    <div class="csp-mini-note">
-                        갤러리 이미지 파일은 기존처럼 IndexedDB/폴더에 저장되고, 여기서는 “어느 문단 뒤에 붙일지” 같은 목차 기록을 가볍게 관리해.
+                        <button class="csp-btn csp-btn-small" id="csp-storage-dump" type="button">캐릭터 데이터 덤프</button>
                     </div>
                 </div>
                         </div>
@@ -9051,13 +9311,13 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             showToast(`📥 퀵 슬롯 불러옴: ${slot.name}`);
         });
 
-        overlay.querySelector('#csp-quick-slot-delete')?.addEventListener('click', () => {
+        overlay.querySelector('#csp-quick-slot-delete')?.addEventListener('click', async () => {
             const name = String(quickSlotSelectEl?.value || '').trim();
             if (!name) {
                 showToast('⚠️ 삭제할 퀵 슬롯이 없어요.');
                 return;
             }
-            if (!confirm(`퀵 슬롯 "${name}"을 삭제할까요?`)) return;
+            if (!(await cspConfirm(`퀵 슬롯 "${name}"을 삭제할까요?`))) return;
             quickCharacterSlots = quickCharacterSlots.filter(slot => String(slot.name || '').trim() !== name);
             refreshQuickSlotSelect('');
             if (quickSlotNameEl?.value.trim() === name) quickSlotNameEl.value = '';
@@ -9132,6 +9392,22 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
         overlay.querySelector('#csp-storage-refresh')?.addEventListener('click', () => {
             refreshStorageStatus();
             showToast('📊 저장소 상태를 확인했어요.');
+        });
+
+        overlay.querySelector('#csp-storage-dump')?.addEventListener('click', () => {
+            const globalData = getLocalJsonStorage(GLOBAL_SETTINGS_KEY, {});
+            const roomData = getLocalJsonStorage(getRoomSettingsKey(), {});
+            const roomChars = (roomData.characters || []).map(c => c.name || '(unnamed)');
+            const quickSlots = (globalData.characterQuickSlots || []).map(s => `${s.name}: [${(s.characters||[]).map(c=>c.name).join(', ')}]`);
+            const geminiInstr = String(globalData.geminiInstruction || '').slice(0, 200);
+            console.log('[CSP DUMP] room.characters:', roomData.characters);
+            console.log('[CSP DUMP] quickSlots:', globalData.characterQuickSlots);
+            console.log('[CSP DUMP] geminiInstruction (앞200자):', geminiInstr);
+            alert(
+                `[현재 방 캐릭터 슬롯]\n${roomChars.join('\n') || '없음'}\n\n` +
+                `[퀵 슬롯]\n${quickSlots.join('\n') || '없음'}\n\n` +
+                `[geminiInstruction 앞200자]\n${geminiInstr}`
+            );
         });
 
         overlay.querySelector('#csp-storage-compress')?.addEventListener('click', () => {
@@ -9260,8 +9536,8 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             }
         };
 
-        overlay.querySelector('#csp-clear-room-images').onclick = () => {
-            if (!confirm('현재 채팅방의 삽화 기록을 삭제할까요?')) return;
+        overlay.querySelector('#csp-clear-room-images').onclick = async () => {
+            if (!(await cspConfirm('현재 채팅방의 삽화 기록을 삭제할까요?'))) return;
             clearRoomSceneRecords();
             showToast('🧹 이 방의 삽화 기록을 삭제했어요.');
         };
@@ -9507,30 +9783,30 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
     function scheduleMenuInject() {
         if (menuInjectScheduled) return;
         menuInjectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             menuInjectScheduled = false;
             injectStyles();
             injectScenePainterRow();
-        });
+        }, 120);
     }
 
     function scheduleMessageInject() {
         if (messageInjectScheduled) return;
         messageInjectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             messageInjectScheduled = false;
             injectStyles();
             injectMessageButtons();
-        });
+        }, 120);
     }
 
     function scheduleInject() {
         if (injectScheduled) return;
         injectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             injectScheduled = false;
             injectAll();
-        });
+        }, 120);
     }
 
     function mutationOwnsOnlyCspNodes(mutation) {
@@ -9546,7 +9822,8 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
 
         // 탭 버튼의 class 속성 변경 (탭 전환 시 text-foreground ↔ text-muted-foreground)
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-            if (target?.className?.includes('font-medium') &&
+            const cn = typeof target?.className === 'string' ? target.className : (target?.className?.baseVal ?? '');
+            if (cn.includes('font-medium') &&
                 ['정보','기억','문체','뷰어'].includes(target?.textContent?.trim())) return true;
         }
 
@@ -9560,8 +9837,6 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
             if (node.classList?.contains('backdrop-blur-2xl')) return true;
             if (node.classList?.contains('border-b') && node.classList?.contains('border-border') && node.classList?.contains('flex')) return true;
             if (node.closest?.('.border-b.border-border.flex.w-full')) return true;
-            const text = String(node.textContent || '');
-            if (text.length < 30000 && (text.includes('AI 삽화 생성') || text.includes('삽화 갤러리') || (text.includes('정보') && text.includes('기억') && text.includes('뷰어')))) return true;
             return false;
         });
     }
@@ -9593,6 +9868,13 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
 
         for (const mutation of mutations) {
             if (mutationOwnsOnlyCspNodes(mutation)) continue;
+
+            // attributes mutation: CSP 자체 노드의 class 변경이면 skip
+            if (mutation.type === 'attributes') {
+                const t = getMutationElement(mutation.target);
+                if (t && isScenePainterNode(t)) continue;
+            }
+
             if (!needMenu && mutationTouchesMenuArea(mutation)) needMenu = true;
             if (!needMessages && mutationTouchesAssistantMessage(mutation)) needMessages = true;
             if (needMenu && needMessages) break;
@@ -9619,10 +9901,12 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
         injectStyles();
         applySceneVisibilityState(isEnabled());
         bindImageActionDelegates();
-        migrateSceneImagesToIndexedDb().finally(scheduleInject);
+        migrateSceneImagesToIndexedDb().finally(() => {
+            migrateHashKeysToStableIds().finally(scheduleInject);
+        });
         scheduleInject();
 
-        cspScopedObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+        cspScopedObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'], attributeOldValue: false });
 
         // React SPA는 document-idle 시점에 탭 행이 아직 없을 수 있음
         // 탭 버튼이 나타날 때까지 폴링으로 재시도 (최대 10초)
@@ -9637,7 +9921,7 @@ You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is 
                 scheduleMenuInject();
             }
             if (retryCount >= 20) clearInterval(retryInject);
-        }, 500);
+        }, 1000);
 
         let lastUrl = location.href;
         setInterval(() => {
