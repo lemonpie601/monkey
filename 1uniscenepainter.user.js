@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Univers Scene Painter
 // @namespace    univers-scene-painter
-// @version      3.1.3
+// @version      3.7.4
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
 // @match        https://www.univers.chat/*
 // @grant        GM_xmlhttpRequest
@@ -1005,11 +1005,13 @@ Gemini 장면 태그 생성 지침:
 [장면 선택]
 - 채팅 로그에서 삽화로 만들 핵심 순간 하나만 선택한다.
 - 로그 전체 요약, 단체 장면, 모든 캐릭터 모음 장면을 만들지 않는다.
-- visibleCharacters에는 화면 중심에 실제로 보일 저장 캐릭터 이름 1명만 넣는다.
+- insertAfterParagraph로 고를 문단은 반드시 저장된 Character Prompt 슬롯에 있는 캐릭터가 실제로 행동하거나 표정이 묘사되는 문단이어야 한다. 슬롯에 없는 캐릭터가 행동하는 문단은 절대 고르지 말 것.
+- visibleCharacters에는 화면 중심에 실제로 보일 저장 캐릭터 이름 1명만 넣는다. 슬롯에 없는 이름은 절대 넣지 말 것.
 - 단순 언급, 회상, 주변 반응, 멀리 있는 인물은 visibleCharacters에서 제외한다.
 - 사용자의 캐릭터는 화면 밖 상호작용 대상으로 간주하고 visibleCharacters에 넣지 않는다.
 - 코드블록, 상태창, info 박스, 시간/관계/소지품 같은 메타 정보는 장면 본문이 아니므로 핵심 장면 선택에서 제외한다.
 - insertAfterParagraph는 실제 행동/표정/감정이 드러나는 본문 문단 뒤 index로 정한다.
+- 같은 요청에서 여러 장면을 생성할 때는 각 장면의 insertAfterParagraph가 서로 다른 값이어야 한다. 각 장면은 이야기 흐름에서 가장 적합한 위치에 자연스럽게 배치해.
 
 [출력 필드]
 - 출력은 반드시 JSON만 사용한다. 코드블록, 설명문, 주석은 출력하지 않는다.
@@ -1043,6 +1045,14 @@ Gemini 장면 태그 생성 지침:
 - 행동, 자세, 손짓, 물건 전달, 책상/문가/침대 같은 주변 구조가 중요하면 medium shot 또는 cowboy shot을 우선한다.
 - 전신 실루엣과 의상 전체가 중요할 때만 full body를 사용한다.
 - 특별한 이유가 없으면 pov는 사용하지 않는다.
+
+[로그 충실도 규칙: 반드시 지킬 것]
+- 로그에 구체적인 소품이 언급되면 반드시 interactionPrompt나 baseScenePrompt에 해당 소품 태그를 넣는다.
+  예: 탕후루 먹는 장면 → tanghulu (food), candy apple on stick / 책 읽는 장면 → holding book / 편지 쓰는 장면 → writing, letter
+- 로그에 없는 소품은 절대 임의로 추가하지 않는다. 스프를 먹는 장면이면 soup bowl, spoon이지 bread가 아니다. 닭꼬치가 없으면 chicken skewer를 넣지 않는다.
+- 음식/소품은 로그에 명시된 것만 사용한다. 유사하거나 비슷해 보이는 소품으로 대체하지 않는다.
+- 로그에서 명확히 언급된 행동(먹다, 잡다, 건네다, 눕다 등)을 그에 맞는 Danbooru 태그로 변환한다.
+- 장소/배경도 로그에 언급된 것을 우선한다. 언급이 없으면 분위기/맥락으로 추론한다.
 
 [interactionPrompt 규칙: 행동 먼저, 표정 뒤]
 - interactionPrompt에는 중심 인물의 행동 태그 1~2개를 먼저 넣고, 표정/감정 태그 1~2개를 뒤에 넣는다.
@@ -1204,6 +1214,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             naiApiKey: '',
             naiModel: 'nai-diffusion-4-5-full',
             folderSaveEnabled: false,
+            multiSceneCount: 1,
             geminiInstruction: getDefaultGeminiInstruction(),
 
             // 방과 무관하게 고정되는 공통 생성 설정
@@ -1211,7 +1222,9 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             baseNegative: '',
             naiPromptGuide: getDefaultNaiPromptGuide(),
             naiSettings: getDefaultNaiSettings(),
-            characterQuickSlots: []
+            characterQuickSlots: [],
+            promptPresets: [],
+            geminiPresets: []
         };
     }
 
@@ -1263,6 +1276,51 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         merged.naiSettings.nSamples = 1;
         merged.naiSettings.smea = false;
         merged.naiSettings.dyn = false;
+
+        if (!Array.isArray(merged.geminiPresets) || !merged.geminiPresets.length) {
+            merged.geminiPresets = [{"name": "🗡️ 액션/전투", "naiPromptGuide": "장면 태그 보조 지침 (액션/전투):\n\n- 액션/전투 장면에서는 동적인 포즈와 구도를 최우선으로 한다.\n- composition: dynamic angle, dutch angle, action shot 등 동적 구도 우선. 전신이 중요하면 full body, 표정이 핵심이면 upper body.\n- interactionPrompt: 행동 태그를 반드시 2개 이상 넣는다. 예: running, jumping, attacking, dodging, swinging weapon, casting spell, grabbing.\n- baseScenePrompt: 전투 배경과 분위기. 예: battlefield, ruins, smoke, sparks, dramatic lighting, motion blur.\n- 감정 태그는 1개만 (determined, fierce, focused 등 전투에 맞는 것).\n- 중복 태그 금지.", "geminiInstruction": ""}, {"name": "💫 감성/표정", "naiPromptGuide": "장면 태그 보조 지침 (감성/표정):\n\n- 감성/표정 장면에서는 표정과 감정 전달이 최우선이다.\n- composition: close-up, portrait, upper body 우선. 얼굴과 눈이 잘 보여야 한다.\n- interactionPrompt: 표정/감정 태그를 2개 이상 넣는다. 예: crying, tears, blushing, smile, sad smile, trembling, teary eyes, lip bite.\n- 행동 태그는 표정을 강조하는 것만. 예: looking down, looking away, covering face, reaching out.\n- baseScenePrompt: 배경은 단순하게. soft lighting, bokeh background, dim lighting 등 분위기 위주.\n- 중복 태그 금지.", "geminiInstruction": ""}, {"name": "📖 공용/기본", "naiPromptGuide": "장면 태그 보조 지침 (공용/기본):\n\n- 핵심은 로그에 나온 모든 인물이 아니라 삽화로 만들 한 순간의 중심 인물 1명이다.\n- visibleCharacters에는 저장 캐릭터 이름 1명만 넣는다.\n- composition은 2~3개만: 카메라 거리 1개 + 시점/시선 1~2개.\n- interactionPrompt는 2~4개만: 행동 1~2개 + 표정/감정 1~2개.\n- baseScenePrompt는 2~4개만: 배경/장소/소품/조명/분위기만.\n- temporaryOutfitPrompt는 현재 장면 의상이 분명할 때만 짧게 넣고, 애매하면 빈칸으로 둔다.\n- 중복 태그를 만들지 않는다.", "geminiInstruction": ""}];
+        }
+
+        // geminiPresets가 없거나 비어있으면 기본 예시 프리셋 추가
+        if (!Array.isArray(merged.geminiPresets) || !merged.geminiPresets.length) {
+            merged.geminiPresets = [
+                {
+                    name: '🌐 공용 (기본)',
+                    naiPromptGuide: defaults.naiPromptGuide,
+                    geminiInstruction: defaults.geminiInstruction
+                },
+                {
+                    name: '⚔️ 액션 / 전투',
+                    naiPromptGuide: `장면 태그 보조 지침 (액션/전투 특화):
+
+- 핵심은 동적인 포즈와 긴장감이다. composition에 dynamic angle, dutch angle, action pose를 적극 사용한다.
+- interactionPrompt에는 구체적인 행동 태그를 우선한다.
+  예: jumping, running, fighting stance, reaching out, dodging, attacking
+- 표정은 intense expression, determined, fierce, gritted teeth 등 긴장/의지 관련 태그를 사용한다.
+- baseScenePrompt에는 전투/액션 배경 태그를 넣는다.
+  예: debris, dust, smoke, ruins, dramatic lighting, motion blur
+- composition은 카메라 거리와 각도를 다양하게: cowboy shot, full body, low angle, from below
+- visibleCharacters에는 저장 캐릭터 이름 1명만 넣는다.
+- 슬롯에 없는 이름은 절대 넣지 말 것.`,
+                    geminiInstruction: defaults.geminiInstruction
+                },
+                {
+                    name: '💭 표정 / 감성',
+                    naiPromptGuide: `장면 태그 보조 지침 (표정/감성 특화):
+
+- 핵심은 표정과 감정의 디테일이다. composition은 close-up, portrait, upper body를 우선 사용한다.
+- interactionPrompt에는 표정/감정 태그를 풍부하게 넣는다.
+  예: teary eyes, trembling, blushing, soft smile, pained expression, longing, eye contact
+- 행동은 최소화하고 감정 표현에 집중한다.
+  예: looking at viewer, looking down, looking away, head tilt
+- baseScenePrompt는 분위기 위주로 간결하게: soft lighting, bokeh, blurry background, warm light
+- 배경 묘사보다 인물의 감정 상태가 화면을 채우도록 구성한다.
+- visibleCharacters에는 저장 캐릭터 이름 1명만 넣는다.
+- 슬롯에 없는 이름은 절대 넣지 말 것.`,
+                    geminiInstruction: defaults.geminiInstruction
+                }
+            ];
+        }
 
         merged.characterQuickSlots = Array.isArray(merged.characterQuickSlots)
             ? merged.characterQuickSlots.map(slot => ({
@@ -1443,6 +1501,12 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
 
     function compactSceneRecordForStorage(messageKey, record) {
         if (!record || typeof record !== 'object') return null;
+
+        // 원본 record를 직접 변경하지 않도록 얕은 복사 후 history는 깊은 복사
+        record = Object.assign({}, record);
+        if (Array.isArray(record.history)) {
+            record.history = record.history.map(item => item ? Object.assign({}, item) : item);
+        }
 
         normalizeSceneRecordHistory(record, messageKey);
 
@@ -1794,7 +1858,12 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
     }
 
     async function deleteCurrentSceneHistoryImage(messageKey, box = null) {
-        const records = getSceneRecords();
+        const sceneKey = getSceneRecordsKey();
+        const rawRecords = getSceneRecords();
+
+
+
+        const records = rawRecords;
         const record = normalizeSceneRecordHistory(records[messageKey], messageKey);
         if (!record || !Array.isArray(record.history) || !record.history.length) {
             await clearSceneRecordForMessage(messageKey, { box });
@@ -1823,6 +1892,9 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 : document.querySelector(`.csp-image-history-row[data-message-key="${CSS.escape(messageKey)}"]`);
             row?.remove();
             targetBox?.remove();
+            // 혹시 같은 message-key를 가진 다른 box가 남아있는지 확인
+            const remaining = document.querySelectorAll(`.csp-generated-scene-image[data-message-key="${CSS.escape(messageKey)}"]`);
+            // _s2 등 다른 장면 box는 유지되어야 함
             markSceneButtons(messageKey, false);
             return { removedAll: true, remaining: 0 };
         }
@@ -2241,6 +2313,38 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         markSceneButtons(messageKey, false);
     }
 
+    async function migrateHashKeysToStableIds() {
+        const records = getSceneRecords();
+        const hashKeys = Object.keys(records).filter(k =>
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(k) &&
+            !k.includes('::')
+        );
+        if (!hashKeys.length) return;
+        const markdowns = Array.from(document.querySelectorAll('[data-message-id]'));
+        const migrated = [];
+        for (const el of markdowns) {
+            const stableId = el.getAttribute('data-message-id');
+            if (!stableId || records[stableId]) continue;
+            const mdEl = el.querySelector('div.space-y-3') || el;
+            const text = cleanMarkdownText(mdEl);
+            const hashKey = hashText(text.slice(0, 1500));
+            if (!records[hashKey]) continue;
+            records[stableId] = records[hashKey];
+            for (let i = 1; i <= 5; i++) {
+                const suffix = '_s' + i;
+                if (records[hashKey + suffix]) {
+                    records[stableId + suffix] = records[hashKey + suffix];
+                    delete records[hashKey + suffix];
+                }
+            }
+            delete records[hashKey];
+            migrated.push(hashKey + ' → ' + stableId);
+        }
+        if (migrated.length) {
+            saveSceneRecords(records);
+        }
+    }
+
     async function migrateSceneImagesToIndexedDb() {
         const keys = Object.keys(localStorage).filter(key => key.startsWith(`${CSP_PREFIX}_scene_records_`));
         for (const storageKey of keys) {
@@ -2543,6 +2647,10 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
     }
 
     function getMessageKey(markdown) {
+        if (!markdown) return '';
+        const group = markdown.closest?.('[data-message-id]') || (markdown.matches?.('[data-message-id]') ? markdown : null);
+        const stableId = group?.getAttribute('data-message-id');
+        if (stableId) return stableId;
         const text = cleanMarkdownText(markdown);
         return hashText(text.slice(0, 1500));
     }
@@ -2692,10 +2800,6 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 </div>
                 <div class="csp-task-hud-message"></div>
                 <div class="csp-task-hud-bar"><div class="csp-task-hud-bar-fill"></div></div>
-                <div class="csp-task-hud-footer">
-                    <span class="csp-task-hud-progress-label"></span>
-                    <span>오래 걸리면 콘솔 확인</span>
-                </div>
             </div>
         `;
 
@@ -2736,7 +2840,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         if (progress !== undefined) {
             const pct = Math.max(0, Math.min(100, Number(progress) || 0));
             currentTaskHud.barEl.style.width = `${pct}%`;
-            currentTaskHud.labelEl.textContent = `${Math.round(pct)}%`;
+            if (currentTaskHud.labelEl) currentTaskHud.labelEl.textContent = `${Math.round(pct)}%`;
         }
 
         const box = currentTaskHud.el.querySelector('.csp-task-hud');
@@ -2796,7 +2900,13 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 --csp-border: rgba(255,255,255,0.16);
                 --csp-input: rgba(0,0,0,0.34);
                 --csp-input-text: #f5f5f5;
-                --csp-shadow: rgba(0,0,0,0.45);
+                --csp-shadow: rgba(0,0,0,0.55);
+                --csp-accent: #fb7185;
+                --csp-accent-soft: rgba(251,113,133,0.13);
+                --csp-accent-text: #f5b400;
+                --csp-green: #22c55e;
+                --csp-blue: #60a5fa;
+                --csp-yellow: #f59e0b;
                 position: fixed;
                 inset: 0;
                 z-index: 999999;
@@ -2827,7 +2937,13 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 --csp-border: rgba(255,255,255,0.16);
                 --csp-input: rgba(0,0,0,0.34);
                 --csp-input-text: #f5f5f5;
-                --csp-shadow: rgba(0,0,0,0.45);
+                --csp-shadow: rgba(0,0,0,0.55);
+                --csp-accent: #fb7185;
+                --csp-accent-soft: rgba(251,113,133,0.13);
+                --csp-accent-text: #f5b400;
+                --csp-green: #22c55e;
+                --csp-blue: #60a5fa;
+                --csp-yellow: #f59e0b;
             }
             .csp-modal {
                 width: 820px;
@@ -2854,11 +2970,11 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-section {
                 border: 1px solid var(--csp-border);
                 border-radius: 14px;
-                padding: 14px;
-                margin-top: 12px;
+                padding: 12px 14px;
+                margin-top: 10px;
                 background: var(--csp-surface-2);
             }
-            .csp-section-title { font-size: 13px; font-weight: 800; margin-bottom: 10px; color: var(--csp-text); }
+            .csp-section-title { font-size: 11px; font-weight: 800; margin-bottom: 10px; color: var(--csp-accent-text, #f5b400); letter-spacing: 0.06em; text-transform: uppercase; }
             .csp-section-subbox {
                 margin-top: 12px;
                 padding: 12px;
@@ -3013,8 +3129,9 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
             .csp-field label {
                 font-size: 12px;
-                font-weight: 800;
-                color: var(--csp-muted);
+                font-weight: 600;
+                color: var(--csp-text);
+                opacity: 0.7;
                 white-space: normal;
                 word-break: keep-all;
                 overflow-wrap: anywhere;
@@ -3406,116 +3523,6 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-image-action-btn[data-csp-loading="true"] svg {
                 animation: csp-spin 0.9s linear infinite;
             }
-            .csp-task-hud-backdrop {
-                position: fixed;
-                left: 50%;
-                bottom: 22px;
-                transform: translateX(-50%);
-                z-index: 2147483645;
-                width: min(430px, calc(100vw - 28px));
-                pointer-events: none;
-            }
-            .csp-task-hud {
-                width: 100%;
-                border-radius: 18px;
-                background: rgba(22, 22, 26, 0.96);
-                border: 1px solid rgba(255,255,255,0.10);
-                box-shadow: 0 20px 80px rgba(0,0,0,0.35);
-                padding: 15px 16px 14px;
-                color: #f4f4f5;
-                pointer-events: auto;
-            }
-            body[data-theme="light"] .csp-task-hud {
-                background: rgba(255,255,255,0.98);
-                color: #111827;
-                border-color: rgba(31,35,40,0.15);
-                box-shadow: 0 20px 80px rgba(31,35,40,0.18);
-            }
-            .csp-task-hud-header {
-                display: grid;
-                grid-template-columns: auto 1fr auto;
-                align-items: center;
-                gap: 12px;
-                margin-bottom: 12px;
-            }
-            .csp-task-hud-cancel {
-                width: 26px;
-                height: 26px;
-                border-radius: 999px;
-                border: 1px solid rgba(255,255,255,0.16);
-                background: rgba(255,255,255,0.08);
-                color: inherit;
-                cursor: pointer;
-                font-size: 16px;
-                line-height: 1;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .csp-task-hud-cancel:hover { background: rgba(255, 68, 50, 0.18); }
-            body[data-theme="light"] .csp-task-hud-cancel {
-                border-color: rgba(31,35,40,0.16);
-                background: rgba(31,35,40,0.04);
-            }
-            .csp-task-hud-spinner {
-                width: 20px;
-                height: 20px;
-                border-radius: 999px;
-                border: 2px solid rgba(255,255,255,0.22);
-                border-top-color: rgba(255,255,255,0.92);
-                animation: csp-spin 0.8s linear infinite;
-                flex: 0 0 auto;
-            }
-            body[data-theme="light"] .csp-task-hud-spinner {
-                border-color: rgba(31,35,40,0.18);
-                border-top-color: rgba(31,35,40,0.76);
-            }
-            .csp-task-hud-title {
-                font-size: 14px;
-                font-weight: 700;
-                line-height: 1.25;
-            }
-            .csp-task-hud-message {
-                font-size: 12px;
-                opacity: 0.72;
-                margin-bottom: 12px;
-                line-height: 1.45;
-                white-space: pre-wrap;
-                word-break: keep-all;
-            }
-            .csp-task-hud-bar {
-                width: 100%;
-                height: 8px;
-                border-radius: 999px;
-                background: rgba(255,255,255,0.08);
-                overflow: hidden;
-            }
-            .csp-task-hud-bar-fill {
-                height: 100%;
-                width: 0%;
-                border-radius: inherit;
-                background: linear-gradient(90deg, #ff6b35 0%, #ff9c63 100%);
-                transition: width 220ms ease;
-            }
-            .csp-task-hud-footer {
-                margin-top: 8px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 10px;
-                font-size: 11px;
-                opacity: 0.65;
-            }
-            .csp-task-hud-status-success .csp-task-hud-spinner {
-                animation: none;
-                border-color: rgba(34,197,94,0.28);
-                background: rgba(34,197,94,0.9);
-            }
-            .csp-task-hud-status-error .csp-task-hud-spinner {
-                animation: none;
-                border-color: rgba(239,68,68,0.28);
-                background: rgba(239,68,68,0.9);
-            }
             .csp-generated-scene-image img {
                 cursor: zoom-in;
             }
@@ -3788,36 +3795,288 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             .csp-tab-list {
                 display: flex;
                 gap: 4px;
-                border-bottom: 1px solid var(--csp-border);
-                padding-bottom: 0;
+                padding-bottom: 4px;
                 flex-wrap: wrap;
+                gap: 4px;
             }
             .csp-tab-btn {
-                border: 1px solid transparent;
+                border: none;
                 background: transparent;
                 color: var(--csp-muted);
                 padding: 8px 14px;
-                border-radius: 10px 10px 0 0;
+                border-radius: 8px;
                 cursor: pointer;
                 font-size: 13px;
                 font-weight: 700;
-                border-bottom: none;
-                margin-bottom: -1px;
+                transition: background 140ms, color 140ms;
             }
-            .csp-tab-btn:hover { background: var(--csp-surface-2); }
+            .csp-tab-btn:hover { background: var(--csp-surface-2); color: var(--csp-text); }
             .csp-tab-btn.is-active {
-                background: var(--csp-surface);
-                color: var(--csp-text);
-                border-color: var(--csp-border);
-                border-bottom-color: var(--csp-surface);
+                background: var(--csp-accent-soft, rgba(251,113,133,0.13));
+                color: var(--csp-accent-text, #f5b400);
+                font-weight: 800;
             }
             .csp-tab-panels { margin-top: 12px; }
             .csp-tab-panel { display: none; }
             .csp-tab-panel.is-active { display: block; }
 
+            .csp-quick-panel {
+                position: fixed;
+                z-index: 2147483640;
+                background: rgba(20,20,23,0.97);
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 14px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+                padding: 14px;
+                width: 240px;
+                font-family: inherit;
+                color: #f0f0f0;
+                backdrop-filter: blur(10px);
+                user-select: none;
+            }
+            .csp-quick-panel-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 12px;
+                cursor: move;
+                gap: 8px;
+            }
+            .csp-quick-panel-title {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--csp-accent-text, #f5b400);
+                letter-spacing: 0.04em;
+                flex: 1;
+            }
+            .csp-quick-panel-close {
+                width: 20px; height: 20px;
+                border-radius: 999px;
+                border: 1px solid rgba(255,255,255,0.14);
+                background: rgba(255,255,255,0.06);
+                color: #f0f0f0;
+                cursor: pointer;
+                font-size: 12px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                opacity: 0.6;
+                transition: opacity 140ms;
+            }
+            .csp-quick-panel-close:hover { opacity: 1; }
+            .csp-quick-panel-section { margin-bottom: 10px; }
+            .csp-quick-panel-label {
+                font-size: 10px;
+                font-weight: 700;
+                color: rgba(255,255,255,0.4);
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                margin-bottom: 6px;
+            }
+            .csp-quick-panel select {
+                width: 100%;
+                box-sizing: border-box;
+                border-radius: 8px;
+                border: 1px solid rgba(255,255,255,0.12);
+                background: rgba(0,0,0,0.3);
+                color: #f0f0f0;
+                padding: 7px 10px;
+                font-size: 12px;
+                outline: none;
+                font-family: inherit;
+                margin-bottom: 6px;
+            }
+            .csp-quick-panel-btns {
+                display: flex;
+                gap: 6px;
+                flex-direction: column;
+            }
+            .csp-quick-panel-btn {
+                width: 100%;
+                border: 1px solid rgba(255,255,255,0.12);
+                background: rgba(255,255,255,0.06);
+                color: #f0f0f0;
+                padding: 8px 10px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: inherit;
+                text-align: left;
+                transition: background 140ms;
+            }
+            .csp-quick-panel-btn:hover { background: rgba(255,255,255,0.12); }
+            .csp-quick-panel-btn.primary {
+                background: rgba(251,113,133,0.18);
+                border-color: rgba(251,113,133,0.35);
+                color: #fb7185;
+            }
+            .csp-quick-panel-btn.primary:hover { background: rgba(251,113,133,0.28); }
+            .csp-quick-panel-scene-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-bottom: 6px;
+            }
+            .csp-quick-panel-scene-row label {
+                font-size: 11px;
+                color: rgba(255,255,255,0.5);
+                white-space: nowrap;
+            }
+            .csp-quick-panel-scene-row select {
+                flex: 1;
+                margin-bottom: 0;
+            }
+            .csp-confirm-backdrop {
+                position: fixed; inset: 0; z-index: 9999999;
+                background: rgba(0,0,0,0.60);
+                display: flex; align-items: center; justify-content: center;
+            }
+            .csp-confirm-box {
+                --csp-surface:#1e1d1b;--csp-text:#f0f0f0;--csp-border:rgba(255,255,255,0.12);
+                background: var(--csp-surface); color: var(--csp-text);
+                border: 1px solid var(--csp-border); border-radius: 16px;
+                padding: 22px 24px 18px; width: 320px; max-width: calc(100vw - 32px);
+                box-shadow: 0 20px 60px rgba(0,0,0,0.55); font-family: inherit;
+            }
+            .csp-confirm-box p { margin: 0 0 18px; font-size: 14px; line-height: 1.65; color: var(--csp-text); }
+            .csp-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+            .csp-task-hud-backdrop {
+                position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+                z-index: 2147483645; width: min(340px, calc(100vw - 28px)); pointer-events: none;
+            }
+            .csp-task-hud {
+                width: 100%; border-radius: 14px; background: rgba(20,20,23,0.97);
+                border: 1px solid rgba(255,255,255,0.10); box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+                padding: 12px 14px 10px; color: #f0f0f0; pointer-events: auto; backdrop-filter: blur(8px);
+            }
+            body[data-theme="light"] .csp-task-hud { background: rgba(255,255,255,0.97); color: #111827; border-color: rgba(31,35,40,0.12); }
+            .csp-task-hud-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin-bottom: 6px; }
+            .csp-task-hud-cancel {
+                width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.14);
+                background: rgba(255,255,255,0.06); color: inherit; cursor: pointer; font-size: 14px;
+                line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+                opacity: 0.7; transition: opacity 140ms, background 140ms;
+            }
+            .csp-task-hud-cancel:hover { opacity: 1; background: rgba(251,113,133,0.18); }
+            body[data-theme="light"] .csp-task-hud-cancel { border-color: rgba(31,35,40,0.14); background: rgba(31,35,40,0.04); }
+            .csp-task-hud-spinner {
+                width: 16px; height: 16px; border-radius: 999px;
+                border: 2px solid rgba(255,255,255,0.15); border-top-color: #fb7185;
+                animation: csp-spin 0.75s linear infinite; flex: 0 0 auto;
+            }
+            body[data-theme="light"] .csp-task-hud-spinner { border-color: rgba(31,35,40,0.14); border-top-color: #fb7185; }
+            .csp-task-hud-title { font-size: 13px; font-weight: 700; line-height: 1.3; }
+            .csp-task-hud-message {
+                font-size: 11px; opacity: 0.58; margin-bottom: 8px; line-height: 1.45;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            }
+            .csp-task-hud-bar { width: 100%; height: 3px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; }
+            .csp-task-hud-bar-fill {
+                height: 100%; width: 0%; border-radius: inherit;
+                background: linear-gradient(90deg, #fb7185 0%, #f5b400 100%); transition: width 220ms ease;
+            }
+            .csp-task-hud-status-success .csp-task-hud-spinner { animation: none; border-color: transparent; border-top-color: transparent; background: #22c55e; }
+            .csp-task-hud-status-error .csp-task-hud-spinner { animation: none; border-color: transparent; border-top-color: transparent; background: #fb7185; }
+
         `;
         document.head.appendChild(style);
     }
+
+    function buildPresetOptions(presets, placeholder) {
+        var ph = placeholder || '-- 프리셋 선택 --';
+        var opts = '<option value="">' + escapeHtml(ph) + '</option>';
+        return opts + (Array.isArray(presets) ? presets : [])
+            .map(function(p) { return '<option value="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</option>'; })
+            .join('');
+    }
+
+    function cspRerollGuidance() {
+        return new Promise(function(resolve) {
+            var backdrop = document.createElement('div');
+            backdrop.className = 'csp-confirm-backdrop';
+            backdrop.innerHTML = '<div class="csp-confirm-box" style="width:300px;"><p style="margin:0 0 8px;font-size:13px;font-weight:700;opacity:0.9;">리롤 가이던스 <span style="font-weight:400;opacity:0.5;font-size:11px;">선택 \xb7 비우면 바로 리롤</span></p><textarea id="csp-guidance-input" rows="2" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(0,0,0,0.30);color:#f0f0f0;padding:8px 10px;font-size:12px;outline:none;font-family:inherit;resize:none;" placeholder="더 유머러스하게, 캐릭터가 화난 상태로..."></textarea><div class="csp-confirm-actions" style="margin-top:10px;"><button class="csp-btn" id="csp-guidance-cancel" style="font-size:12px;padding:7px 10px;">취소</button><button class="csp-btn csp-btn-primary" id="csp-guidance-ok" style="font-size:12px;padding:7px 10px;">리롤</button></div></div>';
+            var input = backdrop.querySelector('#csp-guidance-input');
+            backdrop.querySelector('#csp-guidance-ok').onclick = function() { backdrop.remove(); resolve(input.value.trim()); };
+            backdrop.querySelector('#csp-guidance-cancel').onclick = function() { backdrop.remove(); resolve(null); };
+            backdrop.addEventListener('mousedown', function(e) { if (e.target === backdrop) { backdrop.remove(); resolve(null); } });
+            backdrop.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { backdrop.remove(); resolve(input.value.trim()); }
+                if (e.key === 'Escape') { backdrop.remove(); resolve(null); }
+            });
+            document.body.appendChild(backdrop);
+            setTimeout(function() { if (input) input.focus(); }, 50);
+        });
+    }
+
+    function cspConfirm(message) {
+        return new Promise(function(resolve) {
+            var backdrop = document.createElement('div');
+            backdrop.className = 'csp-confirm-backdrop';
+            backdrop.innerHTML = '<div class="csp-confirm-box"><p></p><div class="csp-confirm-actions"><button class="csp-btn" id="csp-confirm-cancel">취소</button><button class="csp-btn csp-btn-danger" id="csp-confirm-ok">확인</button></div></div>';
+            backdrop.querySelector('p').textContent = message;
+            backdrop.querySelector('#csp-confirm-ok').onclick = function() { backdrop.remove(); resolve(true); };
+            backdrop.querySelector('#csp-confirm-cancel').onclick = function() { backdrop.remove(); resolve(false); };
+            backdrop.addEventListener('mousedown', function(e) { if (e.target === backdrop) { backdrop.remove(); resolve(false); } });
+            document.body.appendChild(backdrop);
+        });
+    }
+
+    async function applyGuidanceToPrompt(guidance, currentFinalPrompt, currentPlan) {
+        const global = getGlobalSettings();
+        const geminiRequest = getGeminiGenerateContentRequestConfig(global);
+        const scenePrompt = String(currentPlan && (currentPlan.scenePrompt || currentPlan.baseScenePrompt) || '').trim() || currentFinalPrompt;
+        const systemText = `You are a NovelAI image prompt specialist with deep knowledge of Danbooru tags.
+Your job is to take an existing SCENE/POSE/EXPRESSION prompt (NOT artist or quality tags) and add or adjust tags based on a natural language guidance hint.
+Output ONLY the modified scene prompt as a comma-separated list of Danbooru tags. No explanation, no markdown, no JSON. Just the raw tag string.
+
+Rules:
+- KEEP all existing scene/pose/expression tags
+- ADD new tags or REPLACE conflicting tags based on the guidance
+- REMOVE tags that directly conflict with the new guidance (e.g. if adding "closed eyes", remove "looking at viewer", "eye contact"; if adding "from behind", remove "looking at viewer", "front view")
+- Do NOT output artist tags (artist:xxx), quality tags (score_9, masterpiece etc), or character appearance tags
+- Only output scene, pose, expression, background, lighting, composition tags
+- Always translate natural language to accurate Danbooru tags
+- All output must be English Danbooru tags only
+
+Conflict resolution examples:
+- closed eyes → remove: looking at viewer, eye contact, open eyes
+- from behind → remove: looking at viewer, front view, facing viewer
+
+Natural language → Danbooru tag examples:
+- 정면을 바라보며 → looking at viewer, front view
+- 옥모습 → from side, profile
+- 화난 표정 → angry, furrowed brow
+- 웃는 → smile, happy
+- 눈물 / 울고 있는 → crying, tears, teary eyes
+- 눈을 감은 → closed eyes
+- 앉아있는 → sitting
+- 서있는 → standing
+- 말 배경 → night, dark sky
+- 클로즈업 → close-up, portrait
+- 전신샷 → full body`;
+        const userText = `Existing scene/pose/expression tags:\n${scenePrompt}\n\nGuidance (natural language):\n${guidance}\n\nOutput the modified scene prompt only (no artist/quality/character tags):`;
+        const payload = {
+            systemInstruction: { parts: [{ text: systemText }] },
+            contents: [{ role: 'user', parts: [{ text: userText }] }],
+            generationConfig: buildGeminiGenerationConfig(geminiRequest.model, { temperature: 0.3, topP: 0.8 })
+        };
+        const data = await requestGeminiGenerateContent(geminiRequest, payload);
+        const result = extractTextFromGeminiResponseData(data).trim();
+        if (!result) throw new Error('AI 가이던스 변환 응답이 비어 있어요.');
+        const newScenePrompt = normalizeNaiWeightSyntax(normalizePrompt(result));
+        if (currentPlan && (currentPlan.scenePrompt || currentPlan.baseScenePrompt)) {
+            const room = getRoomSettings();
+            const modifiedPlan = Object.assign({}, currentPlan, { scenePrompt: newScenePrompt, baseScenePrompt: newScenePrompt, interactionPrompt: '', composition: '', globalContext: null });
+            const rebuilt = buildFinalPromptFromPlan(modifiedPlan, room);
+            return { finalPrompt: rebuilt.finalPrompt, basePrompt: rebuilt.basePrompt };
+        }
+        const guidedFinal = scenePrompt && currentFinalPrompt.includes(scenePrompt)
+            ? normalizeNaiWeightSyntax(normalizePrompt(currentFinalPrompt.replace(scenePrompt, newScenePrompt)))
+            : normalizeNaiWeightSyntax(normalizePrompt(buildCommaPrompt([currentFinalPrompt, newScenePrompt])));
+        return { finalPrompt: guidedFinal, basePrompt: null };
+    }
+
 
     function hasAllClasses(el, classes) {
         if (!el || !el.classList) return false;
@@ -3860,6 +4119,8 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             '.csp-tab-button',
             '.csp-toggle-row',
             '.csp-gallery-row',
+            '.csp-quick-panel-row',
+            '.csp-quick-panel',
             '.csp-overlay',
             '.csp-task-hud-backdrop',
             '.csp-lightbox-backdrop',
@@ -4193,13 +4454,16 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             return fallbackText ? [{ index: 0, text: fallbackText }] : [];
         }
 
-        return blocks
-            .map((block, index) => {
-                const clone = block.cloneNode(true);
-                stripNonSceneNodes(clone);
-                return { index, text: clone.textContent.replace(/\s+/g, ' ').trim() };
-            })
-            .filter(item => item.text);
+        const result = [];
+        blocks.forEach((block, index) => {
+            const clone = block.cloneNode(true);
+            stripNonSceneNodes(clone);
+            const text = clone.textContent.replace(/\s+/g, ' ').trim();
+            // 텍스트가 없어도 index는 DOM 순서 그대로 유지 — 빈 블록은 간략 표현으로 포함
+            // (커스텀 태그처럼 텍스트 없는 블록도 insertAfterParagraph 카운트에 반영됨)
+            result.push({ index, text: text || `[block-${index}]` });
+        });
+        return result;
     }
 
     function getSceneParagraphWindow(markdown, insertAfterParagraph, radius = 1) {
@@ -4259,6 +4523,17 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
     function removeSceneImage(markdown) {
         if (!markdown) return;
         markdown.querySelectorAll('.csp-generated-scene-image, .csp-image-history-row').forEach(el => el.remove());
+    }
+
+    function removeAllSceneRecordsForMarkdown(markdown) {
+        // 재생성 시 해당 말풍선의 모든 다중 장면 기록(_s0, _s1, _s2 등) 삭제
+        const baseKey = getMessageKey(markdown);
+        const records = getSceneRecords();
+        let changed = false;
+        [baseKey, ...Array.from({length: 5}, (_, i) => `${baseKey}_s${i+1}`)].forEach(k => {
+            if (records[k]) { delete records[k]; changed = true; }
+        });
+        if (changed) saveSceneRecords(records);
     }
 
     function buildPromptDetailText(plan, paragraphIndex, mode, promptInfo) {
@@ -4821,7 +5096,21 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         if (!markdown) return { ok: false, reason: 'markdown-not-found' };
 
         const blocks = getInsertableContentBlocks(markdown);
-        removeSceneImage(markdown);
+        // keepExisting: 다중 장면 모드에서 기존 이미지 유지
+        if (!options.keepExisting) {
+            removeSceneImage(markdown);
+        } else {
+            // keepExisting 모드: 같은 messageKey 이미지가 이미 있으면 스킵
+            if (options.messageKey) {
+                const dup = markdown.querySelector(`.csp-generated-scene-image[data-message-key="${CSS.escape(options.messageKey)}"]`);
+                if (dup && dup.isConnected) return { ok: false, reason: 'already-inserted' };
+            }
+        }
+        // messageKey 기준 중복 체크 (keepExisting 여부 무관)
+        if (options.messageKey) {
+            const anyDup = markdown.querySelector(`.csp-generated-scene-image[data-message-key="${CSS.escape(options.messageKey)}"]`);
+            if (anyDup && anyDup.isConnected) return { ok: false, reason: 'already-inserted' };
+        }
 
         let index = 0;
         let target = null;
@@ -5269,7 +5558,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
                 }
 
                 if (action === 'delete') {
-                    const ok = confirm('현재 보고 있는 갤러리 이미지를 삭제할까요?\n채팅창에 삽입된 이미지도 같은 기록이면 함께 갱신돼요.');
+                    const ok = await cspConfirm('현재 보고 있는 갤러리 이미지를 삭제할까요?\n채팅창에 삽입된 이미지도 같은 기록이면 함께 갱신돼요.');
                     if (!ok) return;
                     const result = await deleteGalleryHistoryImage(messageKey, galleryIndex);
                     if (!result?.removedAll) {
@@ -5558,9 +5847,13 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
         }
     }
 
-    function buildGeminiUserPrompt({ targetBubble, markdown, room }) {
+    function buildGeminiUserPrompt({ targetBubble, markdown, room, paragraphRange }) {
         const global = getGlobalSettings();
-        const paragraphs = getParagraphs(markdown);
+        let paragraphs = getParagraphs(markdown);
+        // paragraphRange: { start, end } — 본문을 N등분한 구간만 전달
+        if (paragraphRange && Number.isFinite(paragraphRange.start) && Number.isFinite(paragraphRange.end)) {
+            paragraphs = paragraphs.filter(p => p.index >= paragraphRange.start && p.index <= paragraphRange.end);
+        }
         const context = collectContextForBubble(targetBubble);
 
         const characterLines = (room.characters || [])
@@ -5586,9 +5879,10 @@ ${JSON.stringify(paragraphs, null, 2)}
 - 대상 AI 답변 전체를 복제하지 말고, 삽화로 만들 핵심 순간 하나만 고른다.
 - insertAfterParagraph는 반드시 대상 AI 답변 문단 목록에 있는 index 중 하나여야 함.
 - 상태창/시간 표시/코드블록/메타 정보가 아니라 실제 행동/표정/감정이 드러나는 본문 문단 뒤를 우선한다.
-- visibleCharacters는 네가 고른 핵심 순간의 화면 중심 저장 캐릭터 1명만 넣는다.
-- 같은 답변 안에 이름이 언급되어도, 선택한 순간의 중심 인물이 아니면 visibleCharacters에서 제외한다.
-- 캐릭터 슬롯이 여러 개 있어도 모든 저장 캐릭터를 억지로 넣지 않는다.
+- insertAfterParagraph로 고를 문단은 반드시 위 [Character Prompt 슬롯]에 있는 캐릭터가 실제로 행동하거나 표정이 묘사되는 문단이어야 한다. 슬롯에 없는 캐릭터가 행동하는 문단은 절대 고르지 말 것.
+- visibleCharacters에는 위 [Character Prompt 슬롯] 목록에 있는 이름만 넣을 수 있다. 슬롯에 없는 이름은 절대 넣지 말 것.
+- 선택한 문단에서 실제로 행동·표정이 묘사된 슬롯 캐릭터 1명만 visibleCharacters에 넣는다.
+- 슬롯 이름 중 해당 장면에 등장하는 인물이 없으면 visibleCharacters는 빈 배열로 둔다.
 - 전체 프롬프트를 만들지 말고 globalContext / baseScenePrompt / composition / interactionPrompt / temporaryOutfitPrompt / visibleCharacters만 생성해야 함.
 - globalContext에는 전체 답변에서 파악한 장소/시간대/큰 상황/분위기를 저장한다.
 - composition은 2~3개만 생성한다: 카메라 거리 1개 + 시점/시선 1~2개.
@@ -5613,7 +5907,7 @@ ${JSON.stringify(paragraphs, null, 2)}
   "sceneTitle": "장면 제목",
   "insertAfterParagraph": 0,
   "characterCount": 1,
-  "visibleCharacters": ["저장된 캐릭터 이름 1명"],
+  "visibleCharacters": ["위 슬롯 목록에서 이 장면에 실제 등장하는 캐릭터 이름 1개, 없으면 빈 배열"],
   "mood": "english mood tags",
   "globalContext": {
     "locationPrompt": "english place/background tags from the whole log",
@@ -5733,7 +6027,7 @@ ${JSON.stringify(focusWindow, null, 2)}
   "sceneTitle": "장면 제목",
   "insertAfterParagraph": ${Number(focusIndex)},
   "characterCount": 1,
-  "visibleCharacters": ["저장된 캐릭터 이름 1명"],
+  "visibleCharacters": ["위 슬롯 목록에서 이 장면에 실제 등장하는 캐릭터 이름 1개, 없으면 빈 배열"],
   "mood": "english mood tags",
   "globalContext": {
     "locationPrompt": "english place/background tags, keep previous context unless contradicted",
@@ -6401,7 +6695,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         if (visibleNames.length) {
             selected = characters.filter(c => {
                 const cname = String(c.name || '').trim().toLowerCase();
-                return cname && visibleNames.some(n => n === cname || n.includes(cname) || cname.includes(n));
+                return cname && visibleNames.some(n => n === cname);
             });
         }
 
@@ -6513,11 +6807,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         const exact = characters.find(c => String(c.name || '').trim().toLowerCase() === low);
         if (exact?.name) return String(exact.name).trim();
 
-        const fuzzy = characters.find(c => {
-            const cname = String(c.name || '').trim().toLowerCase();
-            return cname && (low.includes(cname) || cname.includes(low));
-        });
-        return fuzzy?.name ? String(fuzzy.name).trim() : '';
+        return '';
     }
 
     function normalizeVisibleCharacters(plan, room, markdown, insertAfterParagraph) {
@@ -6533,18 +6823,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         let visible = Array.from(new Set(canonicalFromPlan));
 
-        // Gemini가 전체 답변에 나온 캐릭터를 과하게 넣는 경우를 막기 위해,
-        // 삽입 문단 주변에 실제 이름이 잡히면 그 주변 문단 기준으로 한 번 더 거릅니다.
-        if (namesInSceneWindow.length) {
-            const sceneSet = new Set(namesInSceneWindow.map(name => name.toLowerCase()));
-            visible = visible.filter(name => sceneSet.has(name.toLowerCase()));
-
-            if (!visible.length) {
-                visible = namesInSceneWindow;
-            }
-        }
-
-        // Gemini가 비웠을 때만 삽입 문단 주변 이름으로 보조 추론합니다.
+        // AI가 슬롯 이름을 정확히 반환했으면 그걸 신뢰.
         if (!visible.length) {
             visible = namesInSceneWindow;
         }
@@ -6559,58 +6838,79 @@ ${JSON.stringify(parsedPlan, null, 2)}
         return Array.from(new Set(visible)).slice(0, 1);
     }
 
-    async function generateScenePlanWithGemini(targetBubble, markdown) {
+    async function generateScenePlanWithGemini(targetBubble, markdown, options = {}) {
         const global = getGlobalSettings();
         const room = getRoomSettings();
+        const sceneCount = options.sceneCount || Number(global.multiSceneCount || 1);
 
         const geminiRequest = getGeminiGenerateContentRequestConfig(global);
-        const url = geminiRequest.url;
-        const userPrompt = buildGeminiUserPrompt({ targetBubble, markdown, room });
+        const userPrompt = buildGeminiUserPrompt({ targetBubble, markdown, room, paragraphRange: options.paragraphRange });
+
+        const systemInstruction = getEffectiveGeminiSystemInstruction(global);
+
+        let finalUserPrompt = userPrompt;
+
+        // 다중 장면 요청 시 유저 메시지 끝에 배열 지시 추가 (시스템보다 더 잘 따름)
+        if (sceneCount > 1) {
+            finalUserPrompt += `
+
+[MULTI-SCENE REQUEST: ${sceneCount} scenes]
+You MUST return a JSON ARRAY with exactly ${sceneCount} objects. Each object is a separate scene from different parts of the text.
+- Use different insertAfterParagraph values for each scene (they must NOT be the same number)
+- Each scene should depict a different moment or situation
+- Format: [{ "sceneTitle": "...", "insertAfterParagraph": 0, ... }, { "sceneTitle": "...", "insertAfterParagraph": 3, ... }]
+- Do NOT return a single object. Return an ARRAY of ${sceneCount} objects.`;
+        }
 
         const payload = {
-            systemInstruction: {
-                parts: [{ text: getEffectiveGeminiSystemInstruction(global) }]
-            },
-            contents: [
-                {
-                    role: 'user',
-                    parts: [{ text: userPrompt }]
-                }
-            ],
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ role: 'user', parts: [{ text: finalUserPrompt }] }],
             generationConfig: buildGeminiGenerationConfig(geminiRequest.model, {
-                temperature: 0.2,
+                temperature: sceneCount > 1 ? 0.5 : 0.2,
                 topP: 0.8,
                 responseMimeType: 'application/json'
             })
         };
 
         const data = await requestGeminiGenerateContent(geminiRequest, payload);
-
         const responseText = extractTextFromGeminiResponseData(data);
-
         if (!responseText) throw new Error('Gemini 응답이 비어 있어요.');
 
-        const rawPlan = extractJsonLoose(responseText);
-        const normalized = normalizeGeminiScenePlan(rawPlan, room, markdown);
+        const rawParsed = extractJsonLoose(responseText);
 
-        if (!normalized.scenePrompt) {
-            const repaired = sanitizeScenePrompt(await repairScenePromptWithGemini(targetBubble, markdown, rawPlan));
-            if (repaired) {
-                normalized.baseScenePrompt = repaired;
-                normalized.interactionPrompt = '';
-                normalized.scenePrompt = repaired;
+        // 배열이면 다중 장면, 객체면 단일 plan으로 처리
+        let rawPlans;
+        if (Array.isArray(rawParsed)) {
+            rawPlans = rawParsed.slice(0, sceneCount);
+        } else {
+            // 객체 하나만 왔을 때: sceneCount > 1이면 경고 후 1개만
+            if (sceneCount > 1) {
+                console.warn('[Crack Scene Painter] 다중 장면 요청했는데 AI가 객체 1개만 반환했어요. 1장면만 생성해요.');
             }
+            rawPlans = [rawParsed];
         }
 
-        if (!normalized.scenePrompt) {
-            const fallback = sanitizeScenePrompt(buildMinimalScenePromptFallback(cleanMarkdownText(markdown), 1));
-            normalized.baseScenePrompt = fallback;
-            normalized.interactionPrompt = '';
-            normalized.scenePrompt = fallback;
-            console.warn('[Crack Scene Painter] scenePrompt empty, using fallback scene tags:', fallback);
-        }
+        // insertAfterParagraph 중복 제거 (같은 인덱스면 +1씩 밀어냄)
+        const usedIndexes = new Set();
+        rawPlans.forEach(raw => {
+            let idx = Number(raw?.insertAfterParagraph ?? 0);
+            while (usedIndexes.has(idx)) idx++;
+            raw.insertAfterParagraph = idx;
+            usedIndexes.add(idx);
+        });
 
-        return normalized;
+        const plans = rawPlans.map(raw => {
+            const normalized = normalizeGeminiScenePlan(raw, room, markdown);
+            if (!normalized.scenePrompt) {
+                const fallback = sanitizeScenePrompt(buildMinimalScenePromptFallback(cleanMarkdownText(markdown), 1));
+                normalized.baseScenePrompt = fallback;
+                normalized.interactionPrompt = '';
+                normalized.scenePrompt = fallback;
+            }
+            return normalized;
+        });
+
+        return sceneCount === 1 ? plans[0] : plans;
     }
 
     function removeVisibleNamesFromScenePrompt(prompt, visibleCharacters) {
@@ -6877,11 +7177,21 @@ ${JSON.stringify(parsedPlan, null, 2)}
         return await blobToDataUrl(extractedBlob);
     }
 
-    async function insertFinalSceneImage({ markdown, imageUrl, plan, mode, basePrompt, baseNegative, finalPrompt, finalNegative, charPrompts, referenceInfo, naiSettings }) {
-        const messageKey = getMessageKey(markdown);
+    async function insertFinalSceneImage({ markdown, imageUrl, plan, mode, basePrompt, baseNegative, finalPrompt, finalNegative, charPrompts, referenceInfo, naiSettings, keepExisting, sceneIndex }) {
+        // 다중 장면 시 각 장면을 별도 키로 저장 (sceneIndex > 0이면 키에 인덱스 붙임)
+        const baseKey = getMessageKey(markdown);
+        const messageKey = (sceneIndex && sceneIndex > 0) ? `${baseKey}_s${sceneIndex}` : baseKey;
+        // insertAfterParagraph 범위 초과 시 마지막 문단으로 clamp
+        const _blocks = getInsertableContentBlocks(markdown);
+        if (_blocks.length > 0) {
+            plan = Object.assign({}, plan, {
+                insertAfterParagraph: Math.min(Number(plan.insertAfterParagraph) || 0, _blocks.length - 1)
+            });
+        }
         const result = insertSceneImageIntoMarkdown(markdown, imageUrl, plan.insertAfterParagraph, {
             mode,
             messageKey,
+            keepExisting: !!keepExisting,
             captionHtml: buildCaption(plan, plan.insertAfterParagraph, mode, {
                 basePrompt,
                 baseNegative,
@@ -7044,42 +7354,48 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 return;
             }
 
+            const _guidance = await cspRerollGuidance();
+            if (_guidance === null) return;
+
             const oldText = rerollBtn.textContent;
             rerollBtn.disabled = true;
             rerollBtn.setAttribute('data-csp-loading', 'true');
             rerollBtn.textContent = '⏳';
-            showToast('🎲 최신 설정으로 다시 생성 중...');
+            showTaskHud(_guidance ? 'AI 가이던스 적용 중' : '리롤 중', _guidance ? '자연어 힌트를 프롬프트로 변환하고 있어.' : '최신 설정으로 이미지를 다시 생성 중이야.', 10);
 
             try {
                 const currentGlobal = getGlobalSettings();
                 const currentRoom = getRoomSettings();
                 const settings = Object.assign({}, getDefaultGlobalSettings().naiSettings, currentGlobal.naiSettings || {});
 
-                let nextPromptState = {
-                    basePrompt: record.basePrompt || '',
-                    baseNegative: record.baseNegative || '',
-                    finalPrompt: record.finalPrompt,
-                    finalNegative: record.finalNegative || '',
-                    charPrompts: record.charPrompts || []
-                };
-
+                let nextPromptState;
                 if (record.plan) {
                     nextPromptState = buildFinalPromptFromPlan(record.plan, currentRoom);
                 } else {
-                    nextPromptState.basePrompt = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.basePositive || ''));
-                    nextPromptState.baseNegative = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.baseNegative || ''));
-                    nextPromptState.finalNegative = buildCommaPrompt([
-                        nextPromptState.baseNegative,
-                        buildCommaPrompt((currentRoom.characters || []).map(char => char.uc || ''))
-                    ]);
+                    const _bp = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.basePositive || ''));
+                    const _bn = normalizeNaiWeightSyntax(normalizePrompt(currentGlobal.baseNegative || ''));
+                    nextPromptState = {
+                        basePrompt: _bp,
+                        baseNegative: _bn,
+                        finalPrompt: record.finalPrompt || '',
+                        finalNegative: buildCommaPrompt([_bn, buildCommaPrompt((currentRoom.characters || []).map(c => c.uc || ''))]),
+                        charPrompts: record.charPrompts || []
+                    };
                 }
 
-                console.log('[Crack Scene Painter] reroll negative:', nextPromptState.finalNegative);
+                let _guidedFinalPrompt = nextPromptState.finalPrompt;
+                let _guidedBasePrompt = nextPromptState.basePrompt || '';
+                if (_guidance) {
+                    const _guidedResult = await applyGuidanceToPrompt(_guidance, nextPromptState.finalPrompt, record.plan || {});
+                    _guidedFinalPrompt = typeof _guidedResult === 'string' ? _guidedResult : (_guidedResult?.finalPrompt || nextPromptState.finalPrompt);
+                    _guidedBasePrompt = (typeof _guidedResult === 'object' && _guidedResult?.basePrompt) ? _guidedResult.basePrompt : _guidedBasePrompt;
+                }
+                updateTaskHud({ title: 'NAI 생성 중', message: '이미지를 생성하고 있어.', progress: 50 });
 
                 const nextImageUrl = await generateImageWithNai({
-                    basePrompt: nextPromptState.basePrompt || '',
+                    basePrompt: _guidedBasePrompt,
                     baseNegative: nextPromptState.baseNegative || '',
-                    finalPrompt: nextPromptState.finalPrompt,
+                    finalPrompt: _guidedFinalPrompt,
                     finalNegative: nextPromptState.finalNegative,
                     charPrompts: nextPromptState.charPrompts || [],
                     settings
@@ -7094,9 +7410,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
                         Number.isFinite(record.paragraphIndex) ? record.paragraphIndex : (record.plan?.insertAfterParagraph || 0),
                         'nai',
                         {
-                            basePrompt: nextPromptState.basePrompt || '',
+                            basePrompt: _guidedBasePrompt,
                             baseNegative: nextPromptState.baseNegative || '',
-                            finalPrompt: nextPromptState.finalPrompt,
+                            finalPrompt: _guidedFinalPrompt,
                             charPrompts: nextPromptState.charPrompts || [],
                             referenceInfo: getReferenceSummary(nextPromptState.charPrompts || []),
                             naiSettings: settings
@@ -7108,9 +7424,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 const currentHistoryItem = await appendSceneHistoryImage(messageKey, record, nextImageUrl);
 
                 record.mode = 'nai';
-                record.basePrompt = nextPromptState.basePrompt || '';
+                record.basePrompt = _guidedBasePrompt;
                 record.baseNegative = nextPromptState.baseNegative || '';
-                record.finalPrompt = nextPromptState.finalPrompt;
+                record.finalPrompt = _guidedFinalPrompt;
                 record.finalNegative = nextPromptState.finalNegative || '';
                 record.charPrompts = nextPromptState.charPrompts || [];
                 record.referenceInfo = getReferenceSummary(nextPromptState.charPrompts || []);
@@ -7129,10 +7445,13 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 records[messageKey] = record;
                 saveSceneRecords(records);
                 refreshImageHistoryControls(messageKey, box, record);
+                updateTaskHud({ title: '리롤 완료 ✅', message: '', progress: 100, status: 'success' });
+                setTimeout(() => hideTaskHud(), 400);
                 showToast('🔄 리롤 완료');
             } catch (err) {
                 console.error('[Crack Scene Painter] reroll failed:', err);
-                showToast('⚠️ 리롤 실패: ' + err.message);
+                hideTaskHud(true);
+                if (!String(err?.message || '').includes('aborted')) showToast('⚠️ 리롤 실패: ' + err.message);
             } finally {
                 rerollBtn.disabled = false;
                 rerollBtn.removeAttribute('data-csp-loading');
@@ -7323,7 +7642,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
         });
     }
 
-    function showScenePlanModal({ targetBubble, markdown, plan }) {
+    function showScenePlanModal({ targetBubble, markdown, plan, sceneIndex = 0 }) {
+        return new Promise((resolveModal) => {
         const existing = document.getElementById('csp-plan-modal');
         if (existing) existing.remove();
 
@@ -7488,7 +7808,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                             <input id="csp-nai-steps-range" type="range" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                             <input id="csp-nai-steps" class="csp-range-number" type="text" inputmode="decimal" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                         </div>
-                                        <div class="csp-mini-note">29 이상부터 추가 Anlas 소모.</div>
+
                                     </div>
                                     <div class="csp-field">
                                         <div class="csp-label-row"><label>Prompt Guidance</label><span class="csp-value-chip" id="csp-nai-scale-value">${escapeHtml(Number(settings.scale ?? 6.5).toFixed(1))}</span></div>
@@ -7866,7 +8186,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             saveGlobalSettings(nextGlobal);
         }
 
-        overlay.querySelector('#csp-plan-close').onclick = () => overlay.remove();
+        overlay.querySelector('#csp-plan-close').onclick = () => _closeModal('cancelled');
 
         overlay.querySelector('#csp-copy-final').onclick = async () => {
             await navigator.clipboard.writeText(finalPromptEl.value);
@@ -7890,7 +8210,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
             try {
                 const finalNegativeForRequest = finalNegativeEl.value.trim();
                 if (!finalNegativeForRequest) {
-                    const proceed = confirm('현재 Negative / UC가 비어 있어요. 그대로 생성할까요?');
+                    const proceed = await cspConfirm('Negative / UC가 비어 있어요. 그대로 생성할까요?');
                     if (!proceed) return;
                 }
 
@@ -7917,9 +8237,11 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     finalNegative: finalNegativeForRequest,
                     charPrompts,
                     referenceInfo: referenceInfoForRequest,
-                    naiSettings
+                    naiSettings,
+                    sceneIndex,
+                    keepExisting: sceneIndex > 0
                 });
-                overlay.remove();
+                _closeModal('done');
             } catch (err) {
                 console.error('[Crack Scene Painter] NAI generation failed:', err);
                 showToast('⚠️ NAI 생성 실패: ' + err.message);
@@ -7929,12 +8251,17 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
         };
 
+        const _closeModal = (reason = 'cancelled') => { overlay.remove(); resolveModal(reason); };
         overlay.addEventListener('mousedown', (e) => {
-            if (e.target === overlay) overlay.remove();
+            if (e.target === overlay) _closeModal('cancelled');
         });
+
+        // 취소 버튼
+        overlay.querySelector('#csp-cancel-plan')?.addEventListener('click', () => _closeModal('cancelled'));
 
         refreshAnlasBalance(true);
         document.body.appendChild(overlay);
+        }); // end Promise
     }
 
     let cspImageActionsBound = false;
@@ -7964,58 +8291,93 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 button.title = '스피드 모드 생성 중...';
             }
 
-            showToast('⚡ 스피드 모드 시작: 분석 후 바로 생성해요.');
-            const _speedProviderName = getProviderDisplayName(getGlobalSettings());
-            showTaskHud('스피드 모드', `AI 분석부터 NAI 생성까지 확인창 없이 바로 진행해.`, 10);
-            const ticker = startTaskHudTicker([
-                { title: 'AI 분석 중', message: `${_speedProviderName}에게 장면 분석을 요청했어. 잠깐만 기다려줘.`, progress: 26 },
-                { title: '프롬프트 조립 중', message: '캐릭터 슬롯과 장면 태그를 합쳐 NAI 프롬프트를 만들고 있어.', progress: 48 },
-                { title: 'NAI 생성 중', message: '이미지를 생성하고 있어. 이 단계에서 Anlas가 소모될 수 있어.', progress: 72 },
-                { title: '이미지 삽입 중', message: '생성된 이미지를 답변 문단 사이에 넣고 기록을 저장하고 있어.', progress: 90 }
-            ]);
-
-            const plan = await generateScenePlanWithGemini(bubble, markdown);
+            const sceneCount = Number(global.multiSceneCount || 1);
+            const _providerName = getProviderDisplayName(global);
             const roomCharacters = (room.characters || []).filter(hasCharacterSlotContent);
-            const matchedFocusNames = findCharacterNamesInText(room, getSceneWindowText(markdown, plan.insertAfterParagraph, 1) || cleanMarkdownText(markdown));
-            const fallbackVisible = (plan.visibleCharacters || []).filter(Boolean);
-            const chosenVisible = fallbackVisible.find(name => findRoomCharacterSlotByName(name, room))
-                || matchedFocusNames.find(name => findRoomCharacterSlotByName(name, room))
-                || (roomCharacters[0]?.name || '');
-            plan.visibleCharacters = chosenVisible ? [chosenVisible] : [];
-            plan.charactersInScene = plan.visibleCharacters.slice();
-            plan.characterCount = Math.max(1, plan.visibleCharacters.length || 1);
-            // 스피드 모드는 의상도 자동 처리: 로그 기반 임시 의상이 잡히면 그걸 우선 사용합니다.
-            plan.useTemporaryOutfit = !!plan.temporaryOutfitPrompt;
-
-            const promptState = buildFinalPromptFromPlan(plan, room);
-            const charPrompts = promptState.charPrompts || [];
-            const referenceInfoForRequest = getReferenceSummary(charPrompts);
-
-            const generatedImageUrl = await generateImageWithNai({
-                basePrompt: promptState.basePrompt,
-                baseNegative: promptState.baseNegative,
-                finalPrompt: promptState.finalPrompt,
-                finalNegative: promptState.finalNegative,
-                charPrompts,
-                settings: naiSettings
+            // 재생성 시 기존 다중 장면 기록 전체 초기화
+            removeAllSceneRecordsForMarkdown(markdown);
+            removeSceneImage(markdown);
+            const usedParagraphsSpeed = new Set(); // 중복 문단 방지용
+            // 이미 DOM에 삽입된 이미지 위치도 피해야 함
+            Array.from(markdown.querySelectorAll('.csp-generated-scene-image')).forEach(el => {
+                const _existingKey = el.getAttribute('data-message-key');
+                if (_existingKey) {
+                    const _records = getSceneRecords();
+                    const _rec = _records[_existingKey];
+                    if (_rec && Number.isFinite(_rec.paragraphIndex)) {
+                        usedParagraphsSpeed.add(_rec.paragraphIndex);
+                    }
+                }
             });
 
-            await insertFinalSceneImage({
-                markdown,
-                imageUrl: generatedImageUrl,
-                plan,
-                mode: 'nai',
-                basePrompt: promptState.basePrompt,
-                baseNegative: promptState.baseNegative,
-                finalPrompt: promptState.finalPrompt,
-                finalNegative: promptState.finalNegative,
-                charPrompts,
-                referenceInfo: referenceInfoForRequest,
-                naiSettings
-            });
+            showToast(`⚡ 스피드 모드 시작 (${sceneCount}장면)`);
+            showTaskHud('스피드 모드', `${sceneCount}개 장면을 분석→생성→삽입 순서로 진행해.`, 5);
 
-            updateTaskHud({ title: '스피드 모드 완료', message: '분석부터 이미지 삽입까지 끝났어.', progress: 100, status: 'success' });
-            showToast('⚡ 스피드 모드 생성 완료');
+            for (let _si = 0; _si < sceneCount; _si++) {
+                const _stepLabel = sceneCount > 1 ? ` (${_si + 1}/${sceneCount})` : '';
+                const _pct = Math.round(_si / sceneCount * 100);
+
+                // 2번째 장면부터 rate limit 방지 딜레이
+                if (_si > 0) {
+                    updateTaskHud({ title: `다음 장면 준비 중${_stepLabel}`, message: '잠깐 기다렸다가 다음 장면 분석을 시작할게.', progress: _pct });
+                    await new Promise(r => setTimeout(r, 4000));
+                }
+
+                // 1. 분석 — 본문을 N등분해서 해당 구간만 전달
+                updateTaskHud({ title: `AI 분석 중${_stepLabel}`, message: `${_providerName}에게 장면 분석 요청 중이야.`, progress: _pct + 5 });
+                // 본문을 sceneCount개 구간으로 나눠서 전달
+                const _allParagraphs = getParagraphs(markdown);
+                const _totalP = _allParagraphs.length;
+                const _segSize = Math.ceil(_totalP / sceneCount);
+                const _segStart = _si * _segSize;
+                const _segEnd = Math.min(_segStart + _segSize - 1, _totalP - 1);
+                const _pRange = sceneCount > 1 ? { start: _segStart, end: _segEnd } : null;
+                let _plan = await generateScenePlanWithGemini(bubble, markdown, { sceneCount: 1, paragraphRange: _pRange });
+                if (Array.isArray(_plan)) _plan = _plan[0];
+
+                // 캐릭터 자동 처리
+                const _matchedNames = findCharacterNamesInText(room, getSceneWindowText(markdown, _plan.insertAfterParagraph, 1) || cleanMarkdownText(markdown));
+                const _fallback = (_plan.visibleCharacters || []).filter(Boolean);
+                const _chosen = _fallback.find(n => findRoomCharacterSlotByName(n, room))
+                    || _matchedNames.find(n => findRoomCharacterSlotByName(n, room))
+                    || (roomCharacters[0]?.name || '');
+                _plan.visibleCharacters = _chosen ? [_chosen] : [];
+                _plan.charactersInScene = _plan.visibleCharacters.slice();
+                _plan.characterCount = Math.max(1, _plan.visibleCharacters.length || 1);
+                _plan.useTemporaryOutfit = !!_plan.temporaryOutfitPrompt;
+
+                // 2. NAI 생성
+                updateTaskHud({ title: `NAI 생성 중${_stepLabel}`, message: `"${_plan.sceneTitle || '장면'}" — Anlas 소모 중.`, progress: _pct + 25 });
+                const _ps = buildFinalPromptFromPlan(_plan, room);
+                const _charPrompts = _ps.charPrompts || [];
+                const _imageUrl = await generateImageWithNai({
+                    basePrompt: _ps.basePrompt, baseNegative: _ps.baseNegative,
+                    finalPrompt: _ps.finalPrompt, finalNegative: _ps.finalNegative,
+                    charPrompts: _charPrompts, settings: naiSettings
+                });
+
+                // 문단 중복만 피하기 — AI가 고른 위치 최대한 존중, 겹치면 +1씩만 밀기
+                let _finalIdx = _plan.insertAfterParagraph;
+                while (usedParagraphsSpeed.has(_finalIdx)) _finalIdx++;
+                _plan.insertAfterParagraph = _finalIdx;
+                usedParagraphsSpeed.add(_finalIdx);
+
+                // 3. 삽입 (2번째 이후는 기존 이미지 유지)
+                updateTaskHud({ title: `이미지 삽입 중${_stepLabel}`, message: `문단 ${_plan.insertAfterParagraph + 1} 뒤에 삽입 중.`, progress: _pct + 28 });
+                await insertFinalSceneImage({
+                    markdown, imageUrl: _imageUrl, plan: _plan, mode: 'nai',
+                    basePrompt: _ps.basePrompt, baseNegative: _ps.baseNegative,
+                    finalPrompt: _ps.finalPrompt, finalNegative: _ps.finalNegative,
+                    charPrompts: _charPrompts, referenceInfo: getReferenceSummary(_charPrompts), naiSettings,
+                    keepExisting: _si > 0,
+                    sceneIndex: _si
+                });
+
+                showToast(`🖼️ ${_si + 1}/${sceneCount} 삽입 완료: ${_plan.sceneTitle || '장면'}`);
+            }
+
+            updateTaskHud({ title: '스피드 모드 완료 ✅', message: `${sceneCount}개 장면 모두 생성 완료!`, progress: 100, status: 'success' });
+            showToast(`⚡ 스피드 모드 완료 (${sceneCount}장면)`);
             setTimeout(() => hideTaskHud(), 420);
             markSceneButtons(messageKey, true);
         } catch (err) {
@@ -8054,15 +8416,32 @@ ${JSON.stringify(parsedPlan, null, 2)}
         return btn;
     }
 
+    const _reapplyInProgress = new WeakSet();
     async function reapplySavedScene(markdown) {
-        const key = getMessageKey(markdown);
+        if (!markdown) return;
+        if (_reapplyInProgress.has(markdown)) return;
+        _reapplyInProgress.add(markdown);
+        try {
+        const baseKey = getMessageKey(markdown);
         const records = getSceneRecords();
+
+        // 다중 장면 복원: baseKey, baseKey_s1, baseKey_s2 순서로 복원
+        // _s1이 삭제돼도 _s2는 계속 복원해야 하므로 break 대신 continue
+        const keysToRestore = [baseKey];
+        for (let _si = 1; _si <= 5; _si++) {
+            const _k = `${baseKey}_s${_si}`;
+            if (records[_k]) keysToRestore.push(_k);
+            // break 제거 — 중간 키가 없어도 뒤 키 계속 확인
+        }
+
+        for (const key of keysToRestore) {
         const record = records[key];
-        if (!record) return;
+        if (!record) continue;
         // React 리렌더링으로 DOM이 교체된 경우를 감지:
         // 이미지 엘리먼트가 있어도 document에 연결돼 있지 않으면(detached) 재삽입 필요
-        const existing = markdown.querySelector('.csp-generated-scene-image');
-        if (existing && existing.isConnected) return;
+        const existing = Array.from(markdown.querySelectorAll('.csp-generated-scene-image'))
+            .find(el => el.getAttribute('data-message-key') === key && el.isConnected);
+        if (existing) continue;
 
         normalizeSceneRecordHistory(record, key);
 
@@ -8070,10 +8449,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
         if (String(imageUrl || '').startsWith('blob:')) {
             delete records[key];
             saveSceneRecords(records);
-            return;
+            continue;
         }
 
-        if (!imageUrl) return;
+        if (!imageUrl) continue;
 
         // 예전 data URL 기록이 남아 있으면 IndexedDB로 옮기고 localStorage에서는 제거합니다.
         const currentItem = getCurrentHistoryItem(record);
@@ -8091,6 +8470,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         insertSceneImageIntoMarkdown(markdown, imageUrl, record.paragraphIndex, {
             mode: record.mode || 'gemini',
             messageKey: key,
+            keepExisting: key !== baseKey,
             captionHtml: buildCaption(record.plan || {}, record.paragraphIndex, 'restore', {
                 basePrompt: record.basePrompt || '',
                 baseNegative: record.baseNegative || '',
@@ -8102,6 +8482,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
             historyHtml: buildImageHistoryControls(key, record)
         });
         markSceneButtons(key, true);
+        } // end for keysToRestore
+        } finally {
+            _reapplyInProgress.delete(markdown);
+        }
     }
 
     function makeMessageGenerateButton(bubble, markdown) {
@@ -8112,8 +8496,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
         btn.setAttribute('aria-label', 'AI 삽화 생성');
         btn.innerHTML = `
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-5-7-4 5.28-3-3.47L5 19h14l-3-7z"/>
-                <circle cx="16" cy="8.5" r="1.5"/>
+                <path d="M12 2l2.09 6.26L20 10l-5.91 1.74L12 18l-2.09-6.26L4 10l5.91-1.74L12 2z"/>
+                <path d="M19 14l1.12 3.38L23.5 18.5l-3.38 1.12L19 23l-1.12-3.38L14.5 18.5l3.38-1.12L19 14z" opacity="0.7"/>
+                <path d="M5 14l.75 2.25L8 17l-2.25.75L5 20l-.75-2.25L2 17l2.25-.75L5 14z" opacity="0.5"/>
             </svg>
         `;
 
@@ -8146,12 +8531,80 @@ ${JSON.stringify(parsedPlan, null, 2)}
             ]);
 
             try {
-                const plan = await generateScenePlanWithGemini(bubble, markdown);
-                console.log('[Crack Scene Painter] AI scene plan:', plan);
-                updateTaskHud({ title: '분석 완료', message: 'AI 분석이 끝났어. 생성 전에 확인창을 열어줄게.', progress: 100, status: 'success' });
-                showScenePlanModal({ targetBubble: bubble, markdown, plan });
-                showToast('✅ AI 분석 완료. 생성 전 확인창을 열었어요.');
-                setTimeout(() => hideTaskHud(), 360);
+                const _global = getGlobalSettings();
+                const _sceneCount = Number(_global.multiSceneCount || 1);
+                // 재생성 시 기존 다중 장면 기록 전체 초기화
+                removeAllSceneRecordsForMarkdown(markdown);
+                removeSceneImage(markdown);
+                const usedParagraphs = new Set();
+                // 이미 DOM에 삽입된 이미지 위치도 피해야 함
+                Array.from(markdown.querySelectorAll('.csp-generated-scene-image')).forEach(el => {
+                    const _ek = el.getAttribute('data-message-key');
+                    if (_ek) {
+                        const _er = getSceneRecords()[_ek];
+                        if (_er && Number.isFinite(_er.paragraphIndex)) usedParagraphs.add(_er.paragraphIndex);
+                    }
+                });
+
+                hideTaskHud(true);
+
+                for (let _i = 0; _i < _sceneCount; _i++) {
+                    // 2번째부터 rate limit 방지 딜레이
+                    if (_i > 0) {
+                        await new Promise(r => setTimeout(r, 4000));
+                    }
+                    // 이미 사용된 문단 힌트를 유저 메시지에 추가
+                    const _excludeHint = usedParagraphs.size > 0
+                        ? `
+
+[이미 선택된 문단 인덱스: ${[...usedParagraphs].join(', ')} — 이 인덱스는 사용하지 마.]`
+                        : '';
+
+                    // 본문을 sceneCount개 구간으로 나눠서 해당 구간만 전달
+                    const _ap = getParagraphs(markdown);
+                    const _tp = _ap.length;
+                    const _ss = Math.ceil(_tp / _sceneCount);
+                    const _pStart = _i * _ss;
+                    const _pEnd = Math.min(_pStart + _ss - 1, _tp - 1);
+                    const _pr = _sceneCount > 1 ? { start: _pStart, end: _pEnd } : null;
+
+                    showTaskHud(`장면 분석 중 (${_i + 1}/${_sceneCount})`, `AI에게 ${_i + 1}번째 장면을 분석 요청 중이야.`, 20);
+                    const _ticker = startTaskHudTicker([
+                        { title: `AI 분석 중 (${_i + 1}/${_sceneCount})`, message: 'API에 분석 요청했어. 잠깐만 기다려줘.', progress: 50 },
+                        { title: '응답 해석 중', message: '받아온 JSON을 정리하고 있어.', progress: 80 }
+                    ]);
+
+                    let _plan;
+                    try {
+                        _plan = await generateScenePlanWithGemini(bubble, markdown, { sceneCount: 1, paragraphRange: _pr });
+                        if (Array.isArray(_plan)) _plan = _plan[0];
+                    } finally {
+                        _ticker.stop();
+                    }
+
+                    // 문단 중복만 피하기 — AI가 고른 위치 최대한 존중, 겹치면 +1씩만 밀기
+                    let _adjIdx = _plan.insertAfterParagraph;
+                    while (usedParagraphs.has(_adjIdx)) _adjIdx++;
+                    _plan.insertAfterParagraph = _adjIdx;
+                    console.log(`[Crack Scene Painter] AI scene plan ${_i + 1}/${_sceneCount}:`, _plan);
+
+                    updateTaskHud({ title: `분석 완료 (${_i + 1}/${_sceneCount})`, message: '확인창을 열어줄게. 닫으면 다음 장면 분석을 시작해.', progress: 100, status: 'success' });
+                    setTimeout(() => hideTaskHud(true), 300);
+
+                    const _modalResult = await showScenePlanModal({ targetBubble: bubble, markdown, plan: _plan, sceneIndex: _i });
+                    if (_modalResult === 'cancelled') break;
+
+                    // 실제 생성 완료 후에만 사용된 문단으로 등록
+                    // 실제 삽입된 위치(record.paragraphIndex)를 우선, 없으면 plan의 위치 사용
+                    if (_modalResult === 'done') {
+                        const _insertedKey = getMessageKey(markdown) + (_i > 0 ? '_s' + _i : '');
+                        const _insertedRecord = getSceneRecords()[_insertedKey];
+                        const _insertedIdx = Number.isFinite(_insertedRecord?.paragraphIndex) ? _insertedRecord.paragraphIndex : _adjIdx;
+                        usedParagraphs.add(_insertedIdx);
+                    }
+                }
+
+                showToast(`✅ ${_sceneCount}개 장면 분석/생성 완료`);
             } catch (err) {
                 console.error('[Crack Scene Painter] AI 분석 실패:', err);
                 showToast('⚠️ 분석 실패: ' + err.message);
@@ -8290,17 +8743,18 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 </div>
             `;
 
-            // 접기/펼치기
+            // 접기/펼치기 — 이름이 있는 기존 카드는 접힌 상태로 시작, 새 카드(이름 없음)는 펼침
             const collapseBtn = card.querySelector('.csp-character-collapse-btn');
             const body = card.querySelector('.csp-character-body');
             const head = card.querySelector('[data-csp-collapse-toggle]');
-            let collapsed = false;
-            const toggleCollapse = () => {
-                collapsed = !collapsed;
+            let collapsed = !!getCharacterSlotName(char); // 이름 있으면 접힌 상태로 시작
+            const applyCollapse = () => {
                 body.style.display = collapsed ? 'none' : '';
                 collapseBtn.textContent = collapsed ? '▼' : '▲';
                 collapseBtn.title = collapsed ? '펼치기' : '접기';
             };
+            const toggleCollapse = () => { collapsed = !collapsed; applyCollapse(); };
+            applyCollapse();
             collapseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCollapse(); });
             head.addEventListener('click', (e) => { if (e.target !== collapseBtn && !e.target.closest('.csp-remove-character')) toggleCollapse(); });
 
@@ -8437,9 +8891,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
         overlay.innerHTML = `
             <div class="csp-modal" role="dialog" aria-modal="true">
                 <h2>🎨 Uni Scene Painter 설정</h2>
-                <div class="csp-desc">
-                    Gemini: 장면/삽입 위치 분석<br>NAI: 실제 이미지 생성<br>채팅방 ID: <b>${escapeHtml(roomId)}</b>
-                </div>
+                <div class="csp-desc">채팅방 <b>${escapeHtml(roomId)}</b></div>
 
                 <div class="csp-tab-shell">
                     <div class="csp-tab-list" role="tablist" aria-label="Scene Painter 설정 탭">
@@ -8528,7 +8980,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     </div>
                     <div class="csp-section-subbox" id="csp-glm-section" style="display:none;">
                         <div class="csp-section-title">Zhipu AI (GLM) 설정</div>
-                        <div class="csp-mini-note">bigmodel.cn에서 API Key 발급. 무료 모델은 속도가 느릴 수 있어.</div>
+
                         <div class="csp-grid">
                             <div class="csp-field">
                                 <label>GLM 모델</label>
@@ -8545,12 +8997,12 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     </div>
                     <div class="csp-section-subbox" id="csp-openrouter-section" style="display:none;">
                         <div class="csp-section-title">OpenRouter 설정</div>
-                        <div class="csp-mini-note">openrouter.ai에서 API Key 발급. 무료 모델은 :free 접미사가 붙어.</div>
+
                         <div class="csp-grid">
                             <div class="csp-field">
                                 <label>OpenRouter 모델 ID</label>
                                 <input id="csp-openrouter-model" value="${escapeHtml(global.openrouterModel||'google/gemini-2.0-flash-exp:free')}" placeholder="예: google/gemini-2.0-flash-exp:free">
-                                <div class="csp-mini-note">openrouter.ai/models 에서 확인. 무료 모델은 뒤에 :free 붙여.</div>
+
                             </div>
                             <div class="csp-field">
                                 <label>OpenRouter API Key</label>
@@ -8571,12 +9023,12 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     <div class="csp-field">
                         <label>Vertex OAuth Access Token</label>
                         <input id="csp-vertex-token" type="password" value="${escapeHtml(global.vertexAccessToken || '')}" placeholder="ya29...">
-                        <div class="csp-mini-note">Vertex AI 사용 시 입력해.<br>Gemini 3.x에서 404가 나면 Vertex Location을 global로 바꿔봐.</div>
+                        <div class="csp-mini-note">Gemini 3.x 404 오류 시 Location → global</div>
                     </div>
                     <div class="csp-field">
-                        <label>Firebase Config JSON / JS 객체 <span class="csp-mini-note">(Beta)</span></label>
+                        <label>Firebase Config <span style="opacity:0.5;font-weight:400;">(Beta)</span></label>
                         <textarea id="csp-firebase-config" placeholder='const firebaseConfig = { apiKey: "...", authDomain: "...", projectId: "...", appId: "..." };'>${escapeHtml(global.firebaseConfigJson || '')}</textarea>
-                        <div class="csp-mini-note">Firebase AI Logic Beta용이야.<br>Firebase 콘솔에서 복사한 firebaseConfig 객체를 그대로 붙여넣어.<br>이 모드에서는 Vertex OAuth Access Token을 쓰지 않아.</div>
+                        <div class="csp-mini-note">Firebase 콘솔의 firebaseConfig 객체를 붙여넣기</div>
                     </div>
                     <div class="csp-grid">
                         <div class="csp-field">
@@ -8603,13 +9055,13 @@ ${JSON.stringify(parsedPlan, null, 2)}
                         <div class="csp-tab-panel" data-csp-tab-panel="characters" role="tabpanel">
                 <div class="csp-section">
                     <div class="csp-section-title">현재 채팅방 Character Prompt 슬롯</div>
-                    <div class="csp-mini-note">이 방에만 저장되는 캐릭터 슬롯이야. 여러 방에서 같은 캐릭터를 쓸 땐 아래 퀵 슬롯으로 저장/불러오기 가능.</div>
+
                     <div id="csp-character-list"></div>
                     <button class="csp-btn csp-btn-small" id="csp-add-character" type="button">+ 캐릭터 추가</button>
 
                     <div class="csp-section-subbox">
                         <div class="csp-section-title">퀵 슬롯</div>
-                        <div class="csp-mini-note">현재 캐릭터 슬롯 묶음을 전역 저장해두고, 다른 채팅방에서 바로 불러올 수 있어.</div>
+
                         <div class="csp-grid csp-quick-slot-grid">
                             <div class="csp-field">
                                 <label>저장 / 덮어쓰기 이름</label>
@@ -8630,7 +9082,27 @@ ${JSON.stringify(parsedPlan, null, 2)}
                         </div>
                         <div class="csp-tab-panel" data-csp-tab-panel="prompts" role="tabpanel">
                 <div class="csp-section">
-                    <div class="csp-section-title">공통 고정 프롬프트</div>
+                    <div class="csp-section-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" data-csp-section-toggle="prompt-fixed">
+                        <span>공통 고정 프롬프트</span>
+                        <button class="csp-btn csp-btn-small" type="button" style="padding:2px 8px;font-size:11px;" data-csp-section-arrow="prompt-fixed">▲</button>
+                    </div>
+                    <div class="csp-section-subbox" style="margin-bottom:10px;">
+                        <div class="csp-grid csp-quick-slot-grid">
+                            <div class="csp-field">
+                                <label>프리셋 이름</label>
+                                <input id="csp-prompt-preset-name" placeholder="프리셋 이름 입력">
+                            </div>
+                            <div class="csp-field">
+                                <label>프리셋 불러오기</label>
+                                <select id="csp-prompt-preset-select">${buildPresetOptions(global.promptPresets || [])}</select>
+                            </div>
+                        </div>
+                        <div class="csp-actions-left csp-quick-slot-actions">
+                            <button class="csp-btn csp-btn-small" id="csp-prompt-preset-save" type="button">저장 / 덮어쓰기</button>
+                            <button class="csp-btn csp-btn-small" id="csp-prompt-preset-load" type="button">불러오기</button>
+                            <button class="csp-btn csp-btn-small csp-btn-danger" id="csp-prompt-preset-delete" type="button">삭제</button>
+                        </div>
+                    </div>
                     <div class="csp-field">
                         <label>고정 Positive / 작가태그</label>
                         <textarea id="csp-base-positive" class="csp-long" placeholder="artist tags, base style tags...">${escapeHtml(global.basePositive || '')}</textarea>
@@ -8643,26 +9115,59 @@ ${JSON.stringify(parsedPlan, null, 2)}
                             </select>
                         </div>
                         <textarea id="csp-base-negative" class="csp-long" placeholder="bad anatomy, blurry...">${escapeHtml(global.baseNegative || '')}</textarea>
-                        <div class="csp-mini-note">기본 생성/리롤 설정에 사용할 NAI UC 프리셋. 실제 생성 시 직접 쓴 UC와 합쳐서 전송돼.</div>
-                    </div>
-                    <div class="csp-field">
-                        <label>Gemini 장면 태그 지침</label>
-                        <div class="csp-mini-note">장면 태그 생성용 보조 지침.<br>짧고 안정적인 태그를 만들 때 사용해.</div>
-                        <textarea id="csp-nai-prompt-guide" class="csp-long">${escapeHtml(global.naiPromptGuide || getDefaultNaiPromptGuide())}</textarea>
                     </div>
                 </div>
                 <div class="csp-section">
-                    <div class="csp-section-title">Gemini 분석 지침</div>
+                    <div class="csp-section-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" data-csp-section-toggle="prompt-gemini">
+                        <span>Gemini 분석 지침</span>
+                        <button class="csp-btn csp-btn-small" type="button" style="padding:2px 8px;font-size:11px;" data-csp-section-arrow="prompt-gemini">▲</button>
+                    </div>
+                    <div class="csp-section-subbox" style="margin-bottom:10px;">
+                        <div class="csp-grid csp-quick-slot-grid">
+                            <div class="csp-field">
+                                <label>프리셋 이름</label>
+                                <input id="csp-gemini-preset-name" placeholder="프리셋 이름 입력">
+                            </div>
+                            <div class="csp-field">
+                                <label>프리셋 불러오기</label>
+                                <select id="csp-gemini-preset-select">${buildPresetOptions(global.geminiPresets || [])}</select>
+                            </div>
+                        </div>
+                        <div class="csp-actions-left csp-quick-slot-actions">
+                            <button class="csp-btn csp-btn-small" id="csp-gemini-preset-save" type="button">저장 / 덮어쓰기</button>
+                            <button class="csp-btn csp-btn-small" id="csp-gemini-preset-load" type="button">불러오기</button>
+                            <button class="csp-btn csp-btn-small csp-btn-danger" id="csp-gemini-preset-delete" type="button">삭제</button>
+                        </div>
+                    </div>
                     <div class="csp-field">
-                        <label>Gemini 분석 지침<br><span class="csp-mini-note">로그를 읽고 장면 태그를 만들 때 사용</span></label>
+                        <label>Gemini 태그 지침 (보조)</label>
+                        <textarea id="csp-nai-prompt-guide" class="csp-long">${escapeHtml(global.naiPromptGuide || getDefaultNaiPromptGuide())}</textarea>
+                    </div>
+                    <div class="csp-field">
+                        <label>Gemini 분석 지침</label>
                         <textarea id="csp-gemini-instruction" class="csp-long">${escapeHtml(global.geminiInstruction)}</textarea>
                     </div>
                 </div>
                         </div>
                         <div class="csp-tab-panel" data-csp-tab-panel="advanced" role="tabpanel">
                 <div class="csp-section">
+                    <div class="csp-section-title">다중 장면 생성</div>
+
+                    <div class="csp-grid">
+                        <div class="csp-field">
+                            <label>장면 수 <span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:99px;font-weight:700;vertical-align:middle;margin-left:4px;">BETA</span></label>
+                            <select id="csp-multi-scene-count">
+                                <option value="1" ${(global.multiSceneCount||1) == 1 ? 'selected' : ''}>1장면 (기본)</option>
+                                <option value="2" ${(global.multiSceneCount||1) == 2 ? 'selected' : ''}>2장면</option>
+                                <option value="3" ${(global.multiSceneCount||1) == 3 ? 'selected' : ''}>3장면</option>
+                            </select>
+
+                        </div>
+                    </div>
+                </div>
+                <div class="csp-section">
                     <div class="csp-section-title">공통 NAI 생성 설정</div>
-                    <div class="csp-mini-note">SMEA/DYN·다중 생성은 비활성화.<br>항상 1장만 생성해.</div>
+
                     <div class="csp-grid">
                         <div class="csp-field">
                             <label>Resolution</label>
@@ -8687,7 +9192,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                                 <input id="csp-default-steps-range" type="range" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                                 <input id="csp-default-steps" class="csp-range-number" type="text" inputmode="decimal" min="1" max="50" step="1" value="${escapeHtml(String(settings.steps ?? 28))}">
                             </div>
-                            <div class="csp-mini-note">29 이상부터 추가 Anlas 소모.</div>
+
                         </div>
                         <div class="csp-field">
                             <div class="csp-label-row"><label>Prompt Guidance</label><span class="csp-value-chip" id="csp-default-scale-value">${escapeHtml(Number(settings.scale ?? 6.5).toFixed(1))}</span></div>
@@ -8732,7 +9237,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     <div class="csp-section-title">이미지 저장</div>
                     <label class="csp-check-row">
                         <input id="csp-folder-save-enabled" type="checkbox" ${global.folderSaveEnabled ? 'checked' : ''}>
-                        NAI 생성 이미지를 선택 폴더에도 자동 저장<br><span class="csp-mini-note">Reference 이미지는 CSP_References 폴더 사용</span>
+                        NAI 생성 이미지를 선택 폴더에도 자동 저장
                     </label>
                     <div class="csp-actions-left">
                         <button class="csp-btn csp-btn-small" id="csp-choose-image-folder" type="button">이미지 저장 폴더 선택</button>
@@ -8742,16 +9247,11 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 </div>
                 <div class="csp-section">
                     <div class="csp-section-title">저장소 관리</div>
-                    <div class="csp-mini-note">
-                        v4.23부터 설정/삽화 기록은 자동 압축 저장하고, 긴 프롬프트 상세는 IndexedDB 보조 저장소로 분리해 localStorage 용량 초과를 줄여.
-                    </div>
                     <div class="csp-storage-status" id="csp-storage-status">저장소 상태 확인 중...</div>
                     <div class="csp-actions-left">
                         <button class="csp-btn csp-btn-small" id="csp-storage-refresh" type="button">저장소 진단</button>
                         <button class="csp-btn csp-btn-small" id="csp-storage-compress" type="button">기존 기록 압축</button>
-                    </div>
-                    <div class="csp-mini-note">
-                        갤러리 이미지 파일은 기존처럼 IndexedDB/폴더에 저장되고, 여기서는 “어느 문단 뒤에 붙일지” 같은 목차 기록을 가볍게 관리해.
+                        <button class="csp-btn csp-btn-small" id="csp-storage-dump" type="button">캐릭터 데이터 덤프</button>
                     </div>
                 </div>
                         </div>
@@ -8849,17 +9349,87 @@ ${JSON.stringify(parsedPlan, null, 2)}
             showToast(`📥 퀵 슬롯 불러옴: ${slot.name}`);
         });
 
-        overlay.querySelector('#csp-quick-slot-delete')?.addEventListener('click', () => {
+        overlay.querySelector('#csp-quick-slot-delete')?.addEventListener('click', async () => {
             const name = String(quickSlotSelectEl?.value || '').trim();
             if (!name) {
                 showToast('⚠️ 삭제할 퀵 슬롯이 없어요.');
                 return;
             }
-            if (!confirm(`퀵 슬롯 "${name}"을 삭제할까요?`)) return;
+            if (!(await cspConfirm(`퀵 슬롯 "${name}"을 삭제할까요?`))) return;
             quickCharacterSlots = quickCharacterSlots.filter(slot => String(slot.name || '').trim() !== name);
             refreshQuickSlotSelect('');
             if (quickSlotNameEl?.value.trim() === name) quickSlotNameEl.value = '';
             showToast(`🗑️ 퀵 슬롯 삭제 완료: ${name}`);
+        });
+
+
+        // ── 프롬프트 프리셋 ──────────────────────────────────────────────
+        let promptPresets = Array.isArray(global.promptPresets) ? global.promptPresets.slice() : [];
+        const promptPresetNameEl = overlay.querySelector('#csp-prompt-preset-name');
+        const promptPresetSelectEl = overlay.querySelector('#csp-prompt-preset-select');
+        function refreshPromptPresetSelect(sel) {
+            if (promptPresetSelectEl) { promptPresetSelectEl.innerHTML = buildPresetOptions(promptPresets); if (sel) promptPresetSelectEl.value = sel; }
+        }
+        overlay.querySelector('#csp-prompt-preset-save')?.addEventListener('click', () => {
+            const name = String(promptPresetNameEl?.value || '').trim();
+            if (!name) { showToast('⚠️ 프리셋 이름을 입력해줘.'); return; }
+            const preset = { name, basePositive: overlay.querySelector('#csp-base-positive').value.trim(), baseNegative: overlay.querySelector('#csp-base-negative').value.trim(), ucPreset: Number(overlay.querySelector('#csp-default-uc-preset')?.value || 0) };
+            const idx = promptPresets.findIndex(p => p.name === name);
+            if (idx >= 0) promptPresets[idx] = preset; else promptPresets.push(preset);
+            refreshPromptPresetSelect(name);
+            showToast('✅ 프롬프트 프리셋 저장: ' + name);
+        });
+        overlay.querySelector('#csp-prompt-preset-load')?.addEventListener('click', () => {
+            const name = promptPresetSelectEl?.value;
+            const preset = promptPresets.find(p => p.name === name);
+            if (!preset) { showToast('⚠️ 불러올 프리셋이 없어요.'); return; }
+            overlay.querySelector('#csp-base-positive').value = preset.basePositive || '';
+            overlay.querySelector('#csp-base-negative').value = preset.baseNegative || '';
+            if (overlay.querySelector('#csp-default-uc-preset')) overlay.querySelector('#csp-default-uc-preset').value = String(preset.ucPreset ?? 0);
+            if (promptPresetNameEl) promptPresetNameEl.value = name;
+            showToast('📥 프롬프트 프리셋 불러옴: ' + name);
+        });
+        overlay.querySelector('#csp-prompt-preset-delete')?.addEventListener('click', async () => {
+            const name = promptPresetSelectEl?.value;
+            if (!name) { showToast('⚠️ 삭제할 프리셋이 없어요.'); return; }
+            if (!(await cspConfirm('프리셋 "' + name + '"을 삭제할까요?'))) return;
+            promptPresets = promptPresets.filter(p => p.name !== name);
+            refreshPromptPresetSelect('');
+            showToast('🗑️ 프롬프트 프리셋 삭제: ' + name);
+        });
+
+        // ── Gemini 프리셋 ──────────────────────────────────────────────
+        let geminiPresets = Array.isArray(global.geminiPresets) ? global.geminiPresets.slice() : [];
+        const geminiPresetNameEl = overlay.querySelector('#csp-gemini-preset-name');
+        const geminiPresetSelectEl = overlay.querySelector('#csp-gemini-preset-select');
+        function refreshGeminiPresetSelect(sel) {
+            if (geminiPresetSelectEl) { geminiPresetSelectEl.innerHTML = buildPresetOptions(geminiPresets); if (sel) geminiPresetSelectEl.value = sel; }
+        }
+        overlay.querySelector('#csp-gemini-preset-save')?.addEventListener('click', () => {
+            const name = String(geminiPresetNameEl?.value || '').trim();
+            if (!name) { showToast('⚠️ 프리셋 이름을 입력해줘.'); return; }
+            const preset = { name, naiPromptGuide: overlay.querySelector('#csp-nai-prompt-guide').value.trim(), geminiInstruction: overlay.querySelector('#csp-gemini-instruction').value.trim() };
+            const idx = geminiPresets.findIndex(p => p.name === name);
+            if (idx >= 0) geminiPresets[idx] = preset; else geminiPresets.push(preset);
+            refreshGeminiPresetSelect(name);
+            showToast('✅ Gemini 프리셋 저장: ' + name);
+        });
+        overlay.querySelector('#csp-gemini-preset-load')?.addEventListener('click', () => {
+            const name = geminiPresetSelectEl?.value;
+            const preset = geminiPresets.find(p => p.name === name);
+            if (!preset) { showToast('⚠️ 불러올 프리셋이 없어요.'); return; }
+            overlay.querySelector('#csp-nai-prompt-guide').value = preset.naiPromptGuide || '';
+            overlay.querySelector('#csp-gemini-instruction').value = preset.geminiInstruction || '';
+            if (geminiPresetNameEl) geminiPresetNameEl.value = name;
+            showToast('📥 Gemini 프리셋 불러옴: ' + name);
+        });
+        overlay.querySelector('#csp-gemini-preset-delete')?.addEventListener('click', async () => {
+            const name = geminiPresetSelectEl?.value;
+            if (!name) { showToast('⚠️ 삭제할 프리셋이 없어요.'); return; }
+            if (!(await cspConfirm('프리셋 "' + name + '"을 삭제할까요?'))) return;
+            geminiPresets = geminiPresets.filter(p => p.name !== name);
+            refreshGeminiPresetSelect('');
+            showToast('🗑️ Gemini 프리셋 삭제: ' + name);
         });
 
         const defaultOrientationEl = overlay.querySelector('#csp-default-orientation');
@@ -8876,6 +9446,33 @@ ${JSON.stringify(parsedPlan, null, 2)}
         bindRangeNumberPair(overlay.querySelector('#csp-default-steps-range'), overlay.querySelector('#csp-default-steps'), overlay.querySelector('#csp-default-steps-value'), { min: 1, max: 50, step: 1, decimals: 0 });
         bindRangeNumberPair(overlay.querySelector('#csp-default-scale-range'), overlay.querySelector('#csp-default-scale'), overlay.querySelector('#csp-default-scale-value'), { min: 0, max: 10, step: 0.1, decimals: 1 });
         bindRangeNumberPair(overlay.querySelector('#csp-default-guidance-rescale-range'), overlay.querySelector('#csp-default-guidance-rescale'), overlay.querySelector('#csp-default-guidance-rescale-value'), { min: 0, max: 1, step: 0.01, decimals: 2 });
+
+        // ── 프롬프트 탭 섹션 접기 ──────────────────────────────────────
+        ['prompt-fixed', 'prompt-gemini'].forEach(key => {
+            const titleEl = overlay.querySelector(`[data-csp-section-toggle="${key}"]`);
+            const arrowEl = overlay.querySelector(`[data-csp-section-arrow="${key}"]`);
+            if (!titleEl) return;
+            const section = titleEl.closest('.csp-section');
+            if (!section) return;
+            // 섹션 내부(타이틀 제외) 접기용 wrapper
+            let body = section.querySelector('.csp-section-collapsible-body');
+            if (!body) {
+                body = document.createElement('div');
+                body.className = 'csp-section-collapsible-body';
+                // 섹션 타이틀 다음 요소들을 body로 이동
+                const children = Array.from(section.children).slice(1);
+                children.forEach(c => body.appendChild(c));
+                section.appendChild(body);
+            }
+            let collapsed = false;
+            const toggle = () => {
+                collapsed = !collapsed;
+                body.style.display = collapsed ? 'none' : '';
+                if (arrowEl) arrowEl.textContent = collapsed ? '▼' : '▲';
+            };
+            titleEl.addEventListener('click', (e) => { if (e.target !== arrowEl) toggle(); });
+            arrowEl?.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+        });
 
         const folderStatusEl = overlay.querySelector('#csp-folder-status');
         async function refreshFolderStatus() {
@@ -8930,6 +9527,16 @@ ${JSON.stringify(parsedPlan, null, 2)}
         overlay.querySelector('#csp-storage-refresh')?.addEventListener('click', () => {
             refreshStorageStatus();
             showToast('📊 저장소 상태를 확인했어요.');
+        });
+
+        overlay.querySelector('#csp-storage-dump')?.addEventListener('click', () => {
+            const globalData = getLocalJsonStorage(GLOBAL_SETTINGS_KEY, {});
+            const roomData = getLocalJsonStorage(getRoomSettingsKey(), {});
+            const roomChars = (roomData.characters || []).map(c => c.name || '(unnamed)');
+            const quickSlots = (globalData.characterQuickSlots || []).map(s => s.name + ': [' + (s.characters||[]).map(c=>c.name).join(', ') + ']');
+            const geminiInstr = String(globalData.geminiInstruction || '').slice(0, 200);
+
+            alert('[현재 방 캐릭터 슬롯]\n' + (roomChars.join('\n') || '없음') + '\n\n[퀵 슬롯]\n' + (quickSlots.join('\n') || '없음') + '\n\n[geminiInstruction 앞200자]\n' + geminiInstr);
         });
 
         overlay.querySelector('#csp-storage-compress')?.addEventListener('click', () => {
@@ -9008,6 +9615,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 naiApiKey: overlay.querySelector('#csp-nai-key').value.trim(),
                 naiModel: overlay.querySelector('#csp-nai-model').value.trim() || 'nai-diffusion-4-5-full',
                 folderSaveEnabled: overlay.querySelector('#csp-folder-save-enabled').checked,
+                multiSceneCount: Number(overlay.querySelector('#csp-multi-scene-count')?.value || 1),
                 geminiInstruction: overlay.querySelector('#csp-gemini-instruction').value.trim(),
                 basePositive: overlay.querySelector('#csp-base-positive').value.trim(),
                 baseNegative: overlay.querySelector('#csp-base-negative').value.trim(),
@@ -9027,7 +9635,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
                     dyn: false,
                     ucPreset: Number(overlay.querySelector('#csp-default-uc-preset')?.value || 0)
                 },
-                characterQuickSlots: quickCharacterSlots
+                characterQuickSlots: quickCharacterSlots,
+                promptPresets: promptPresets || [],
+                geminiPresets: geminiPresets || []
             };
         }
 
@@ -9057,8 +9667,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
             }
         };
 
-        overlay.querySelector('#csp-clear-room-images').onclick = () => {
-            if (!confirm('현재 채팅방의 삽화 기록을 삭제할까요?')) return;
+        overlay.querySelector('#csp-clear-room-images').onclick = async () => {
+            if (!(await cspConfirm('현재 채팅방의 삽화 기록을 삭제할까요?'))) return;
             clearRoomSceneRecords();
             showToast('🧹 이 방의 삽화 기록을 삭제했어요.');
         };
@@ -9264,10 +9874,202 @@ ${JSON.stringify(parsedPlan, null, 2)}
         // 뷰어 탭 활성 여부에 따라 CSP 행 표시/숨김
         const painterRow = document.getElementById('csp-scene-painter-row');
         const galleryRow = document.getElementById('csp-scene-gallery-row');
+        const quickPanelRow = document.getElementById('csp-quick-panel-row');
         const viewerActive = isViewerTabActive();
         if (painterRow) painterRow.style.display = viewerActive ? '' : 'none';
         if (galleryRow) galleryRow.style.display = viewerActive ? '' : 'none';
+        if (quickPanelRow) quickPanelRow.style.display = viewerActive ? '' : 'none';
+        // 뷰어탭 비활성화 시 플로팅 패널도 숨김
+        if (!viewerActive && _quickPanelEl) _quickPanelEl.style.display = 'none';
         if (viewerActive) updateGalleryRowCount();
+    }
+
+
+    let _quickPanelVisible = false;
+    let _quickPanelEl = null;
+
+    function makeQuickPanelRow() {
+        const row = document.createElement('div');
+        row.className = 'px-2.5 h-4 box-content py-[18px] csp-quick-panel-row';
+        row.id = 'csp-quick-panel-row';
+        row.innerHTML = `
+            <div role="button" tabindex="0" class="w-full flex h-4 items-center justify-between typo-text-base_leading-none_medium space-x-2 [&_svg]:fill-icon_tertiary ring-offset-4 ring-offset-sidebar cursor-pointer">
+                <span class="flex space-x-2 items-center">
+                    <span style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;font-size:18px;">⚡</span>
+                    <span class="whitespace-nowrap overflow-hidden text-ellipsis typo-text-sm_leading-none_medium">퀵 패널</span>
+                </span>
+                <span>
+                    <button type="button" role="switch" aria-checked="false" data-state="unchecked" value="off"
+                        class="peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors border data-[state=unchecked]:border-bg-input-80 data-[state=unchecked]:bg-bg-input-80 data-[state=checked]:border-primary data-[state=checked]:bg-primary focus-visible:border-focus focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-50"
+                        tabindex="-1" id="csp-quick-panel-switch">
+                        <span data-state="unchecked" class="pointer-events-none block size-4 rounded-full bg-background shadow-sm ring-0 transition-transform data-[state=checked]:translate-x-[15px] data-[state=unchecked]:translate-x-[-1px]"></span>
+                    </button>
+                </span>
+            </div>
+        `;
+        const btn = row.querySelector('#csp-quick-panel-switch');
+        const thumb = btn?.querySelector('span');
+        const rootBtn = row.querySelector('[role="button"]');
+
+        function setSwitch(val) {
+            _quickPanelVisible = val;
+            setSwitchVisual(btn, thumb, val);
+            if (val) showQuickPanel(); else hideQuickPanel();
+        }
+
+        rootBtn?.addEventListener('click', (e) => {
+            if (e.target === btn || e.target === thumb) return;
+            setSwitch(!_quickPanelVisible);
+        });
+        btn?.addEventListener('click', () => setSwitch(!_quickPanelVisible));
+
+        return row;
+    }
+
+    function buildQuickPanelGeminiPresetOptions() {
+        const global = getGlobalSettings();
+        const presets = global.geminiPresets || [];
+        if (!presets.length) return '<option value="">-- 프리셋 없음 --</option>';
+        return '<option value="">-- Gemini 프리셋 선택 --</option>' +
+            presets.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+    }
+
+    function showQuickPanel() {
+        if (_quickPanelEl && _quickPanelEl.isConnected) {
+            _quickPanelEl.style.display = '';
+            return;
+        }
+        const global = getGlobalSettings();
+        const panel = document.createElement('div');
+        panel.className = 'csp-quick-panel';
+        panel.id = 'csp-quick-panel-float';
+
+        // 저장된 위치 복원
+        const savedPos = (() => { try { return JSON.parse(localStorage.getItem('csp_quick_panel_pos') || 'null'); } catch { return null; } })();
+        panel.style.top = (savedPos?.top ?? '120') + 'px';
+        panel.style.left = (savedPos?.left ?? '20') + 'px';
+
+        panel.innerHTML = `
+            <div class="csp-quick-panel-header" id="csp-qp-drag">
+                <span class="csp-quick-panel-title">⚡ 퀵 패널</span>
+                <button class="csp-quick-panel-close" id="csp-qp-close" type="button">×</button>
+            </div>
+            <div class="csp-quick-panel-section">
+                <div class="csp-quick-panel-label">Gemini 프리셋</div>
+                <select id="csp-qp-gemini-preset">${buildQuickPanelGeminiPresetOptions()}</select>
+                <button class="csp-quick-panel-btn" id="csp-qp-preset-apply" type="button">✅ 프리셋 적용</button>
+            </div>
+            <div class="csp-quick-panel-section">
+                <div class="csp-quick-panel-scene-row">
+                    <label>장면 수</label>
+                    <select id="csp-qp-scene-count">
+                        <option value="1" ${(global.multiSceneCount||1)==1?'selected':''}>1장면</option>
+                        <option value="2" ${(global.multiSceneCount||1)==2?'selected':''}>2장면</option>
+                        <option value="3" ${(global.multiSceneCount||1)==3?'selected':''}>3장면</option>
+                    </select>
+                </div>
+            </div>
+            <div class="csp-quick-panel-btns">
+                <button class="csp-quick-panel-btn primary" id="csp-qp-generate" type="button">🎨 마지막 답변으로 생성</button>
+                <button class="csp-quick-panel-btn" id="csp-qp-speed" type="button">⚡ 스피드 모드</button>
+            </div>
+        `;
+
+        // 드래그
+        const header = panel.querySelector('#csp-qp-drag');
+        let dragging = false, ox = 0, oy = 0;
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.closest('#csp-qp-close')) return;
+            dragging = true;
+            ox = e.clientX - panel.getBoundingClientRect().left;
+            oy = e.clientY - panel.getBoundingClientRect().top;
+            e.preventDefault();
+        });
+        const _onMove = (e) => {
+            if (!dragging) return;
+            const x = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, e.clientX - ox));
+            const y = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - oy));
+            panel.style.left = x + 'px';
+            panel.style.top = y + 'px';
+        };
+        const _onUp = () => {
+            if (!dragging) return;
+            dragging = false;
+            try { localStorage.setItem('csp_quick_panel_pos', JSON.stringify({ top: parseInt(panel.style.top), left: parseInt(panel.style.left) })); } catch {}
+        };
+        document.addEventListener('mousemove', _onMove);
+        document.addEventListener('mouseup', _onUp);
+        // 패널 제거 시 이벤트 정리
+        new MutationObserver((_, obs) => {
+            if (!panel.isConnected) {
+                document.removeEventListener('mousemove', _onMove);
+                document.removeEventListener('mouseup', _onUp);
+                obs.disconnect();
+            }
+        }).observe(document.body, { childList: true, subtree: true });
+
+        // 닫기
+        panel.querySelector('#csp-qp-close').addEventListener('click', () => {
+            hideQuickPanel();
+            const sw = document.getElementById('csp-quick-panel-switch');
+            const swThumb = sw?.querySelector('span');
+            setSwitchVisual(sw, swThumb, false);
+            _quickPanelVisible = false;
+        });
+
+        // 프리셋 적용
+        panel.querySelector('#csp-qp-preset-apply').addEventListener('click', () => {
+            const name = panel.querySelector('#csp-qp-gemini-preset').value;
+            if (!name) { showToast('⚠️ 프리셋을 선택해줘.'); return; }
+            const g = getGlobalSettings();
+            const preset = (g.geminiPresets || []).find(p => p.name === name);
+            if (!preset) { showToast('⚠️ 프리셋을 찾을 수 없어요.'); return; }
+            if (preset.naiPromptGuide !== undefined) g.naiPromptGuide = preset.naiPromptGuide;
+            if (preset.geminiInstruction !== undefined) g.geminiInstruction = preset.geminiInstruction;
+            saveGlobalSettings(g);
+            showToast(`✅ 프리셋 적용: ${name}`);
+        });
+
+        // 장면 수 변경
+        panel.querySelector('#csp-qp-scene-count').addEventListener('change', (e) => {
+            const g = getGlobalSettings();
+            g.multiSceneCount = Number(e.target.value);
+            saveGlobalSettings(g);
+            showToast(`장면 수: ${e.target.value}장면`);
+        });
+
+        // 마지막 답변으로 생성
+        panel.querySelector('#csp-qp-generate').addEventListener('click', () => {
+            if (!isEnabled()) { showToast('⏸️ AI 삽화 생성이 OFF 상태예요.'); return; }
+            const bubbles = getAssistantBubbles();
+            if (!bubbles.length) { showToast('⚠️ AI 답변을 찾을 수 없어요.'); return; }
+            const lastBubble = bubbles[bubbles.length - 1];
+            const markdown = getDirectMarkdown(lastBubble);
+            if (!markdown) { showToast('⚠️ 마지막 AI 답변을 읽을 수 없어요.'); return; }
+            const btn = lastBubble.querySelector('.csp-message-generate-btn');
+            if (btn) { btn.click(); } else { showToast('⚠️ 생성 버튼을 찾을 수 없어요.'); }
+        });
+
+        // 스피드 모드
+        panel.querySelector('#csp-qp-speed').addEventListener('click', () => {
+            if (!isEnabled()) { showToast('⏸️ AI 삽화 생성이 OFF 상태예요.'); return; }
+            const bubbles = getAssistantBubbles();
+            if (!bubbles.length) { showToast('⚠️ AI 답변을 찾을 수 없어요.'); return; }
+            const lastBubble = bubbles[bubbles.length - 1];
+            const markdown = getDirectMarkdown(lastBubble);
+            if (!markdown) { showToast('⚠️ 마지막 AI 답변을 읽을 수 없어요.'); return; }
+            const btn = lastBubble.querySelector('.csp-message-speed-btn');
+            if (btn) { btn.click(); } else { showToast('⚠️ 스피드 버튼을 찾을 수 없어요.'); }
+        });
+
+        document.body.appendChild(panel);
+        _quickPanelEl = panel;
+    }
+
+    function hideQuickPanel() {
+        if (_quickPanelEl && _quickPanelEl.isConnected) {
+            _quickPanelEl.style.display = 'none';
+        }
     }
 
     function injectScenePainterRow() {
@@ -9288,7 +10090,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
             galleryRow.style.removeProperty('padding');
             galleryRow.style.removeProperty('border-bottom');
 
+            const quickPanelRow = makeQuickPanelRow();
             container.insertBefore(galleryRow, container.firstChild);
+            container.insertBefore(quickPanelRow, container.firstChild);
             container.insertBefore(painterRow, container.firstChild);
         }
 
@@ -9304,30 +10108,30 @@ ${JSON.stringify(parsedPlan, null, 2)}
     function scheduleMenuInject() {
         if (menuInjectScheduled) return;
         menuInjectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             menuInjectScheduled = false;
             injectStyles();
             injectScenePainterRow();
-        });
+        }, 120);
     }
 
     function scheduleMessageInject() {
         if (messageInjectScheduled) return;
         messageInjectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             messageInjectScheduled = false;
             injectStyles();
             injectMessageButtons();
-        });
+        }, 120);
     }
 
     function scheduleInject() {
         if (injectScheduled) return;
         injectScheduled = true;
-        requestAnimationFrame(() => {
+        setTimeout(() => {
             injectScheduled = false;
             injectAll();
-        });
+        }, 120);
     }
 
     function mutationOwnsOnlyCspNodes(mutation) {
@@ -9343,7 +10147,8 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         // 탭 버튼의 class 속성 변경 (탭 전환 시 text-foreground ↔ text-muted-foreground)
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-            if (target?.className?.includes('font-medium') &&
+            const cn = typeof target?.className === 'string' ? target.className : (target?.className?.baseVal ?? '');
+            if (cn.includes('font-medium') &&
                 ['정보','기억','문체','뷰어'].includes(target?.textContent?.trim())) return true;
         }
 
@@ -9357,8 +10162,6 @@ ${JSON.stringify(parsedPlan, null, 2)}
             if (node.classList?.contains('backdrop-blur-2xl')) return true;
             if (node.classList?.contains('border-b') && node.classList?.contains('border-border') && node.classList?.contains('flex')) return true;
             if (node.closest?.('.border-b.border-border.flex.w-full')) return true;
-            const text = String(node.textContent || '');
-            if (text.length < 30000 && (text.includes('AI 삽화 생성') || text.includes('삽화 갤러리') || (text.includes('정보') && text.includes('기억') && text.includes('뷰어')))) return true;
             return false;
         });
     }
@@ -9390,6 +10193,10 @@ ${JSON.stringify(parsedPlan, null, 2)}
 
         for (const mutation of mutations) {
             if (mutationOwnsOnlyCspNodes(mutation)) continue;
+            if (mutation.type === 'attributes') {
+                const t = getMutationElement(mutation.target);
+                if (t && isScenePainterNode(t)) continue;
+            }
             if (!needMenu && mutationTouchesMenuArea(mutation)) needMenu = true;
             if (!needMessages && mutationTouchesAssistantMessage(mutation)) needMessages = true;
             if (needMenu && needMessages) break;
@@ -9416,7 +10223,9 @@ ${JSON.stringify(parsedPlan, null, 2)}
         injectStyles();
         applySceneVisibilityState(isEnabled());
         bindImageActionDelegates();
-        migrateSceneImagesToIndexedDb().finally(scheduleInject);
+        migrateSceneImagesToIndexedDb().finally(() => {
+            migrateHashKeysToStableIds().finally(scheduleInject);
+        });
         scheduleInject();
 
         cspScopedObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
@@ -9434,7 +10243,7 @@ ${JSON.stringify(parsedPlan, null, 2)}
                 scheduleMenuInject();
             }
             if (retryCount >= 20) clearInterval(retryInject);
-        }, 500);
+        }, 1000);
 
         let lastUrl = location.href;
         setInterval(() => {
