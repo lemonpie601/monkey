@@ -18,7 +18,7 @@
 // @connect      *.novelai.net
 // @connect      *
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
-// @require      	https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter-core.user.js
+// @require      https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter-core.user.js
 // @updateURL    https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter.user.js
 // @downloadURL  https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter.user.js
 // @run-at       document-idle
