@@ -3931,7 +3931,7 @@ RESPOND WITH ONLY THIS JSON STRUCTURE (fill in real values, no placeholder text)
             backdrop.innerHTML = `
                 <div class="csp-confirm-box" style="width:300px;">
                     <p style="margin:0 0 8px;font-size:13px;font-weight:700;opacity:0.9;">리롤 가이던스 <span style="font-weight:400;opacity:0.5;font-size:11px;">선택 · 비우면 바로 리롤</span></p>
-                    <textarea id="csp-guidance-input" rows="2" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(0,0,0,0.30);color:#f0f0f0;padding:8px 10px;font-size:12px;outline:none;font-family:inherit;resize:none;" placeholder="더 유머러스하게, 캐릭터가 화난 상태로..."></textarea>
+                    <textarea id="csp-guidance-input" rows="2" style="width:100%;box-sizing:border-box;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(0,0,0,0.30);color:#f0f0f0;padding:8px 10px;font-size:12px;outline:none;font-family:inherit;resize:none;" placeholder="눈물을 흘리며..."></textarea>
                     <div class="csp-confirm-actions" style="margin-top:10px;">
                         <button class="csp-btn" id="csp-guidance-cancel" style="font-size:12px;padding:7px 10px;">취소</button>
                         <button class="csp-btn csp-btn-primary" id="csp-guidance-ok" style="font-size:12px;padding:7px 10px;">리롤</button>
