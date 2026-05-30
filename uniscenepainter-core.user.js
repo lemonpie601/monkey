@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Univers Scene Painter
+// @name         Univers Scene Painter-Core
 // @namespace    univers-scene-painter
 // @version      3.7.4
 // @description  Storage compact mode + scoped DOM rebuild for Crack Scene Painter
