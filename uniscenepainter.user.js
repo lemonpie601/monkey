@@ -19,7 +19,7 @@
 // @connect      *
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
 // @require      https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/5807ad897c2a01121f77daaa48bcadcc9a684d8d/uniscenepainter-core.user.js
-// @updateURL    https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/580c5b36f76a6e7e7f451c523c798dc6df8c4885/uniscenepainter.user.js
-// @downloadURL  https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/580c5b36f76a6e7e7f451c523c798dc6df8c4885/uniscenepainter.user.js
+// @updateURL    https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter.user.js
+// @downloadURL  https://github.com/lemonpie601/monkey/raw/refs/heads/main/uniscenepainter.user.js
 // @run-at       document-idle
 // ==/UserScript==
