@@ -18,7 +18,7 @@
 // @connect      *.novelai.net
 // @connect      *
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
-// @require      https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/580c5b36f76a6e7e7f451c523c798dc6df8c4885/uniscenepainter-core.user.js
+// @require      https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/196215acebc09733fa370410bff43a7a22cdecad/uniscenepainter-core.user.js
 // @updateURL    https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/580c5b36f76a6e7e7f451c523c798dc6df8c4885/uniscenepainter.user.js
 // @downloadURL  https://gist.github.com/lemonpie601/6a7aa77944950bb6acad6ab71fb93a45/raw/580c5b36f76a6e7e7f451c523c798dc6df8c4885/uniscenepainter.user.js
 // @run-at       document-idle
