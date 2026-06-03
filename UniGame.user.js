@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.0
+// @version      1.2.1
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
