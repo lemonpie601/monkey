@@ -2534,6 +2534,7 @@ RECENT_CONTEXT:
     if (analyzeBusy) return;
     analyzeBusy = true;
     playBeep('analyze');
+    mascotAnimAnalyzing();
 
     try {
       const found = findLatestContext();
@@ -2649,6 +2650,7 @@ RECENT_CONTEXT:
 
       updateAnalyzeCountLabel();
       playBeep('done');
+      mascotAnimDone();
       renderContent();
     } catch (err) {
       playBeep('error');
@@ -4183,6 +4185,21 @@ RECENT_CONTEXT:
     return petPetLineLocal(pet);
   }
 
+  // ── 마스코트 애니메이션 헬퍼 ──────────────────────────────────
+  let mascotAnimTimer = null;
+
+  function mascotAnimate(className, duration = 500) {
+    const el = document.getElementById(MASCOT_ID);
+    if (!el) return;
+    // 기존 애니 클래스 모두 제거
+    ['poke','spin','bounce','tilt','nod','wiggle','tada','analyzing','done-pop']
+      .forEach(c => el.classList.remove(c));
+    void el.offsetWidth; // reflow
+    el.classList.add(className);
+    clearTimeout(mascotAnimTimer);
+    mascotAnimTimer = setTimeout(() => el.classList.remove(className), duration);
+  }
+
   function mascotPoke() {
     const now = Date.now();
     if (now - lastMascotPoke > 2600) mascotPokeCount = 0;
@@ -4201,34 +4218,100 @@ RECENT_CONTEXT:
     mascotSay(line, 100);
     playBeep('tab');
 
-    const el = document.getElementById(MASCOT_ID);
-    if (el) {
-      el.classList.remove('poke');
-      void el.offsetWidth;
-      el.classList.add('poke');
-      setTimeout(() => el.classList.remove('poke'), 420);
-    }
+    // mood + 성향 + 연타 여부에 따라 랜덤 리액션
+    (() => {
+      const pet = getPet();
+      const mood = getEffectiveMood(pet);
+      const tendency = petTendency(pet);
+      const isCombo = mascotPokeCount >= 3;
+
+      // 감정별 어울리는 애니 풀
+      const moodPool = {
+        love:   [{cls:'bounce',dur:420},{cls:'spin',dur:520},{cls:'tada',dur:700},{cls:'bounce',dur:380}],
+        happy:  [{cls:'bounce',dur:400},{cls:'wiggle',dur:500},{cls:'tada',dur:700},{cls:'nod',dur:600}],
+        normal: [{cls:'tilt',dur:600},{cls:'nod',dur:700},{cls:'wiggle',dur:500},{cls:'poke',dur:420}],
+        sad:    [{cls:'nod',dur:700},{cls:'tilt',dur:600},{cls:'poke',dur:420}],
+        scared: [{cls:'wiggle',dur:500},{cls:'poke',dur:420},{cls:'tilt',dur:600}],
+      };
+      // 성향별 특수 리액션 추가
+      const tendencyBonus = {
+        heart: [{cls:'spin',dur:520},{cls:'tada',dur:700}],
+        bloom: [{cls:'tada',dur:700},{cls:'bounce',dur:380}],
+        blade: [{cls:'wiggle',dur:500},{cls:'tilt',dur:600}],
+        tear:  [{cls:'nod',dur:700},{cls:'poke',dur:420}],
+        peace: [{cls:'tilt',dur:600},{cls:'nod',dur:700}],
+      };
+
+      let pool = [...(moodPool[mood] || moodPool.normal)];
+      if (isCombo) pool.push(...(tendencyBonus[tendency] || []));
+
+      // 직전 애니와 같은 건 피하기
+      const lastAnim = pool._last || '';
+      const filtered = pool.filter(a => a.cls !== lastAnim);
+      const chosen = (filtered.length ? filtered : pool)[Math.floor(Math.random() * (filtered.length || pool.length))];
+      pool._last = chosen.cls;
+
+      mascotAnimate(chosen.cls, chosen.dur);
+    })();
 
     if (activeTab === 'pet') renderContent();
   }
 
+  // 새 답변 감지 시작 애니메이션
+  function mascotAnimAnalyzing() {
+    if (!isMascotEnabled()) return;
+    mascotAnimate('analyzing', 1800);
+  }
+
+  // 분석 완료 애니메이션
+  function mascotAnimDone() {
+    if (!isMascotEnabled()) return;
+    mascotAnimate('done-pop', 600);
+  }
+
+  // ── Idle 동작 루프 ────────────────────────────────────────────
+  // 짧은 간격(3~7초)으로 계속 작은 동작 실행 — 살아있는 느낌
+  // mood에 따라 어울리는 동작 풀 선택
+  const IDLE_ANIM_POOLS = {
+    love:   [{cls:'bounce',dur:420},{cls:'tilt',dur:600},{cls:'nod',dur:700},{cls:'bounce',dur:380},{cls:'wiggle',dur:500}],
+    happy:  [{cls:'nod',dur:700},{cls:'tilt',dur:600},{cls:'wiggle',dur:500},{cls:'bounce',dur:400}],
+    normal: [{cls:'tilt',dur:600},{cls:'nod',dur:700},{cls:'tilt',dur:550},{cls:'nod',dur:650},{cls:'wiggle',dur:500}],
+    sad:    [{cls:'nod',dur:800},{cls:'tilt',dur:700},{cls:'nod',dur:750}],
+    scared: [{cls:'wiggle',dur:500},{cls:'tilt',dur:600},{cls:'wiggle',dur:480}],
+  };
+  let _lastIdleAnim = '';
+
   function scheduleMascotIdle() {
     clearTimeout(mascotIdleTimer);
     if (!isMascotEnabled()) return;
-    mascotIdleTimer = setTimeout(mascotIdleTick, 20000 + Math.random() * 20000);
+    // 10~20초마다 idle 애니. 드래그 중엔 타이머 멈춤 (pointerup에서 재시작)
+    mascotIdleTimer = setTimeout(mascotIdleTick, 10000 + Math.random() * 10000);
   }
 
   function mascotIdleTick() {
     if (!isMascotEnabled()) return;
+    // 드래그 중이면 스킵 (타이머는 다시 예약 — pointerup에서 재시작하므로 여기선 그냥 return)
+    if (mascotDragState) { scheduleMascotIdle(); return; }
     const pet = getPet();
+    const mood = getEffectiveMood(pet);
     const idleLong = Number(pet.lastFedAt || 0) && Date.now() - Number(pet.lastFedAt || 0) > MASCOT_IDLE_MS;
 
-    if (idleLong && Math.random() < 0.55) {
+    // 작은 idle 동작
+    if (!mascotDragState) {
+      const pool = IDLE_ANIM_POOLS[mood] || IDLE_ANIM_POOLS.normal;
+      const filtered = pool.filter(a => a.cls !== _lastIdleAnim);
+      const chosen = (filtered.length ? filtered : pool)[Math.floor(Math.random() * (filtered.length || pool.length))];
+      _lastIdleAnim = chosen.cls;
+      mascotAnimate(chosen.cls, chosen.dur);
+    }
+
+    // 말/mood 반응은 낮은 확률로만 (너무 자주 말하면 시끄러움)
+    if (idleLong && Math.random() < 0.18) {
       mascotSay(idleMascotLine(pet), 50);
-      triggerMascotMood(getEffectiveMood(pet));
-    } else if (Math.random() < 0.35) {
-      mascotSay(ambientMascotLine(pet), Math.random() < 0.35 ? 20 : 10);
-      triggerMascotMood(getEffectiveMood(pet));
+      triggerMascotMood(mood);
+    } else if (Math.random() < 0.10) {
+      mascotSay(ambientMascotLine(pet), 10);
+      triggerMascotMood(mood);
     }
 
     scheduleMascotIdle();
@@ -4276,8 +4359,12 @@ RECENT_CONTEXT:
       dragSpoken = false;
       el.classList.add('grab');
       clearTimeout(mascotWanderTimer);
+      clearTimeout(mascotIdleTimer); // 잡는 순간 idle 타이머 멈춤
       el.style.transition = 'none';
       try { el.setPointerCapture(e.pointerId); } catch {}
+
+      // 잡힌 순간 — 살짝 들리는 애니
+      mascotAnimate('grabbed', 380);
     });
 
     el.addEventListener('pointermove', e => {
@@ -4296,6 +4383,8 @@ RECENT_CONTEXT:
             tear: ['떨어뜨리지 마…', '조심히 들어줘…'],
             blade: ['어어 떨어져!', '함부로 들지 마!'],
           }[tendency], '어어 떨어져!'), 100);
+          // 이동 시작 — 흔들리는 애니
+          mascotAnimate('carried', 500);
         }
         moved = true;
       }
@@ -4317,6 +4406,8 @@ RECENT_CONTEXT:
 
       if (wasMoved) {
         saveMascotPos(el);
+        // 착지 — 통통 바운스
+        mascotAnimate('landed', 550);
         mascotSay(pickRandom({
           heart: ['휴, 안착했다!', '여기 좋아!'],
           bloom: ['착지 성공!', '새 자리 접수!'],
@@ -4329,12 +4420,14 @@ RECENT_CONTEXT:
         mascotPoke();
         scheduleMascotWander();
       }
+      scheduleMascotIdle(); // 놓아지면 idle 타이머 재시작
     });
 
     el.addEventListener('pointercancel', () => {
       el.classList.remove('grab');
       mascotDragState = null;
       scheduleMascotWander();
+      scheduleMascotIdle(); // 취소돼도 재시작
     });
   }
 
@@ -6566,11 +6659,43 @@ RECENT_CONTEXT:
       .cigh-acc-slot:hover { color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
       .cigh-acc-slot.active { background:var(--cigh-accent-softer);color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
       .cigh-acc-hint { font-size:9px;color:var(--cigh-text-faint);margin-left:2px;flex:1; }
-      .cigh-clean-settings-save-bar {
-        position:sticky; bottom:0;
-        display:flex; gap:5px; padding:9px 0 6px;
-        background:var(--cigh-bg); border-top:1px solid var(--cigh-border-soft);
-        margin-top:12px; z-index:2;
+      .cigh-clean-settings-save-bar { position:sticky;bottom:0;display:flex;gap:5px;padding:9px 0 6px;background:var(--cigh-bg);border-top:1px solid var(--cigh-border-soft);margin-top:12px;z-index:2; }
+      #${MASCOT_ID}.spin .cigh-clean-mascot-body { animation:cigh-mascot-spin 0.52s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
+      #${MASCOT_ID}.bounce .cigh-clean-mascot-body { animation:cigh-mascot-bounce 0.42s ease; }
+      #${MASCOT_ID}.tilt .cigh-clean-mascot-body { animation:cigh-mascot-tilt 0.6s ease-in-out;transform-origin:center bottom; }
+      #${MASCOT_ID}.nod .cigh-clean-mascot-body { animation:cigh-mascot-nod 0.7s ease-in-out;transform-origin:center bottom; }
+      #${MASCOT_ID}.wiggle .cigh-clean-mascot-body { animation:cigh-mascot-wiggle 0.5s ease; }
+      #${MASCOT_ID}.tada .cigh-clean-mascot-body { animation:cigh-mascot-tada 0.7s ease;transform-origin:center bottom; }
+      #${MASCOT_ID}.analyzing .cigh-clean-mascot-body { animation:cigh-mascot-analyzing 0.9s ease-in-out infinite;transform-origin:center bottom; }
+      #${MASCOT_ID}.done-pop .cigh-clean-mascot-body { animation:cigh-mascot-done-pop 0.6s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
+      #${MASCOT_ID}.grabbed .cigh-clean-mascot-body { animation:cigh-mascot-grabbed 0.38s cubic-bezier(.34,1.56,.64,1);transform-origin:center bottom; }
+      #${MASCOT_ID}.carried .cigh-clean-mascot-body { animation:cigh-mascot-carried 0.5s ease-in-out; }
+      #${MASCOT_ID}.landed .cigh-clean-mascot-body { animation:cigh-mascot-landed 0.55s cubic-bezier(.36,.07,.19,.97); }
+      @keyframes cigh-mascot-spin { 0%{transform:rotate(0deg) scale(1)}30%{transform:rotate(180deg) scale(0.85)}70%{transform:rotate(320deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)} }
+      @keyframes cigh-mascot-bounce { 0%,100%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-12px) scale(0.92,1.12)}55%{transform:translateY(0) scale(1.1,0.9)}75%{transform:translateY(-5px) scale(0.96,1.06)} }
+      @keyframes cigh-mascot-tilt { 0%,100%{transform:rotate(0deg)}25%{transform:rotate(-14deg)}75%{transform:rotate(10deg)} }
+      @keyframes cigh-mascot-nod { 0%,100%{transform:scaleY(1) translateY(0)}20%{transform:scaleY(0.88) translateY(4px)}45%{transform:scaleY(1.06) translateY(-3px)}65%{transform:scaleY(0.95) translateY(2px)} }
+      @keyframes cigh-mascot-wiggle { 0%,100%{transform:translateX(0)}20%{transform:translateX(-5px) rotate(-4deg)}40%{transform:translateX(5px) rotate(4deg)}60%{transform:translateX(-3px) rotate(-2deg)}80%{transform:translateX(3px) rotate(2deg)} }
+      @keyframes cigh-mascot-tada { 0%{transform:scale(1) rotate(0deg)}10%{transform:scale(0.9) rotate(-4deg)}30%{transform:scale(1.1) rotate(3deg)}50%{transform:scale(1.1) rotate(-3deg)}70%{transform:scale(1.1) rotate(3deg)}90%{transform:scale(1.05) rotate(-1deg)}100%{transform:scale(1) rotate(0deg)} }
+      @keyframes cigh-mascot-analyzing { 0%,100%{transform:translateY(0) scale(1)}33%{transform:translateY(-6px) scale(1.04,0.96)}66%{transform:translateY(0) scale(0.96,1.04)} }
+      @keyframes cigh-mascot-done-pop { 0%{transform:scale(1)}25%{transform:scale(1.22) rotate(-3deg)}50%{transform:scale(0.9) rotate(2deg)}75%{transform:scale(1.1) rotate(-1deg)}100%{transform:scale(1) rotate(0deg)} }
+      @keyframes cigh-mascot-grabbed {
+        0%   { transform: scale(1,1) translateY(0); }
+        40%  { transform: scale(1.15,0.88) translateY(-8px) rotate(-6deg); }
+        70%  { transform: scale(0.92,1.1) translateY(-4px) rotate(3deg); }
+        100% { transform: scale(1,1) translateY(0) rotate(0deg); }
+      }
+      @keyframes cigh-mascot-carried {
+        0%,100% { transform: rotate(0deg) translateY(0); }
+        25%     { transform: rotate(-8deg) translateY(-3px); }
+        75%     { transform: rotate(6deg) translateY(-2px); }
+      }
+      @keyframes cigh-mascot-landed {
+        0%   { transform: scale(1.1,0.88) translateY(4px); }
+        30%  { transform: scale(0.9,1.14) translateY(-6px); }
+        55%  { transform: scale(1.06,0.94) translateY(2px); }
+        75%  { transform: scale(0.97,1.04) translateY(-2px); }
+        100% { transform: scale(1,1) translateY(0); }
       }
       .cigh-clean-settings-grid {
         display: grid;
