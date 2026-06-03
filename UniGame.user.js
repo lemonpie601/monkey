@@ -15,6 +15,7 @@
 // @connect      *
 // ==/UserScript==
 
+
 (() => {
   'use strict';
 
@@ -37,6 +38,8 @@
   const MASCOT_STORE = 'cigh_clean_mascot_on_v1';
   const MASCOT_POS_KEY = 'cigh_clean_mascot_pos_v1';
   const PET_NAME_STORE = 'cigh_clean_pet_name_v1';
+  const MASCOT_ACCESSORY_STORE = 'cigh_clean_mascot_accessory_v1';
+  const MASCOT_OUTLINE_STORE = 'cigh_clean_mascot_outline_v1';
   const API_KEY_STORE = 'cigh_clean_gemini_api_key_v1';
   const STYLE_PROMPT_STORE = 'cigh_clean_log_style_prompt_v1';
   const COMMENT_POPUP_STORE = 'cigh_clean_comment_popup_v1';
@@ -2598,11 +2601,12 @@ RECENT_CONTEXT:
         next.analyzeCount = Number(next.analyzeCount || 0) + 1;
         if (merged.hudComments?.length) {
           next.commentLog = next.commentLog || [];
-          next.commentLog.push({
-            text: merged.hudComments[0],
-            time: nowTime(),
-          });
-          next.commentLog = next.commentLog.slice(-30);
+          const t = nowTime();
+          // 모든 hudComments(최대 3개)를 각각 저장
+          for (const comment of merged.hudComments) {
+            if (comment) next.commentLog.push({ text: comment, time: t });
+          }
+          next.commentLog = next.commentLog.slice(-90);
         }
         next.history.push({
           at: Date.now(),
@@ -2856,49 +2860,19 @@ RECENT_CONTEXT:
     if (comment) positionPopupNearFab(comment, 'comment');
   }
 
-  // 코멘트 팝업 큐 — 여러 코멘트를 순차적으로 이어서 표시
-  let commentPopupQueue = [];
-  let commentPopupBusy = false;
-
   function showCommentPopup(comment) {
     if (!isCommentPopupEnabled()) return;
+
     const text = shortText(comment, 42);
     if (!text) return;
-    commentPopupQueue.push(text);
-    if (!commentPopupBusy) _drainCommentPopupQueue();
-  }
 
-  function showCommentPopupAll(comments) {
-    if (!isCommentPopupEnabled()) return;
-    const texts = (comments || []).map(c => shortText(c, 42)).filter(Boolean);
-    if (!texts.length) return;
-    commentPopupQueue.push(...texts);
-    if (!commentPopupBusy) _drainCommentPopupQueue();
-  }
-
-  function _drainCommentPopupQueue() {
-    if (!commentPopupQueue.length) {
-      commentPopupBusy = false;
-      // 모든 코멘트 표시 후 팝업 숨김
-      commentPopupHideTimer = setTimeout(() => {
-        const el = document.getElementById(COMMENT_POPUP_ID);
-        if (el) {
-          el.classList.remove('show');
-          requestAnimationFrame(updateFloatingPopupPositions);
-        }
-      }, 3200);
-      return;
-    }
-
-    commentPopupBusy = true;
-    clearTimeout(commentPopupHideTimer);
-
-    const text = commentPopupQueue.shift();
     const el = ensureCommentPopup();
     const body = el.querySelector('.cigh-clean-comment-text');
-    if (!body) { _drainCommentPopupQueue(); return; }
+    if (!body) return;
 
     clearTimeout(commentPopupTypingTimer);
+    clearTimeout(commentPopupHideTimer);
+
     positionPopupNearFab(el, 'comment');
     el.classList.add('show');
     body.textContent = '';
@@ -2911,10 +2885,12 @@ RECENT_CONTEXT:
       if (pos === 1 || pos >= text.length) requestAnimationFrame(updateFloatingPopupPositions);
 
       if (pos < text.length) {
-        commentPopupTypingTimer = setTimeout(tick, 42);
+        commentPopupTypingTimer = setTimeout(tick, 48);
       } else {
-        // 다 타이핑되면 잠깐 보여주고 다음 코멘트로
-        commentPopupTypingTimer = setTimeout(_drainCommentPopupQueue, 2800);
+        commentPopupHideTimer = setTimeout(() => {
+          el.classList.remove('show');
+          requestAnimationFrame(updateFloatingPopupPositions);
+        }, 3900);
       }
     };
 
@@ -3024,9 +3000,6 @@ RECENT_CONTEXT:
     commentPopupTypingTimer = null;
     commentPopupHideTimer = null;
     footerPopupRemaining = 0;
-    // 코멘트 팝업 큐 초기화
-    commentPopupQueue = [];
-    commentPopupBusy = false;
   }
 
   function clearTransientUi() {
@@ -3067,12 +3040,9 @@ RECENT_CONTEXT:
     footerCommentIndex = 0;
     stopFooterComments();
 
-    if (!footerComments.length) return;
+    footerPopupRemaining = (options.popup !== false && isCommentPopupEnabled()) ? footerComments.length : 0;
 
-    // 팝업: 모든 코멘트를 순차적으로 표시
-    if (options.popup !== false && isCommentPopupEnabled()) {
-      showCommentPopupAll(footerComments);
-    }
+    if (!footerComments.length) return;
 
     typeFooterComment();
   }
@@ -3083,6 +3053,11 @@ RECENT_CONTEXT:
     const comment = footerComments[footerCommentIndex % footerComments.length];
     footerCommentIndex += 1;
     footerLastText = comment;
+
+    if (footerPopupRemaining > 0) {
+      showCommentPopup(comment);
+      footerPopupRemaining -= 1;
+    }
 
     let pos = 0;
     const tick = () => {
@@ -3271,14 +3246,310 @@ RECENT_CONTEXT:
     return 10 + Math.min(Math.round(deltaSum), 20);
   }
 
-  function petSpriteSVG(stageObj, mood, finalType, size = 8) {
+  // ─────────────────────────────────────────────
+  // Mascot Accessories (액세서리 꾸미기)
+  // ─────────────────────────────────────────────
+
+  // head: 머리 위 장식 픽셀맵 (14px wide, 3~4px tall)
+  // neck: 목 장식 (14px wide, 2px)
+  // face: 얼굴 페이스페인팅 (양 볼)
+  const MASCOT_ACCESSORIES = {
+    head: {
+      none:   { label: '없음', pixels: [], color: 'transparent' },
+      ribbon: {
+        label: '🎀 리본',
+        color: '#ff9ec4',
+        // 리본 모양: 양쪽 루프 + 가운데 매듭
+        pixels: [
+          { x:2,y:0 },{ x:3,y:0 },{ x:5,y:0 },{ x:6,y:0 },{ x:7,y:0 },{ x:9,y:0 },{ x:10,y:0 },
+          { x:3,y:1 },{ x:4,y:1 },{ x:6,y:1,c:'#e46576' },{ x:7,y:1,c:'#e46576' },{ x:8,y:1 },{ x:9,y:1 },
+          { x:2,y:2 },{ x:4,y:2 },{ x:9,y:2 },{ x:11,y:2 },
+        ],
+      },
+      crown: {
+        label: '👑 왕관',
+        color: '#ffd166',
+        pixels: [
+          { x:2,y:0 },{ x:6,y:0 },{ x:10,y:0 },
+          { x:2,y:1 },{ x:3,y:1 },{ x:5,y:1 },{ x:6,y:1 },{ x:7,y:1 },{ x:9,y:1 },{ x:10,y:1 },{ x:11,y:1 },
+          { x:2,y:2 },{ x:3,y:2 },{ x:4,y:2 },{ x:5,y:2 },{ x:6,y:2 },{ x:7,y:2 },{ x:8,y:2 },{ x:9,y:2 },{ x:10,y:2 },{ x:11,y:2 },
+        ],
+      },
+      horn: {
+        label: '🦄 뿔',
+        color: '#d9b3ec',
+        pixels: [
+          { x:6,y:0 },
+          { x:5,y:1 },{ x:6,y:1,c:'#c490e4' },{ x:7,y:1 },
+          { x:5,y:2 },{ x:6,y:2 },{ x:7,y:2 },
+        ],
+      },
+      star: {
+        label: '⭐ 별',
+        color: '#ffd166',
+        pixels: [
+          { x:6,y:0 },
+          { x:4,y:1 },{ x:5,y:1 },{ x:6,y:1 },{ x:7,y:1 },{ x:8,y:1 },
+          { x:5,y:2 },{ x:6,y:2 },{ x:7,y:2 },
+          { x:4,y:3 },{ x:8,y:3 },
+        ],
+      },
+      flower: {
+        label: '🌸 꽃',
+        color: '#ffb3c6',
+        pixels: [
+          { x:5,y:0 },{ x:6,y:0 },{ x:7,y:0 },
+          { x:4,y:1 },{ x:5,y:1,c:'#fff' },{ x:6,y:1,c:'#ffec6e' },{ x:7,y:1,c:'#fff' },{ x:8,y:1 },
+          { x:5,y:2 },{ x:6,y:2 },{ x:7,y:2 },
+        ],
+      },
+    },
+    neck: {
+      none:   { label: '없음', pixels: [] },
+      ribbon: {
+        label: '🎀 리본 넥타이',
+        color: '#ff9ec4',
+        // 목 중앙 4px짜리 리본 묶음
+        pixels: [
+          { x:4,y:0 },{ x:5,y:0 },{ x:6,y:0 },{ x:7,y:0 },{ x:8,y:0 },{ x:9,y:0 },
+          { x:5,y:1,c:'#e46576' },{ x:6,y:1,c:'#e46576' },{ x:7,y:1,c:'#e46576' },{ x:8,y:1,c:'#e46576' },
+        ],
+      },
+      scarf: {
+        label: '🧣 스카프',
+        color: '#9ecbf0',
+        pixels: [
+          { x:3,y:0 },{ x:4,y:0 },{ x:5,y:0 },{ x:6,y:0 },{ x:7,y:0 },{ x:8,y:0 },{ x:9,y:0 },{ x:10,y:0 },
+          { x:3,y:1,c:'#7fb9f0' },{ x:4,y:1,c:'#7fb9f0' },{ x:10,y:1 },{ x:11,y:1 },
+        ],
+      },
+    },
+    face: {
+      none:   { label: '없음' },
+      heart:  { label: '♥ 하트볼', color: '#ff9ec4', shape: 'heart' },
+      star:   { label: '★ 별볼',   color: '#ffd166', shape: 'star' },
+      freckle:{ label: '· 주근깨', color: '#d4956a', shape: 'freckle' },
+    },
+  };
+
+  // localStorage 저장 형식:
+  // {
+  //   head: 'ribbon' | 'none' | 'custom_head',
+  //   neck: ...,
+  //   face: ...,
+  //   customPixels: {            ← 커스텀 픽셀 데이터 (새로고침 후 복원용)
+  //     head: [{x,y,c}, ...],
+  //     neck: [...],
+  //     face: [...],
+  //   }
+  // }
+
+  function getMascotAccessory() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(MASCOT_ACCESSORY_STORE) || '{}');
+      const acc = {
+        head: raw.head || 'none',
+        neck: raw.neck || 'none',
+        face: raw.face || 'none',
+      };
+      // 커스텀 픽셀 데이터가 있으면 MASCOT_ACCESSORIES에 복원
+      const cp = raw.customPixels || {};
+      ['head', 'neck', 'face'].forEach(slot => {
+        const pixels = cp[slot];
+        if (Array.isArray(pixels) && pixels.length) {
+          const key = `custom_${slot}`;
+          MASCOT_ACCESSORIES[slot][key] = {
+            label: '✏ 커스텀',
+            color: pixels[0]?.c || '#ff9ec4',
+            pixels,
+          };
+          // 저장된 키가 custom_*인데 pixels 없으면 강제 복원
+          if (acc[slot] === key) acc[slot] = key;
+        }
+      });
+      return acc;
+    } catch { return { head: 'none', neck: 'none', face: 'none' }; }
+  }
+
+  function setMascotAccessory(value) {
+    // customPixels를 함께 저장
+    const toSave = { ...(value || {}) };
+    const cp = {};
+    ['head', 'neck', 'face'].forEach(slot => {
+      const key = `custom_${slot}`;
+      const def = MASCOT_ACCESSORIES[slot]?.[key];
+      if (def?.pixels?.length) cp[slot] = def.pixels;
+    });
+    if (Object.keys(cp).length) toSave.customPixels = cp;
+    localStorage.setItem(MASCOT_ACCESSORY_STORE, JSON.stringify(toSave));
+  }
+
+  // outline: 'outline' | 'shadow' | 'none'
+  function getMascotOutline() {
+    const v = String(localStorage.getItem(MASCOT_OUTLINE_STORE) || 'outline').trim();
+    return ['outline', 'shadow', 'none'].includes(v) ? v : 'outline';
+  }
+  function setMascotOutline(v) {
+    localStorage.setItem(MASCOT_OUTLINE_STORE, ['outline','shadow','none'].includes(v) ? v : 'outline');
+  }
+
+  // 액세서리 SVG 레이어를 기존 sprite SVG에 합성
+  // 액세서리 픽셀을 SVG rect 문자열로 변환
+  // 에디터 그리드(14×14)에서 그린 좌표를 그대로 사용
+  // offsetY: 에디터 그리드 y=0이 SVG상 몇 px 아래인지 (머리장식은 음수, 나머지는 0)
+  function _accPixelsToRects(accDef, size, offsetY = 0) {
+    if (!accDef || !accDef.pixels?.length) return '';
+    const colorMap = accDef.colors || {};
+    return accDef.pixels.map(p => {
+      const fill = p.c || colorMap[`${p.x},${p.y}`] || accDef.color || '#ff9ec4';
+      const sy = (p.y + offsetY) * size;
+      return `<rect x="${p.x * size}" y="${sy}" width="${size}" height="${size}" fill="${fill}"/>`;
+    }).join('');
+  }
+
+  // 픽셀 맵 기준으로 외곽선(outline) rect 생성 — 인접 빈 칸 방향에 1px 테두리
+  // filled: Set of "x,y" strings representing all filled pixel positions
+  // offsetY: y좌표 오프셋 (머리장식은 -3)
+  function _buildOutlineFromSet(filled, size, outlineColor = 'rgba(0,0,0,0.55)') {
+    const seen = new Set();
+    const rects = [];
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    for (const key of filled) {
+      const [x, y] = key.split(',').map(Number);
+      for (const [dy, dx] of dirs) {
+        const nx = x + dx, ny = y + dy;
+        const nk = `${nx},${ny}`;
+        if (!filled.has(nk) && !seen.has(nk)) {
+          seen.add(nk);
+          rects.push(`<rect x="${nx * size}" y="${ny * size}" width="${size}" height="${size}" fill="${outlineColor}"/>`);
+        }
+      }
+    }
+    return rects.join('');
+  }
+
+  function _buildOutlineRects(map, size, outlineColor = 'rgba(0,0,0,0.55)') {
+    const filled = new Set();
+    for (let y = 0; y < map.length; y++)
+      for (let x = 0; x < map[0].length; x++)
+        if (map[y][x] === '1') filled.add(`${x},${y}`);
+    return _buildOutlineFromSet(filled, size, outlineColor);
+  }
+
+  function petSpriteSVGWithAccessory(stageObj, mood, finalType, size = 8, accessory = null) {
     const form = stageObj.stage >= 4 ? (PET_FINAL_FORMS[finalType] || PET_FINAL_FORMS.peace) : null;
     const map = form?.sprite || PET_SPRITES[stageObj.stage] || PET_SPRITES[0];
     const color = PET_MOOD_COLORS[mood] || form?.color || stageObj.color;
     const w = map[0].length;
-    return `<svg class="cigh-clean-pet-svg" viewBox="0 0 ${w * size} ${map.length * size}" width="${w * size}" height="${map.length * size}" aria-hidden="true">${
-      map.map((row, y) => [...row].map((cell, x) => cell === '1' ? `<rect x="${x * size}" y="${y * size}" width="${size}" height="${size}" fill="${color}"/>` : '').join('')).join('')
-    }</svg>`;
+    const h = map.length;
+    const acc = accessory || getMascotAccessory();
+
+    const headAcc = MASCOT_ACCESSORIES.head[acc.head];
+    const neckAcc = MASCOT_ACCESSORIES.neck[acc.neck];
+    const faceAcc = MASCOT_ACCESSORIES.face[acc.face];
+
+    // 머리장식이 있으면 viewBox 위쪽 3행 확장
+    // 에디터에서 머리장식은 y=0~2행에 그리고, SVG에서는 body y=0 위쪽으로 올려야 함
+    // → offsetY = -3 (에디터 y좌표 기준 SVG 오프셋)
+    const hasHead = headAcc?.pixels?.length > 0;
+    const outlineMode = getMascotOutline();
+    // 아웃라인 모드면 외곽 1픽셀 자리 확보 (잘림 방지)
+    const outlinePad = outlineMode === 'outline' ? size : 0;
+    const extraTop = (hasHead ? 3 * size : 0) + outlinePad;
+    const totalH = h * size + extraTop + outlinePad;
+    const totalW = w * size + outlinePad * 2;
+    const viewBox = `${-outlinePad} ${-extraTop} ${totalW} ${totalH}`;
+
+    // 레이어 순서:
+    // 1. 머리장식 (body 위 공간, extraTop 만큼 위로)
+    // 2. 몸통
+    // 3. 목 장식 (몸통 위에 그려져야 함 → 몸통 뒤)  ← 수정: 몸통 다음에 렌더
+    // 4. 얼굴 페이스페인팅 (몸통 위에 반투명으로)
+
+    // 머리장식: 에디터 y=0~2 → SVG y = (-3 + y)*size + extraTop 보정
+    // viewBox가 -extraTop부터 시작하므로, 에디터 y=0 → SVG y = -extraTop = -3*size
+    // _accPixelsToRects offsetY = -3 적용하면 SVG y = (p.y - 3)*size → viewBox 내 위쪽 공간에 표시
+    const headRects = _accPixelsToRects(headAcc, size, -3);
+
+    // 몸통
+    const bodyRects = map.map((row, y) =>
+      [...row].map((cell, x) =>
+        cell === '1' ? `<rect x="${x * size}" y="${y * size}" width="${size}" height="${size}" fill="${color}"/>` : ''
+      ).join('')
+    ).join('');
+
+    // 목 장식: 에디터 좌표 그대로 (y=6~8 정도) → 몸통과 겹치는 위치라 몸통 위에 렌더
+    const neckRects = _accPixelsToRects(neckAcc, size, 0);
+
+    // 얼굴 페이스페인팅: 에디터 좌표 그대로 (y=4~6 정도) → 반투명으로 볼 위에
+    let faceRects = '';
+    if (faceAcc) {
+      if (faceAcc.pixels?.length) {
+        // 커스텀 or 픽셀 기반 프리셋
+        faceRects = _accPixelsToRects(faceAcc, size, 0);
+      } else if (faceAcc.shape) {
+        // 기존 shape 기반 프리셋 (하트/별/주근깨)
+        const faceY = Math.floor(h * 0.42);
+        const fc = faceAcc.color;
+        if (faceAcc.shape === 'heart') {
+          faceRects = [
+            `<rect x="${2*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.85"/>`,
+            `<rect x="${3*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.85"/>`,
+            `<rect x="${2*size}" y="${(faceY+1)*size}" width="${size*2}" height="${size}" fill="${fc}" opacity="0.75"/>`,
+            `<rect x="${(w-4)*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.85"/>`,
+            `<rect x="${(w-3)*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.85"/>`,
+            `<rect x="${(w-4)*size}" y="${(faceY+1)*size}" width="${size*2}" height="${size}" fill="${fc}" opacity="0.75"/>`,
+          ].join('');
+        } else if (faceAcc.shape === 'star') {
+          faceRects = [
+            `<rect x="${2*size}" y="${faceY*size}" width="${size*3}" height="${size}" fill="${fc}" opacity="0.8"/>`,
+            `<rect x="${3*size}" y="${(faceY-1)*size}" width="${size}" height="${size*3}" fill="${fc}" opacity="0.8"/>`,
+            `<rect x="${(w-5)*size}" y="${faceY*size}" width="${size*3}" height="${size}" fill="${fc}" opacity="0.8"/>`,
+            `<rect x="${(w-4)*size}" y="${(faceY-1)*size}" width="${size}" height="${size*3}" fill="${fc}" opacity="0.8"/>`,
+          ].join('');
+        } else if (faceAcc.shape === 'freckle') {
+          faceRects = [
+            `<rect x="${2*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.72"/>`,
+            `<rect x="${4*size}" y="${(faceY+1)*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.58"/>`,
+            `<rect x="${3*size}" y="${(faceY+1)*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.52"/>`,
+            `<rect x="${(w-3)*size}" y="${faceY*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.72"/>`,
+            `<rect x="${(w-5)*size}" y="${(faceY+1)*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.58"/>`,
+            `<rect x="${(w-4)*size}" y="${(faceY+1)*size}" width="${size}" height="${size}" fill="${fc}" opacity="0.52"/>`,
+          ].join('');
+        }
+      }
+    }
+
+    // outline 모드에 따라 효과 적용 (outlineMode는 위에서 이미 선언됨)
+    let outlineRects = '';
+    if (outlineMode === 'outline') {
+      // 몸통 + 모든 액세서리 픽셀을 통합한 Set으로 아웃라인 생성
+      const filled = new Set();
+      // 몸통
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < map[y].length; x++)
+          if (map[y][x] === '1') filled.add(`${x},${y}`);
+      // 머리장식 (y offset -3)
+      if (headAcc?.pixels?.length)
+        headAcc.pixels.forEach(p => filled.add(`${p.x},${p.y - 3}`));
+      // 목 장식 (offset 0)
+      if (neckAcc?.pixels?.length)
+        neckAcc.pixels.forEach(p => filled.add(`${p.x},${p.y}`));
+      // 얼굴 (offset 0, 픽셀 기반 프리셋만)
+      if (faceAcc?.pixels?.length)
+        faceAcc.pixels.forEach(p => filled.add(`${p.x},${p.y}`));
+      outlineRects = _buildOutlineFromSet(filled, size);
+    }
+    const shadowFilter = outlineMode === 'shadow'
+      ? ' style="filter:drop-shadow(0 2px 4px rgba(0,0,0,.35)) drop-shadow(0 1px 1px rgba(0,0,0,.25))"'
+      : '';
+
+    // 렌더 순서: outline → 머리장식 → 몸통 → 목장식(몸 위) → 얼굴(몸 위 반투명)
+    return `<svg class="cigh-clean-pet-svg" viewBox="${viewBox}" width="${totalW}" height="${totalH}" aria-hidden="true"${shadowFilter}>${outlineRects}${headRects}${bodyRects}${neckRects}${faceRects}</svg>`;
+  }
+
+  function petSpriteSVG(stageObj, mood, finalType, size = 8) {
+    return petSpriteSVGWithAccessory(stageObj, mood, finalType, size);
   }
 
   function petBondLevel(feedCount) {
@@ -3755,7 +4026,7 @@ RECENT_CONTEXT:
     const pet = getPet();
     const stageObj = petStageFromLevel(pet.level);
     const body = el.querySelector('.cigh-clean-mascot-body');
-    if (body) body.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, 2);
+    if (body) body.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, 3);
   }
 
   function showMascotSpeech(text) {
@@ -4585,14 +4856,14 @@ RECENT_CONTEXT:
     const box = document.createElement('div');
     box.id = SETTINGS_ID;
     box.innerHTML = `
-      ${settingsSection('api', '◆ API', `
+      ${settingsSection('api', '◆ API / 모델', `
         <div class="cigh-clean-settings-grid">
           <label>
             <span>Provider</span>
             <select id="cigh-clean-provider-input">
-              <option value="ai-studio" ${provider === 'ai-studio' ? 'selected' : ''}>Google AI Studio</option>
+              <option value="ai-studio" ${provider === 'ai-studio' ? 'selected' : ''}>AI Studio</option>
               <option value="openrouter" ${provider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
-              <option value="firebase" ${provider === 'firebase' ? 'selected' : ''}>Firebase AI Logic Beta</option>
+              <option value="firebase" ${provider === 'firebase' ? 'selected' : ''}>Firebase AI</option>
             </select>
           </label>
           <label>
@@ -4600,7 +4871,6 @@ RECENT_CONTEXT:
             <input id="cigh-clean-api-input" type="password" autocomplete="off" spellcheck="false" placeholder="AIzaSy..." value="${esc(getGeminiKey())}">
           </label>
         </div>
-        <div class="cigh-clean-settings-mini-title">OpenRouter</div>
         <div class="cigh-clean-settings-grid">
           <label>
             <span>OR API Key</span>
@@ -4611,24 +4881,9 @@ RECENT_CONTEXT:
             <input id="cigh-clean-or-model-input" autocomplete="off" spellcheck="false" placeholder="google/gemini-2.5-flash" value="${esc(getOpenRouterModel())}">
           </label>
         </div>
-        <div class="cigh-clean-settings-mini-title">Firebase AI Logic</div>
-        <textarea id="cigh-clean-firebase-input" spellcheck="false" placeholder='const firebaseConfig = { apiKey: "...", authDomain: "...", projectId: "...", appId: "..." };'>${esc(getFirebaseConfigRaw())}</textarea>
         <div class="cigh-clean-settings-grid">
           <label>
-            <span>Location</span>
-            <input id="cigh-clean-firebase-location-input" value="${esc(getFirebaseLocation())}" placeholder="global">
-          </label>
-          <label>
-            <span>SDK</span>
-            <input id="cigh-clean-firebase-sdk-input" value="${esc(getFirebaseSdkVersion())}" placeholder="12.5.0">
-          </label>
-        </div>
-      `, { subtitle: true })}
-
-      ${settingsSection('model', '◆ MODEL', `
-        <div class="cigh-clean-settings-grid">
-          <label>
-            <span>모델</span>
+            <span>Gemini 모델</span>
             <select id="cigh-clean-model-input">${buildModelOptions()}</select>
           </label>
           <label>
@@ -4642,9 +4897,27 @@ RECENT_CONTEXT:
             </select>
           </label>
         </div>
+        <div class="cigh-clean-settings-mini-title">Firebase AI Logic</div>
+        <textarea id="cigh-clean-firebase-input" spellcheck="false" placeholder='const firebaseConfig = { apiKey: "...", projectId: "...", appId: "..." };'>${esc(getFirebaseConfigRaw())}</textarea>
+        <div class="cigh-clean-settings-grid">
+          <label>
+            <span>Location</span>
+            <input id="cigh-clean-firebase-location-input" value="${esc(getFirebaseLocation())}" placeholder="global">
+          </label>
+          <label>
+            <span>SDK</span>
+            <input id="cigh-clean-firebase-sdk-input" value="${esc(getFirebaseSdkVersion())}" placeholder="12.5.0">
+          </label>
+        </div>
+        <div class="cigh-clean-settings-row" style="margin-top:6px;">
+          <button type="button" class="cigh-clean-set-btn" data-action="toggle">키보기</button>
+          <button type="button" class="cigh-clean-set-btn red" data-action="clear">AI키삭제</button>
+          <button type="button" class="cigh-clean-set-btn red" data-action="or-clear">OR삭제</button>
+          <button type="button" class="cigh-clean-set-btn" data-action="firebase-clear">FB삭제</button>
+        </div>
       `, { subtitle: true })}
 
-      ${settingsSection('ui', '◆ UI', `
+      ${settingsSection('ui', '◆ UI / 마스코트', `
         <div class="cigh-clean-settings-grid">
           <label>
             <span>UI 크기</span>
@@ -4659,51 +4932,367 @@ RECENT_CONTEXT:
             <input id="cigh-clean-pet-name-input" maxlength="12" autocomplete="off" spellcheck="false" value="${esc(getPetName())}" placeholder="마스코트 이름">
           </label>
         </div>
+        <div class="cigh-clean-settings-grid">
+          <label>
+            <span>마스코트 외곽선</span>
+            <select id="cigh-clean-outline-input">
+              <option value="outline" ${getMascotOutline() === 'outline' ? 'selected' : ''}>아웃라인</option>
+              <option value="shadow" ${getMascotOutline() === 'shadow' ? 'selected' : ''}>그림자</option>
+              <option value="none" ${getMascotOutline() === 'none' ? 'selected' : ''}>없음</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;">
+          <label class="cigh-clean-checkrow" style="margin:0;">
+            <input id="cigh-clean-mascot-input" type="checkbox" ${isMascotEnabled() ? 'checked' : ''}>
+            <span>마스코트 띄우기</span>
+          </label>
+          <label class="cigh-clean-checkrow" style="margin:0;">
+            <input id="cigh-clean-auto-analyze-input" type="checkbox" ${isAutoAnalyzeEnabled() ? 'checked' : ''}>
+            <span>자동 읽기</span>
+          </label>
+          <label class="cigh-clean-checkrow" style="margin:0;">
+            <input id="cigh-clean-comment-popup-input" type="checkbox" ${isCommentPopupEnabled() ? 'checked' : ''}>
+            <span>코멘트 팝업</span>
+          </label>
+          <label class="cigh-clean-checkrow" style="margin:0;">
+            <input id="cigh-clean-sfx-input" type="checkbox" ${isSfxEnabled() ? 'checked' : ''}>
+            <span>효과음</span>
+          </label>
+        </div>
       `, { subtitle: true })}
 
-      ${settingsSection('log-style', '◆ LOG STYLE', `
+      ${settingsSection('accessory', '◆ 마스코트 꾸미기', `
+        <div id="cigh-acc-editor">
+          <div class="cigh-acc-slot-row">
+            <button type="button" class="cigh-acc-slot active" data-slot="head">머리</button>
+            <button type="button" class="cigh-acc-slot" data-slot="neck">목</button>
+            <button type="button" class="cigh-acc-slot" data-slot="face">얼굴</button>
+            <span class="cigh-acc-hint" id="cigh-acc-hint">위 1~3행에 그리기</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;">
+            <div>
+              <canvas id="cigh-acc-cv" width="112" height="112" style="display:block;border:1px solid var(--cigh-border);cursor:crosshair;image-rendering:pixelated;border-radius:3px;"></canvas>
+              <div style="display:flex;gap:4px;margin-top:4px;">
+                <button type="button" class="cigh-clean-set-btn" id="cigh-acc-undo">↩</button>
+                <button type="button" class="cigh-clean-set-btn" id="cigh-acc-clear">지우기</button>
+                <button type="button" class="cigh-clean-set-btn" id="cigh-acc-erase-tog">지우개</button>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:88px;">
+              <div style="font-size:9px;color:var(--cigh-text-faint);letter-spacing:.06em;">색상</div>
+              <div id="cigh-acc-palette" style="display:grid;grid-template-columns:repeat(4,16px);gap:3px;"></div>
+              <input type="color" id="cigh-acc-custom" title="직접 선택" style="width:36px;height:18px;padding:0;border:none;cursor:pointer;background:none;">
+              <div style="font-size:9px;color:var(--cigh-text-faint);margin-top:2px;letter-spacing:.06em;">프리셋</div>
+              <div id="cigh-acc-presets" style="display:flex;flex-direction:column;gap:3px;"></div>
+            </div>
+          </div>
+          <div style="margin-top:6px;">
+            <div style="font-size:9px;color:var(--cigh-text-faint);letter-spacing:.06em;margin-bottom:4px;">미리보기</div>
+            <div style="display:flex;gap:8px;align-items:flex-end;">
+              <canvas id="cigh-acc-pv1" width="28" height="34" style="image-rendering:pixelated;"></canvas>
+              <canvas id="cigh-acc-pv2" width="56" height="68" style="image-rendering:pixelated;"></canvas>
+              <canvas id="cigh-acc-pv3" width="112" height="136" style="image-rendering:pixelated;"></canvas>
+            </div>
+          </div>
+          <div style="display:flex;gap:5px;margin-top:7px;">
+            <button type="button" class="cigh-clean-set-btn gold" id="cigh-acc-apply">적용</button>
+            <button type="button" class="cigh-clean-set-btn" id="cigh-acc-reset-slot">이 슬롯 초기화</button>
+          </div>
+        </div>
+      `, { subtitle: true })}
+
+      ${settingsSection('log-style', '◆ LOG STYLE / 기타', `
         <textarea id="cigh-clean-style-input" spellcheck="false" placeholder="원하는 포켓몬식 문체 지침">${esc(getStylePrompt())}</textarea>
+        <div class="cigh-clean-settings-row" style="margin-top:6px;">
+          <button type="button" class="cigh-clean-set-btn" data-action="style-reset">문체초기화</button>
+          <button type="button" class="cigh-clean-set-btn" data-action="preview">대상보기</button>
+        </div>
       `, { subtitle: true })}
-
-      <label class="cigh-clean-checkrow">
-        <input id="cigh-clean-comment-popup-input" type="checkbox" ${isCommentPopupEnabled() ? 'checked' : ''}>
-        <span>코멘트 팝업 표시</span>
-      </label>
-      <label class="cigh-clean-checkrow">
-        <input id="cigh-clean-sfx-input" type="checkbox" ${isSfxEnabled() ? 'checked' : ''}>
-        <span>효과음 ON/OFF</span>
-      </label>
-      <label class="cigh-clean-checkrow">
-        <input id="cigh-clean-mascot-input" type="checkbox" ${isMascotEnabled() ? 'checked' : ''}>
-        <span>마스코트 화면에 띄우기</span>
-      </label>
-      <label class="cigh-clean-checkrow">
-        <input id="cigh-clean-auto-analyze-input" type="checkbox" ${isAutoAnalyzeEnabled() ? 'checked' : ''}>
-        <span>새 답변 자동 읽기</span>
-      </label>
-      <div class="cigh-clean-settings-row">
-        <button type="button" class="cigh-clean-set-btn gold" data-action="save">저장</button>
-        <button type="button" class="cigh-clean-set-btn" data-action="toggle">키보기</button>
-        <button type="button" class="cigh-clean-set-btn red" data-action="clear">키삭제</button>
-      </div>
-      <div class="cigh-clean-settings-row">
-        <button type="button" class="cigh-clean-set-btn red" data-action="or-clear">OR키삭제</button>
-        <button type="button" class="cigh-clean-set-btn" data-action="firebase-clear">FB삭제</button>
-        <button type="button" class="cigh-clean-set-btn" data-action="style-reset">문체초기화</button>
-        <button type="button" class="cigh-clean-set-btn" data-action="preview">대상보기</button>
-      </div>
 
       ${settingsSection('usage', '◆ USAGE', buildUsageSettingsHtml(), { subtitle: true })}
 
       <div class="cigh-clean-settings-help">
-        OpenRouter: openrouter.ai에서 발급한 API 키와 사용할 모델명(예: google/gemini-2.5-flash)을 입력하세요.<br>
-        Firebase AI Logic Beta는 Firebase Config + Location(global 권장) + Firebase SDK를 사용합니다.<br>
-        자동 읽기는 새 답변 텍스트가 잠깐 안정된 뒤 최신 로그를 분석합니다.
+        OpenRouter: openrouter.ai에서 API 키와 모델명(예: google/gemini-2.5-flash)을 입력하세요.<br>
+        Firebase AI Logic Beta는 Config + Location(global 권장) + SDK를 사용합니다.
+      </div>
+
+      <div class="cigh-clean-settings-save-bar">
+        <button type="button" class="cigh-clean-set-btn gold" data-action="save" style="flex:2;font-size:11.5px;height:32px;letter-spacing:.06em;">◆ 저장</button>
+        <button type="button" class="cigh-clean-set-btn" data-action="preview" style="height:32px;">대상보기</button>
+        <button type="button" class="cigh-clean-set-btn" data-action="style-reset" style="height:32px;">문체초기화</button>
       </div>
     `;
 
     ensurePanel().appendChild(box);
     applyThemeMode();
+
+    // ── 픽셀 에디터 초기화 ──────────────────────────────────────
+    (() => {
+      const ACC_COLS = 14, ACC_ROWS = 14, ACC_PX = 8;
+      const ACC_PALETTE = [
+        '#ff9ec4','#ffd166','#d9b3ec','#9ecbf0','#a8e0b0',
+        '#f0a090','#e46576','#c8a84b','#7fb9f0','#b6a3e0',
+        '#ffd9a8','#8fb4e0','#ffffff','#aaaaaa','#555555','#111111',
+      ];
+      const ACC_SPRITE = [
+        '00000000000000','00000111100000','00001111110000',
+        '00011111111000','00111111111100','00111111111100',
+        '01111111111110','01111111111110','01111111111110',
+        '01111111111110','00111111111100','00111111111100',
+        '00011111111000','00001111110000',
+      ];
+      const ACC_SPRITE_COLOR = '#9ecbf0';
+      const ACC_SLOT_HINTS = {
+        head: '위 1~3행에 그리기 → 스프라이트 머리 위에 표시',
+        neck: '7~9행 중앙에 그리기 → 목 부근 표시',
+        face: '5~7행 좌우 모서리에 → 볼 페인팅',
+      };
+      const ACC_PRESETS_MAP = {
+        head: MASCOT_ACCESSORIES.head,
+        neck: MASCOT_ACCESSORIES.neck,
+        face: MASCOT_ACCESSORIES.face,
+      };
+
+      const cv = box.querySelector('#cigh-acc-cv');
+      if (!cv) return;
+      const ctx = cv.getContext('2d');
+
+      // 3개 슬롯 각각 별도 그리드 유지
+      const slotGrids = {
+        head: Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null)),
+        neck: Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null)),
+        face: Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null)),
+      };
+      const slotHistory = { head: [], neck: [], face: [] };
+
+      let accSlot = 'head';
+      let accColor = ACC_PALETTE[0];
+      let accErase = false;
+      let accPainting = false;
+
+      // 저장된 액세서리 로드해서 그리드 초기화
+      const savedAcc = getMascotAccessory();
+      function loadSavedToGrid(slotKey) {
+        const accDef = MASCOT_ACCESSORIES[slotKey]?.[savedAcc[slotKey]];
+        if (!accDef || !accDef.pixels?.length) return;
+        const g = slotGrids[slotKey];
+        const colorMap = accDef.colors || {};
+        accDef.pixels.forEach(p => {
+          if (p.y >= 0 && p.y < ACC_ROWS && p.x >= 0 && p.x < ACC_COLS) {
+            // p.c 우선, 없으면 colors 맵, 없으면 defaultColor
+            g[p.y][p.x] = p.c || colorMap[`${p.x},${p.y}`] || accDef.color || accColor;
+          }
+        });
+      }
+      loadSavedToGrid('head');
+      loadSavedToGrid('neck');
+      loadSavedToGrid('face');
+
+      function grid() { return slotGrids[accSlot]; }
+
+      function drawEditor() {
+        ctx.clearRect(0, 0, cv.width, cv.height);
+        const g = grid();
+        for (let y = 0; y < ACC_ROWS; y++) {
+          for (let x = 0; x < ACC_COLS; x++) {
+            ctx.fillStyle = g[y][x] || (y < 3 ? 'rgba(200,168,75,.06)' : y > 10 ? 'rgba(158,203,240,.05)' : 'rgba(0,0,0,.03)');
+            ctx.fillRect(x * ACC_PX, y * ACC_PX, ACC_PX, ACC_PX);
+            ctx.strokeStyle = 'rgba(0,0,0,.08)';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(x * ACC_PX, y * ACC_PX, ACC_PX, ACC_PX);
+          }
+        }
+        // 슬롯 가이드라인
+        ctx.strokeStyle = 'rgba(200,168,75,.35)';
+        ctx.lineWidth = 1;
+        if (accSlot === 'head') {
+          ctx.strokeRect(0, 0, ACC_COLS * ACC_PX, 3 * ACC_PX);
+        } else if (accSlot === 'neck') {
+          ctx.strokeRect(0, 6 * ACC_PX, ACC_COLS * ACC_PX, 3 * ACC_PX);
+        } else {
+          ctx.strokeRect(0, 4 * ACC_PX, 4 * ACC_PX, 3 * ACC_PX);
+          ctx.strokeRect(10 * ACC_PX, 4 * ACC_PX, 4 * ACC_PX, 3 * ACC_PX);
+        }
+        renderPreview();
+      }
+
+      function renderPreview() {
+        [[1,'#cigh-acc-pv1'],[2,'#cigh-acc-pv2'],[4,'#cigh-acc-pv3']].forEach(([sz, sel]) => {
+          const pv = box.querySelector(sel);
+          if (!pv) return;
+          const s = sz * 2;
+          // 머리 슬롯 y=0~2 → 스프라이트 위 3행 공간 필요
+          pv.width = ACC_COLS * s; pv.height = (ACC_ROWS + 3) * s;
+          const px = pv.getContext('2d');
+          px.clearRect(0, 0, pv.width, pv.height);
+
+          // 레이어 순서: 머리(스프라이트 앞) → 스프라이트 → 목·얼굴(스프라이트 뒤)
+          // 1) 머리 슬롯: 에디터 y=0~2 → canvas y = y*s (상단 3행 공간)
+          const hg = slotGrids['head'];
+          for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
+            if (hg[y][x]) { px.fillStyle = hg[y][x]; px.fillRect(x * s, y * s, s, s); }
+          }
+
+          // 2) 스프라이트 몸통 (y오프셋 +3행)
+          ACC_SPRITE.forEach((row, y) => [...row].forEach((cell, x) => {
+            if (cell === '1') { px.fillStyle = ACC_SPRITE_COLOR; px.fillRect(x * s, (y + 3) * s, s, s); }
+          }));
+
+          // 3) 목·얼굴 슬롯: 에디터 y좌표 그대로 + 3행 오프셋(스프라이트와 맞춤)
+          ['neck', 'face'].forEach(slot => {
+            const g = slotGrids[slot];
+            for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
+              if (g[y][x]) { px.fillStyle = g[y][x]; px.fillRect(x * s, (y + 3) * s, s, s); }
+            }
+          });
+        });
+      }
+
+      function getCell(e) {
+        const r = cv.getBoundingClientRect();
+        return [Math.floor((e.clientX - r.left) / ACC_PX), Math.floor((e.clientY - r.top) / ACC_PX)];
+      }
+
+      function paintCell(e) {
+        const [x, y] = getCell(e);
+        if (x < 0 || x >= ACC_COLS || y < 0 || y >= ACC_ROWS) return;
+        const g = grid();
+        g[y][x] = accErase ? null : accColor;
+        drawEditor();
+      }
+
+      cv.addEventListener('mousedown', e => {
+        const g = grid();
+        slotHistory[accSlot].push(g.map(r => [...r]));
+        accPainting = true; paintCell(e);
+      });
+      cv.addEventListener('mousemove', e => { if (accPainting) paintCell(e); });
+      cv.addEventListener('mouseup', () => { accPainting = false; });
+      cv.addEventListener('mouseleave', () => { accPainting = false; });
+
+      // 팔레트
+      const palCont = box.querySelector('#cigh-acc-palette');
+      if (palCont) {
+        ACC_PALETTE.forEach(c => {
+          const s = document.createElement('div');
+          s.style.cssText = `width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid transparent;`;
+          if (c === accColor) s.style.borderColor = 'var(--cigh-text)';
+          s.addEventListener('click', () => {
+            accColor = c; accErase = false;
+            palCont.querySelectorAll('div').forEach(d => d.style.borderColor = 'transparent');
+            s.style.borderColor = 'var(--cigh-text)';
+          });
+          palCont.appendChild(s);
+        });
+      }
+
+      // 직접 색상 선택
+      const customColor = box.querySelector('#cigh-acc-custom');
+      if (customColor) {
+        customColor.value = accColor;
+        customColor.addEventListener('input', e => { accColor = e.target.value; accErase = false; });
+      }
+
+      // 지우개 토글
+      const eraseBtn = box.querySelector('#cigh-acc-erase-tog');
+      if (eraseBtn) eraseBtn.addEventListener('click', () => {
+        accErase = !accErase;
+        eraseBtn.style.color = accErase ? 'var(--cigh-accent)' : '';
+        eraseBtn.style.borderColor = accErase ? 'var(--cigh-accent-soft)' : '';
+      });
+
+      // 실행취소
+      box.querySelector('#cigh-acc-undo')?.addEventListener('click', () => {
+        const h = slotHistory[accSlot];
+        if (h.length) { slotGrids[accSlot] = h.pop(); drawEditor(); }
+      });
+
+      // 지우기
+      box.querySelector('#cigh-acc-clear')?.addEventListener('click', () => {
+        slotHistory[accSlot].push(slotGrids[accSlot].map(r => [...r]));
+        slotGrids[accSlot] = Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null));
+        drawEditor();
+      });
+
+      // 슬롯 이 슬롯 초기화
+      box.querySelector('#cigh-acc-reset-slot')?.addEventListener('click', () => {
+        slotHistory[accSlot].push(slotGrids[accSlot].map(r => [...r]));
+        slotGrids[accSlot] = Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null));
+        drawEditor();
+      });
+
+      // 슬롯 탭
+      box.querySelectorAll('.cigh-acc-slot').forEach(btn => {
+        btn.addEventListener('click', () => {
+          accSlot = btn.dataset.slot;
+          box.querySelectorAll('.cigh-acc-slot').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const hint = box.querySelector('#cigh-acc-hint');
+          if (hint) hint.textContent = ACC_SLOT_HINTS[accSlot] || '';
+          buildPresets();
+          drawEditor();
+        });
+      });
+
+      // 프리셋
+      function buildPresets() {
+        const cont = box.querySelector('#cigh-acc-presets');
+        if (!cont) return;
+        cont.innerHTML = '';
+        const presets = ACC_PRESETS_MAP[accSlot] || {};
+        Object.entries(presets).forEach(([k, v]) => {
+          if (k === 'none') return;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'cigh-clean-set-btn';
+          btn.style.cssText = 'font-size:9.5px;padding:3px 6px;text-align:left;';
+          btn.textContent = v.label;
+          btn.addEventListener('click', () => {
+            slotHistory[accSlot].push(slotGrids[accSlot].map(r => [...r]));
+            const g = Array.from({length: ACC_ROWS}, () => Array(ACC_COLS).fill(null));
+            (v.pixels || []).forEach(p => {
+              if (p.y >= 0 && p.y < ACC_ROWS && p.x >= 0 && p.x < ACC_COLS)
+                g[p.y][p.x] = p.c || v.color || accColor;
+            });
+            slotGrids[accSlot] = g;
+            drawEditor();
+          });
+          cont.appendChild(btn);
+        });
+      }
+      buildPresets();
+
+      // 적용 버튼 — 그리드에서 픽셀 데이터 추출 → setMascotAccessory 직접 호출
+      // 모든 픽셀을 {x,y,c} 형태로 통째 저장 (color/colors 분리 없이 단순화)
+      box.querySelector('#cigh-acc-apply')?.addEventListener('click', () => {
+        const newAcc = getMascotAccessory();
+        ['head', 'neck', 'face'].forEach(slotKey => {
+          const g = slotGrids[slotKey];
+          const pixels = [];
+          for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
+            if (g[y][x]) pixels.push({ x, y, c: g[y][x] });
+          }
+          if (!pixels.length) { newAcc[slotKey] = 'none'; return; }
+          const key = `custom_${slotKey}`;
+          // pixels에 c가 모두 포함 → _accPixelsToRects에서 p.c로 바로 읽음
+          MASCOT_ACCESSORIES[slotKey][key] = {
+            label: '✏ 커스텀',
+            color: pixels[0].c,  // fallback용 (실제로는 p.c가 항상 존재)
+            pixels,
+          };
+          newAcc[slotKey] = key;
+        });
+        setMascotAccessory(newAcc);
+        updateMascotSprite();
+        if (activeTab === 'pet') renderContent();
+        pushLog(['▷마스코트 꾸미기 적용!']);
+        playBeep('save');
+      });
+
+      drawEditor();
+    })();
+    // ── 픽셀 에디터 끝 ───────────────────────────────────────────
 
     const providerInput = box.querySelector('#cigh-clean-provider-input');
     const apiInput = box.querySelector('#cigh-clean-api-input');
@@ -4751,6 +5340,8 @@ RECENT_CONTEXT:
       setOpenRouterKey(orKeyInput?.value || '');
       setOpenRouterModel(orModelInput?.value || DEFAULT_OPENROUTER_MODEL);
       setGeminiModel(modelInput?.value || DEFAULT_GEMINI_MODEL);
+      setMascotOutline(box.querySelector('#cigh-clean-outline-input')?.value || 'outline');
+      updateMascotSprite();
       setThinkingBudget(thinkingInput?.value || DEFAULT_THINKING_BUDGET);
       setUiFontSize(fontSizeInput?.value || 'small');
       setPetName(petNameInput?.value || '');
@@ -5027,6 +5618,8 @@ RECENT_CONTEXT:
 
     loadRoomData();
     watchAutoAnalyze();
+    // 방 전환 즉시 마스코트 스프라이트 갱신 (이 방의 펫 상태로)
+    if (isMascotEnabled()) updateMascotSprite();
   }
 
   function patchRoute() {
@@ -5912,9 +6505,7 @@ RECENT_CONTEXT:
       #cigh-clean-provider-input,
       #cigh-clean-firebase-input,
       #cigh-clean-firebase-location-input,
-      #cigh-clean-firebase-sdk-input,
-      #cigh-clean-or-key-input,
-      #cigh-clean-or-model-input {
+      #cigh-clean-firebase-sdk-input {
         width: 100%;
         box-sizing: border-box;
         border: 1px solid var(--cigh-border);
@@ -5931,9 +6522,7 @@ RECENT_CONTEXT:
       #cigh-clean-font-size-input,
       #cigh-clean-provider-input,
       #cigh-clean-firebase-location-input,
-      #cigh-clean-firebase-sdk-input,
-      #cigh-clean-or-key-input,
-      #cigh-clean-or-model-input {
+      #cigh-clean-firebase-sdk-input {
         height: 26px;
         padding: 0 7px;
         font-size: 10.5px;
@@ -5957,9 +6546,7 @@ RECENT_CONTEXT:
       #cigh-clean-provider-input:focus,
       #cigh-clean-firebase-input:focus,
       #cigh-clean-firebase-location-input:focus,
-      #cigh-clean-firebase-sdk-input:focus,
-      #cigh-clean-or-key-input:focus,
-      #cigh-clean-or-model-input:focus {
+      #cigh-clean-firebase-sdk-input:focus {
         border-color: color-mix(in srgb, var(--cigh-accent) 58%, transparent);
       }
       .cigh-clean-checkrow {
@@ -5973,6 +6560,17 @@ RECENT_CONTEXT:
       }
       .cigh-clean-checkrow input {
         accent-color: var(--cigh-accent);
+      }
+      .cigh-acc-slot-row { display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:4px; }
+      .cigh-acc-slot { border:1px solid var(--cigh-border-soft);background:var(--cigh-fill);color:var(--cigh-text-soft);font:inherit;font-size:9.5px;padding:2px 8px;border-radius:99px;cursor:pointer; }
+      .cigh-acc-slot:hover { color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
+      .cigh-acc-slot.active { background:var(--cigh-accent-softer);color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
+      .cigh-acc-hint { font-size:9px;color:var(--cigh-text-faint);margin-left:2px;flex:1; }
+      .cigh-clean-settings-save-bar {
+        position:sticky; bottom:0;
+        display:flex; gap:5px; padding:9px 0 6px;
+        background:var(--cigh-bg); border-top:1px solid var(--cigh-border-soft);
+        margin-top:12px; z-index:2;
       }
       .cigh-clean-settings-grid {
         display: grid;
@@ -6132,8 +6730,6 @@ RECENT_CONTEXT:
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-model-input,
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-thinking-input,
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-provider-input,
-      #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-or-key-input,
-      #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-or-model-input,
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-firebase-location-input,
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-firebase-sdk-input,
       #${SETTINGS_ID}[data-cigh-font="small"] #cigh-clean-font-size-input,
@@ -6264,8 +6860,6 @@ RECENT_CONTEXT:
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-model-input,
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-thinking-input,
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-provider-input,
-      #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-or-key-input,
-      #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-or-model-input,
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-firebase-location-input,
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-firebase-sdk-input,
       #${SETTINGS_ID}[data-cigh-font="medium"] #cigh-clean-font-size-input {
@@ -6402,8 +6996,6 @@ RECENT_CONTEXT:
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-model-input,
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-thinking-input,
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-provider-input,
-      #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-or-key-input,
-      #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-or-model-input,
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-firebase-location-input,
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-firebase-sdk-input,
       #${SETTINGS_ID}[data-cigh-font="large"] #cigh-clean-font-size-input {
@@ -6438,12 +7030,165 @@ RECENT_CONTEXT:
       #${MASCOT_ID}.grab { cursor: grabbing; }
       #${MASCOT_ID}.poke { animation: cigh-clean-mascot-jump 0.42s ease; }
       #${MASCOT_ID}.cigh-clean-mascot-happy .cigh-clean-pet-svg {
-        filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 8px var(--cigh-accent-soft));
+        filter: none;
       }
       #${MASCOT_ID}.cigh-clean-mascot-scared .cigh-clean-mascot-body {
         animation: cigh-clean-mascot-shiver 0.12s linear infinite;
       }
-        `;
+      #${MASCOT_ID}.cigh-clean-mascot-sad .cigh-clean-mascot-body::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: 10px;
+        background: rgba(80,150,255,.16);
+        pointer-events: none;
+        mix-blend-mode: screen;
+      }
+      .cigh-clean-mascot-body {
+        position: relative;
+        z-index: 2;
+      }
+      .cigh-clean-mascot-body .cigh-clean-pet-svg {
+        image-rendering: pixelated;
+        animation: cigh-clean-float 2.4s ease-in-out infinite;
+      }
+      .cigh-clean-mascot-speech {
+        display: none;
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 4px);
+        transform: translateX(-50%);
+        z-index: 4;
+        max-width: 160px;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        padding: 1px 2px;
+        font-family: "Courier New", Consolas, monospace;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1.25;
+        color: var(--cigh-text);
+        white-space: nowrap;
+        text-align: center;
+        text-shadow:
+          -1px 0 var(--cigh-bg), 1px 0 var(--cigh-bg),
+          0 -1px var(--cigh-bg), 0 1px var(--cigh-bg);
+        paint-order: stroke fill;
+        -webkit-text-stroke: 0.35px var(--cigh-bg);
+        box-shadow: none;
+        pointer-events: none;
+      }
+      .cigh-clean-mascot-speech.show {
+        display: block;
+        animation: cigh-clean-mascot-speech-pop 0.22s ease;
+      }
+      @keyframes cigh-clean-mascot-speech-pop {
+        0% { opacity: 0; transform: translateX(-50%); }
+        100% { opacity: 1; transform: translateX(-50%); }
+      }
+      .cigh-clean-mascot-fx {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 64px;
+        height: 64px;
+        transform: translate(-50%, -34%);
+        pointer-events: none;
+        overflow: visible;
+        z-index: 3;
+      }
+      .cigh-clean-mascot-fx-dot {
+        position: absolute;
+        width: 5px;
+        height: 5px;
+        border-radius: 2px;
+        background: var(--cigh-accent);
+        color: var(--cigh-accent);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: 10px;
+        line-height: 1;
+        text-align: center;
+        image-rendering: pixelated;
+        opacity: 0;
+        transform: translate(-50%, -50%);
+        animation: cigh-clean-mascot-float-dot var(--dur, 900ms) ease-out forwards;
+        text-shadow: 0 1px 2px rgba(0,0,0,.28);
+      }
+      .cigh-clean-mascot-fx-dot.heart {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: #ff9ec4;
+        color: #ff9ec4;
+      }
+      .cigh-clean-mascot-fx-dot.heart:not(:empty) { background: transparent !important; }
+      .cigh-clean-mascot-fx-dot.spark,
+      .cigh-clean-mascot-fx-dot.flower {
+        width: auto;
+        height: auto;
+        background: transparent !important;
+        color: var(--cigh-accent);
+        font-size: 11px;
+      }
+      .cigh-clean-mascot-fx-dot.sweat,
+      .cigh-clean-mascot-fx-dot.tear {
+        width: 5px;
+        height: 9px;
+        border-radius: 999px 999px 999px 2px;
+        background: #9ecbf0;
+        box-shadow: 0 0 4px rgba(158,203,240,.45);
+      }
+      .cigh-clean-mascot-fx-dot.tear { background: #7fb9f0; }
+      .cigh-clean-mascot-blush {
+        position: absolute;
+        top: 39%;
+        width: 8px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(255,130,178,.55);
+        filter: blur(.2px);
+        pointer-events: none;
+        z-index: 3;
+        animation: cigh-clean-mascot-blush 2.5s ease forwards;
+      }
+      .cigh-clean-mascot-blush.left { left: 23%; }
+      .cigh-clean-mascot-blush.right { right: 23%; }
+      @keyframes cigh-clean-mascot-jump {
+        0%, 100% { transform: translateY(0); }
+        40% { transform: translateY(-9px); }
+      }
+      @keyframes cigh-clean-mascot-shiver {
+        0%, 100% { left: 0; }
+        25% { left: -1.5px; }
+        50% { left: 1px; }
+        75% { left: -1px; }
+      }
+      @keyframes cigh-clean-mascot-float-dot {
+        0% { opacity: 0; transform: translate(-50%, -50%) translate(0, 0) scale(.75); }
+        18% { opacity: 1; }
+        100% { opacity: 0; transform: translate(-50%, -50%) translate(var(--mx, 0), var(--my, -26px)) scale(1.15); }
+      }
+      @keyframes cigh-clean-mascot-blush {
+        0%, 82% { opacity: .85; }
+        100% { opacity: 0; }
+      }
+
+      @media (max-width: 520px) {
+        #${FAB_ID} { left: 12px; bottom: 76px; }
+        #${PANEL_ID} {
+          left: 6px !important;
+          right: 6px !important;
+          bottom: 70px !important;
+          top: auto !important;
+          width: auto;
+        }
+        #${POPUP_ID},
+        #${COMMENT_POPUP_ID} {
+          width: min(218px, calc(100vw - 24px));
+        }
+      }
+    `;
 
     document.head.appendChild(style);
   }
