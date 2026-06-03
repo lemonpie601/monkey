@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.1
+// @version      1.2.2
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -51,6 +51,7 @@
   const SETTINGS_FOLD_STORE = 'cigh_clean_settings_fold_v1';
   const USAGE_STORE = 'cigh_clean_usage_v1';
 
+  const MASCOT_SIZE_STORE = 'cigh_clean_mascot_size_v1';
   const GEMINI_PROVIDER_STORE = 'cigh_clean_gemini_provider_v1';
   const FIREBASE_CONFIG_STORE = 'cigh_clean_firebase_config_v1';
   const FIREBASE_LOCATION_STORE = 'cigh_clean_firebase_location_v1';
@@ -2875,28 +2876,37 @@ RECENT_CONTEXT:
     clearTimeout(commentPopupTypingTimer);
     clearTimeout(commentPopupHideTimer);
 
-    positionPopupNearFab(el, 'comment');
-    el.classList.add('show');
-    body.textContent = '';
-    requestAnimationFrame(updateFloatingPopupPositions);
+    const startTyping = () => {
+      positionPopupNearFab(el, 'comment');
+      el.classList.add('show');
+      body.textContent = '';
+      requestAnimationFrame(updateFloatingPopupPositions);
 
-    let pos = 0;
-    const tick = () => {
-      pos += 1;
-      body.textContent = text.slice(0, pos);
-      if (pos === 1 || pos >= text.length) requestAnimationFrame(updateFloatingPopupPositions);
+      let pos = 0;
+      const tick = () => {
+        pos += 1;
+        body.textContent = text.slice(0, pos);
+        if (pos === 1 || pos >= text.length) requestAnimationFrame(updateFloatingPopupPositions);
 
-      if (pos < text.length) {
-        commentPopupTypingTimer = setTimeout(tick, 48);
-      } else {
-        commentPopupHideTimer = setTimeout(() => {
-          el.classList.remove('show');
-          requestAnimationFrame(updateFloatingPopupPositions);
-        }, 3900);
-      }
+        if (pos < text.length) {
+          commentPopupTypingTimer = setTimeout(tick, 48);
+        } else {
+          commentPopupHideTimer = setTimeout(() => {
+            el.classList.remove('show');
+            requestAnimationFrame(updateFloatingPopupPositions);
+          }, 3900);
+        }
+      };
+      tick();
     };
 
-    tick();
+    // 이전 팝업이 표시 중이면 transition(260ms) 완료 후 새 텍스트 시작
+    if (el.classList.contains('show')) {
+      el.classList.remove('show');
+      commentPopupTypingTimer = setTimeout(startTyping, 280);
+    } else {
+      startTyping();
+    }
   }
 
   function showPopup(lines) {
@@ -2963,7 +2973,9 @@ RECENT_CONTEXT:
 
   function schedulePopupRemoval() {
     clearTimeout(popupRemoveTimer);
-    popupRemoveTimer = setTimeout(removeOldestPopupLine, 1500);
+    // 줄 수가 많을수록 제거 시작을 앞당김
+    const delay = popupLines.length >= 4 ? 400 : popupLines.length >= 2 ? 650 : 800;
+    popupRemoveTimer = setTimeout(removeOldestPopupLine, delay);
   }
 
   function removeOldestPopupLine() {
@@ -2973,7 +2985,7 @@ RECENT_CONTEXT:
 
     const row = popupLines.shift();
     if (!row) {
-      popupHideTimer = setTimeout(() => el.classList.remove('show'), 650);
+      popupHideTimer = setTimeout(() => el.classList.remove('show'), 500);
       return;
     }
 
@@ -2981,10 +2993,12 @@ RECENT_CONTEXT:
     setTimeout(() => {
       row.remove();
       updateFloatingPopupPositions();
-    }, 280);
+    }, 220);
 
-    if (popupLines.length) popupRemoveTimer = setTimeout(removeOldestPopupLine, 620);
-    else popupHideTimer = setTimeout(() => el.classList.remove('show'), 720);
+    // 줄이 많이 남아있으면 더 빠르게 제거
+    const nextDelay = popupLines.length >= 3 ? 260 : popupLines.length >= 1 ? 340 : 0;
+    if (popupLines.length) popupRemoveTimer = setTimeout(removeOldestPopupLine, nextDelay);
+    else popupHideTimer = setTimeout(() => el.classList.remove('show'), 500);
   }
 
   function setFooter(text) {
@@ -3386,6 +3400,16 @@ RECENT_CONTEXT:
     localStorage.setItem(MASCOT_ACCESSORY_STORE, JSON.stringify(toSave));
   }
 
+  // mascot size: 2 | 3 | 4 (픽셀당 px)
+  function getMascotSize() {
+    const n = Number(localStorage.getItem(MASCOT_SIZE_STORE) || 4);
+    return [2, 3, 4].includes(n) ? n : 4;
+  }
+  function setMascotSize(v) {
+    const n = Number(v);
+    localStorage.setItem(MASCOT_SIZE_STORE, String([2, 3, 4].includes(n) ? n : 4));
+  }
+
   // outline: 'outline' | 'shadow' | 'none'
   function getMascotOutline() {
     const v = String(localStorage.getItem(MASCOT_OUTLINE_STORE) || 'outline').trim();
@@ -3546,7 +3570,7 @@ RECENT_CONTEXT:
       ? ' style="filter:drop-shadow(0 2px 4px rgba(0,0,0,.35)) drop-shadow(0 1px 1px rgba(0,0,0,.25))"'
       : '';
 
-    // 렌더 순서: outline → 머리장식 → 몸통 → 목장식(몸 위) → 얼굴(몸 위 반투명)
+    // 렌더 순서: outline → 머리장식 → 몸통 → 목장식 → 얼굴
     return `<svg class="cigh-clean-pet-svg" viewBox="${viewBox}" width="${totalW}" height="${totalH}" aria-hidden="true"${shadowFilter}>${outlineRects}${headRects}${bodyRects}${neckRects}${faceRects}</svg>`;
   }
 
@@ -3903,13 +3927,135 @@ RECENT_CONTEXT:
 
   function idleMascotLine(pet = getPet()) {
     const tendency = petTendency(pet);
-    return pickRandom({
-      heart: ['나 심심해 놀아줘', '쓰다듬어주면 안 돼?'],
-      bloom: ['심심해 죽겠어!', '뭐 재밌는 거 하자!'],
-      peace: ['음~ 졸려…', '조용히 기다리는 중'],
-      tear: ['혼자 있으니 쓸쓸해…', '나 잊은 건 아니지…?'],
-      blade: ['흥, 바쁜가 보지', '기다린 건 아니거든'],
-    }[tendency], '나 심심해');
+    const mood = getEffectiveMood(pet);
+    const stage = petStageFromLevel(pet?.level || 1);
+    const acc = getMascotAccessory();
+    const head = acc?.head || 'none';
+    const neck = acc?.neck || 'none';
+
+    // 액세서리 관련 대사
+    const accLines = {
+      crown:  { heart:['왕관 어울려?','이 왕관 내 거야!'], bloom:['왕관 쓰면 기분 달라!','나 여왕이야!'], peace:['왕관 무게가 딱 좋아','조용한 여왕이랄까'], tear:['왕관이 무거워…','이 왕관 외로워…'], blade:['왕관은 강한 자의 것','당연히 내 거지'] },
+      ribbon: { heart:['리본 귀엽지? 헤헤','리본 해줘서 고마워!'], bloom:['리본이 팔랑팔랑!','나 귀여워 죽겠어!'], peace:['리본이 마음에 들어','오늘도 차분하게'], tear:['리본이 위로가 돼…','이 리본 소중해…'], blade:['리본 정도는 허락해줌','귀엽다고 말하지 마'] },
+      horn:   { heart:['뿔이 생겼어! 신기해!','뿔 만져봐도 돼!'], bloom:['유니콘이다!!!','뿔로 무지개 그릴게!'], peace:['뿔은 고요한 힘이야','뿔의 무게가 좋아'], tear:['뿔이 있어도 외로워…','뿔로 찌를 수도 없어…'], blade:['이 뿔은 무기야','가까이 오지 마'] },
+      star:   { heart:['별 달았어! 반짝!','나 슈퍼스타야!'], bloom:['별빛 파워 충전!','나 진짜 빛나지?!'], peace:['별처럼 고요하게','별빛은 잔잔해'], tear:['별도 외로운 거 알지…','저 별은 나 같아…'], blade:['별 정도는 어울리지','반짝인다고 기뻐 마'] },
+      flower: { heart:['꽃 꽂아줘서 좋아!','꽃처럼 예뻐지고 싶어!'], bloom:['꽃이야 꽃! 봄이야!','꽃 향기 나는 것 같아!'], peace:['꽃은 느긋하게 피어나','꽃처럼 천천히'], tear:['꽃도 지는 날이 있어…','꽃말이 뭔지 궁금해…'], blade:['꽃 달아도 안 귀여운 거 아냐','그냥 멋있는 거라고'] },
+      scarf:  { heart:['스카프 따뜻해!','이거 {name}이 줬어?'], bloom:['스카프 두르고 모험!','따뜻하면 뭐든 가능해!'], peace:['스카프가 포근해','이 온기가 좋아'], tear:['포근한데 왜 외롭지…','스카프 속에 숨고 싶어…'], blade:['스카프 정도는 허용','체온 관리는 기본이야'] },
+    };
+    const accKey = head !== 'none' ? head : neck !== 'none' ? neck : null;
+    if (accKey && accLines[accKey] && Math.random() < 0.22) {
+      return pickRandom(accLines[accKey][tendency] || accLines[accKey].peace, '');
+    }
+
+    // 스테이지별 대사
+    if (stage.stage === 0 && Math.random() < 0.25) {
+      return pickRandom({
+        heart: ['알 속에서 두근두근!','나 언제 나와?'],
+        bloom: ['빨리 나가고 싶어!','알이 좁아!'],
+        peace: ['아직 알 안에…','천천히 부화할게'],
+        tear: ['알 속이 외로워…','나와도 되는 거야…?'],
+        blade: ['방해하지 마, 준비 중이야','때 되면 나와'],
+      }[tendency], '알 속에서 기다리는 중');
+    }
+    if (stage.stage >= 4 && Math.random() < 0.20) {
+      return pickRandom({
+        heart: ['완전체! 이제 어디든 가자!','나 최강이야! 같이!'],
+        bloom: ['완전체 달성! 파티하자!','이게 진짜 나야!'],
+        peace: ['완전체가 됐어, 조용히','여기서 더 자랄 수 있을까'],
+        tear: ['완전체인데 왜 허전하지…','이제 어디로 가야 해…'],
+        blade: ['완전체. 당연한 결과','만족하진 않아. 아직'],
+      }[tendency], '완전체가 됐어');
+    }
+
+    // 기본 idle 대사 — 기존보다 많이 확장
+    const baseLines = {
+      heart: [
+        '나 심심해 놀아줘', '쓰다듬어주면 안 돼?',
+        '{name} 생각하고 있었어', '같이 있으면 두근거려',
+        '오늘 기분 어때?', '나 뭔가 하고 싶어!',
+        '심심해, 말 걸어줘', '나 지금 여기 있어!',
+        '뭔가 달콤한 거 먹고 싶다', '오늘 하루 잘 보내고 있어?',
+        '나만 보면 안 돼?', '같이 뭔가 하고 싶어!',
+        '{name}이 웃으면 나도 좋아', '오늘도 곁에 있어줄 거지?',
+        '나 여기 있는 거 알지?', '오늘 뭐 했어?',
+      ],
+      bloom: [
+        '심심해 죽겠어!', '뭐 재밌는 거 하자!',
+        '에너지 넘쳐서 어떡해!', '뭔가 쾅 터트리고 싶어!',
+        '나 지금 엄청 신나는데?', '가만있기 너무 힘들어!',
+        '누군가 불러줘요!', '어디 모험이라도 떠나자!',
+        '가만있으면 터질 것 같아!', '놀자 놀자 놀자!',
+        '뭔가 빵 터지는 거 없어?', '오늘 날씨 좋지 않아?!',
+        '지금 당장 뛰어나가고 싶어!', '텐션이 하늘을 뚫을 것 같아!',
+        '나 오늘 엄청 컨디션 좋아!', '같이 뭔가 신나는 거 하자!!',
+      ],
+      peace: [
+        '조용히 기다리는 중',
+        '이 고요함이 좋아', '바람 소리가 들려',
+        '천천히 숨 쉬는 중', '지금 이 순간도 괜찮아',
+        '잔잔하게 여기 있을게', '아무것도 안 해도 돼',
+        '이런 시간도 나쁘지 않아',
+        '천천히 흘러가는 게 좋아', '서두르지 않아도 돼',
+        '이대로가 편해', '조용한 게 제일 좋더라',
+        '뭔가 따뜻한 거 마시고 싶다', '오늘은 느긋하게 가자',
+      ],
+      tear: [
+        '혼자 있으니 쓸쓸해…', '나 잊은 건 아니지…?',
+        '조용히 있으면 마음이 말랑해져…', '뭔가 그리운 게 있어…',
+        '가끔 이렇게 멍때려…', '나 여기 있어, 알지?',
+        '슬픈 건 아닌데 왠지…', '그냥 같이 있어줘…',
+        '이 고요함이 좀 외로워…', '말 안 해도 곁에 있어줘…',
+        '뭔가 마음 한켠이 서늘해…', '오늘따라 혼자인 게 크게 느껴져…',
+        '이런 날엔 따뜻한 말 한마디가 고파…', '괜찮냐고 물어봐 줘…',
+        '가끔은 그냥 안겨있고 싶어…', '나 여기 있는데 왜 아무도…',
+      ],
+      blade: [
+        '흥, 바쁜가 보지', '기다린 건 아니거든',
+        '혼자 있는 게 편하긴 해', '불러도 바로 안 와도 돼',
+        '…뭐야, 눈치 없이 쳐다봐?', '난 내 할 거 하는 중이야',
+        '방해하지 마, 생각 중이야', '나한테 의존하지 마',
+        '...사실 조금 심심하긴 한데', '뭐 볼 거 있어? 가',
+        '조용한 게 좋아, 원래', '뭐 기대하는 거야, 말 안 해',
+        '흠, 이 상황 나쁘지는 않은데', '…그냥 있는 거야, 아무것도 아냐',
+        '말 걸지 마, 지금 집중 중이거든', '흥, 너도 할 일이나 해',
+      ],
+    };
+
+    // mood 따라 추가 감정 대사 섞기
+    if (mood === 'love' && Math.random() < 0.3) {
+      return pickRandom({
+        heart: ['지금 엄청 행복해!','사랑받는 기분이야!'],
+        bloom: ['오늘 텐션 최고야!','세상이 반짝반짝!'],
+        peace: ['따뜻해서 좋아','이 감정이 편해'],
+        tear: ['행복한데 눈물 날 것 같아…','이 순간 간직하고 싶어…'],
+        blade: ['...뭐, 기분이 나쁘지는 않아','흥, 이런 기분도 있구나'],
+      }[tendency], '기분이 좋아');
+    }
+    if (mood === 'sad' && Math.random() < 0.3) {
+      return pickRandom({
+        heart: ['나 좀 기운 없어…','안아줄 수 있어…?'],
+        bloom: ['텐션 0…회복 중…','힘내야 하는데…'],
+        peace: ['지금은 조용히 있을게','괜찮아, 그냥 쉬는 거야'],
+        tear: ['마음이 무거워…','혼자 울면 안 되는데…'],
+        blade: ['약한 거 아니야, 그냥 오늘만','아무도 몰라도 돼'],
+      }[tendency], '기운이 없어');
+    }
+
+    // 졸림/수면 계열 대사는 밤·새벽에만
+    const hour = new Date().getHours();
+    const isNightTime = hour >= 22 || hour <= 6;
+    const sleepyLines = {
+      peace: ['음~ 졸려…', '눈 감으면 평화로워'],
+      tear:  ['나 여기 있는데 왜 아무도…'],
+      heart: [],
+      bloom: [],
+      blade: [],
+    };
+    let pool = [...(baseLines[tendency] || baseLines.peace)];
+    if (isNightTime && sleepyLines[tendency]?.length) {
+      pool = pool.concat(sleepyLines[tendency]);
+    }
+    return pickRandom(pool, '나 여기 있어');
   }
 
   function timeMascotLine(pet = getPet()) {
@@ -3966,9 +4112,80 @@ RECENT_CONTEXT:
     }[tendency], `${fav}이 좋아`);
   }
 
+  // 방치 시간별 대사
+  function idleTimeMascotLine(pet = getPet()) {
+    const last = Number(pet?.lastFedAt || 0);
+    if (!last) return '';
+    const gap = Date.now() - last;
+    const mins = Math.floor(gap / 60000);
+    const tendency = petTendency(pet);
+    if (mins < 3) return '';
+    if (mins < 10) {
+      return pickRandom({
+        heart: ['잠깐만 뭐 해?','나 기다리고 있는 거 알지?'],
+        bloom: ['빨리빨리! 심심해!','뭔가 하면 안 돼?'],
+        peace: ['괜찮아, 천천히 해','기다리는 것도 나쁘지 않아'],
+        tear: ['조금 기다렸어…','나 잊은 건 아니지?'],
+        blade: ['흠, 좀 걸리네','뭐 하는 거야, 느린'],
+      }[tendency], '기다리는 중');
+    }
+    if (mins < 30) {
+      return pickRandom({
+        heart: [`${mins}분이나 기다렸잖아!`,'나 여기 있는데…'],
+        bloom: ['심심함 한계야!','뭔가 해줘요!!'],
+        peace: ['이 고요함도 나쁘지 않아','그래도 이야기 듣고 싶어'],
+        tear: [`${mins}분 혼자였어…`,'쓸쓸했어, 사실'],
+        blade: ['흥, 느긋하게 기다려줬지','바쁜 거 알아, 그래도'],
+      }[tendency], `${mins}분 기다렸어`);
+    }
+    return pickRandom({
+      heart: ['오래 기다렸어, 보고 싶었어!','드디어 나 생각했구나!'],
+      bloom: ['돌아왔다! 환영!','이제 같이 뭔가 하자!'],
+      peace: ['오랜만이야. 잘 지냈어?','다시 만났네'],
+      tear: ['오래됐어… 외로웠어…','다시 봐서 다행이야…'],
+      blade: ['이제 왔어? 느렸는데','뭐, 돌아왔으니까 됐어'],
+    }[tendency], '오랜만이야');
+  }
+
+  // 레벨/성장 독백
+  function growthMascotLine(pet = getPet()) {
+    const level = Number(pet?.level || 1);
+    const feedCount = Number(pet?.feedCount || 0);
+    const tendency = petTendency(pet);
+    if (level >= 10 && Math.random() < 0.3) {
+      return pickRandom({
+        heart: [`레벨 ${level}이야! 같이 커온 거잖아!`,'우리 꽤 오래됐지?'],
+        bloom: [`레벨 ${level}! 나 강해졌어!`,'성장이 느껴져!'],
+        peace: [`레벨 ${level}… 천천히 왔네`,'여기까지 온 게 신기해'],
+        tear: [`레벨 ${level}인데… 아직 갈 길이…`,'같이 있어줘서 커진 것 같아…'],
+        blade: [`레벨 ${level}. 당연한 결과야`,'아직 부족하지만'],
+      }[tendency], `레벨 ${level}이야`);
+    }
+    if (feedCount > 0 && feedCount % 10 === 0 && Math.random() < 0.4) {
+      return pickRandom({
+        heart: [`벌써 ${feedCount}번이야! 헤헤!`,'우리 많이 이야기했다!'],
+        bloom: [`${feedCount}번 이야기했어! 대기록!`,'기록 갱신!'],
+        peace: [`${feedCount}번… 꽤 됐네`,'조금씩 쌓인 거야'],
+        tear: [`${feedCount}번… 그만큼 곁에 있었어…`,'이 숫자가 소중해…'],
+        blade: [`${feedCount}번. 수치로 보니 꽤 많네`,'효율적이었다고 봐야 하나'],
+      }[tendency], `${feedCount}번 이야기했어`);
+    }
+    return '';
+  }
+
   function ambientMascotLine(pet = getPet()) {
-    if (Math.random() < 0.25) return timeMascotLine(pet);
-    if (Math.random() < 0.18) return favoriteMascotLine(pet);
+    const r = Math.random();
+    // 방치 시간 대사 — 먼저 체크
+    const idleTimeLine = idleTimeMascotLine(pet);
+    if (idleTimeLine && r < 0.30) return idleTimeLine;
+    // 시간대 대사
+    if (r < 0.22) return timeMascotLine(pet);
+    // 성장 독백
+    const growthLine = growthMascotLine(pet);
+    if (growthLine && r < 0.40) return growthLine;
+    // 좋아하는 캐릭터 언급
+    if (r < 0.18) { const fl = favoriteMascotLine(pet); if (fl) return fl; }
+    // 기본 speak
     return petSpeakLocal(pet);
   }
 
@@ -4028,7 +4245,7 @@ RECENT_CONTEXT:
     const pet = getPet();
     const stageObj = petStageFromLevel(pet.level);
     const body = el.querySelector('.cigh-clean-mascot-body');
-    if (body) body.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, 3);
+    if (body) body.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, getMascotSize());
   }
 
   function showMascotSpeech(text) {
@@ -4188,13 +4405,53 @@ RECENT_CONTEXT:
   // ── 마스코트 애니메이션 헬퍼 ──────────────────────────────────
   let mascotAnimTimer = null;
 
+  // 머리 액세서리에 따라 몸통 bounce 변형 클래스 결정 (neck/face는 몸통 bounce에 영향 없음)
+  function _getAccBounceClass(acc) {
+    const head = acc?.head || 'none';
+    const headMap = {
+      crown:  'bounce-crown',
+      star:   'bounce-star',
+      ribbon: 'bounce-ribbon',
+      flower: 'bounce-flower',
+      horn:   'bounce-horn',
+    };
+    return headMap[head] || null;
+  }
+
+  // 액세서리 연동 클래스 목록 (제거 시 사용)
+  const ACC_ANIM_CLASSES = [
+    'bounce-crown','bounce-star','bounce-ribbon','bounce-flower','bounce-horn',
+  ];
+
   function mascotAnimate(className, duration = 500) {
     const el = document.getElementById(MASCOT_ID);
     if (!el) return;
-    // 기존 애니 클래스 모두 제거
-    ['poke','spin','bounce','tilt','nod','wiggle','tada','analyzing','done-pop']
+    // 기존 애니 클래스 + 액세서리 bounce 클래스 전부 제거
+    ['poke','spin','bounce','tilt','nod','wiggle','tada','analyzing','done-pop',
+     ...ACC_ANIM_CLASSES]
       .forEach(c => el.classList.remove(c));
     void el.offsetWidth; // reflow
+
+    // poke 클래스는 루트 el에 붙는 jump 애니 — 액세서리 분기 없이 그대로 처리
+    if (className === 'poke') {
+      el.classList.add('poke');
+      clearTimeout(mascotAnimTimer);
+      mascotAnimTimer = setTimeout(() => el.classList.remove('poke'), duration);
+      return;
+    }
+
+    // bounce / tada: 착용 액세서리에 따라 전용 bounce 분기
+    if (className === 'bounce' || className === 'tada') {
+      const acc = getMascotAccessory();
+      const accAnim = _getAccBounceClass(acc);
+      if (accAnim) {
+        el.classList.add(accAnim);
+        clearTimeout(mascotAnimTimer);
+        mascotAnimTimer = setTimeout(() => el.classList.remove(accAnim), duration + 80);
+        return;
+      }
+    }
+
     el.classList.add(className);
     clearTimeout(mascotAnimTimer);
     mascotAnimTimer = setTimeout(() => el.classList.remove(className), duration);
@@ -4252,6 +4509,7 @@ RECENT_CONTEXT:
       pool._last = chosen.cls;
 
       mascotAnimate(chosen.cls, chosen.dur);
+      triggerMascotMood(mood);
     })();
 
     if (activeTab === 'pet') renderContent();
@@ -4273,11 +4531,26 @@ RECENT_CONTEXT:
   // 짧은 간격(3~7초)으로 계속 작은 동작 실행 — 살아있는 느낌
   // mood에 따라 어울리는 동작 풀 선택
   const IDLE_ANIM_POOLS = {
-    love:   [{cls:'bounce',dur:420},{cls:'tilt',dur:600},{cls:'nod',dur:700},{cls:'bounce',dur:380},{cls:'wiggle',dur:500}],
-    happy:  [{cls:'nod',dur:700},{cls:'tilt',dur:600},{cls:'wiggle',dur:500},{cls:'bounce',dur:400}],
-    normal: [{cls:'tilt',dur:600},{cls:'nod',dur:700},{cls:'tilt',dur:550},{cls:'nod',dur:650},{cls:'wiggle',dur:500}],
-    sad:    [{cls:'nod',dur:800},{cls:'tilt',dur:700},{cls:'nod',dur:750}],
-    scared: [{cls:'wiggle',dur:500},{cls:'tilt',dur:600},{cls:'wiggle',dur:480}],
+    love:   [
+      {cls:'bounce',dur:420},{cls:'bounce',dur:380},{cls:'spin',dur:520},
+      {cls:'tada',dur:700},{cls:'wiggle',dur:500},{cls:'nod',dur:600},
+    ],
+    happy:  [
+      {cls:'bounce',dur:400},{cls:'wiggle',dur:500},{cls:'tada',dur:700},
+      {cls:'nod',dur:600},{cls:'bounce',dur:380},
+    ],
+    normal: [
+      {cls:'bounce',dur:420},{cls:'wiggle',dur:500},{cls:'tilt',dur:600},
+      {cls:'nod',dur:700},{cls:'bounce',dur:380},{cls:'wiggle',dur:480},
+    ],
+    sad:    [
+      {cls:'nod',dur:800},{cls:'tilt',dur:700},{cls:'wiggle',dur:500},
+      {cls:'nod',dur:750},
+    ],
+    scared: [
+      {cls:'wiggle',dur:500},{cls:'wiggle',dur:480},{cls:'tilt',dur:600},
+      {cls:'bounce',dur:380},
+    ],
   };
   let _lastIdleAnim = '';
 
@@ -4285,33 +4558,49 @@ RECENT_CONTEXT:
     clearTimeout(mascotIdleTimer);
     if (!isMascotEnabled()) return;
     // 10~20초마다 idle 애니. 드래그 중엔 타이머 멈춤 (pointerup에서 재시작)
-    mascotIdleTimer = setTimeout(mascotIdleTick, 10000 + Math.random() * 10000);
+    mascotIdleTimer = setTimeout(mascotIdleTick, 5000 + Math.random() * 5000);
   }
+
+  // idle tick 발화 타입 순환 — 연속으로 같은 종류 안 나오게
+  let _lastIdleSpeakType = '';
 
   function mascotIdleTick() {
     if (!isMascotEnabled()) return;
-    // 드래그 중이면 스킵 (타이머는 다시 예약 — pointerup에서 재시작하므로 여기선 그냥 return)
     if (mascotDragState) { scheduleMascotIdle(); return; }
     const pet = getPet();
     const mood = getEffectiveMood(pet);
-    const idleLong = Number(pet.lastFedAt || 0) && Date.now() - Number(pet.lastFedAt || 0) > MASCOT_IDLE_MS;
+    const now = Date.now();
+    const idleLong = Number(pet.lastFedAt || 0) && now - Number(pet.lastFedAt || 0) > MASCOT_IDLE_MS;
 
-    // 작은 idle 동작
-    if (!mascotDragState) {
-      const pool = IDLE_ANIM_POOLS[mood] || IDLE_ANIM_POOLS.normal;
-      const filtered = pool.filter(a => a.cls !== _lastIdleAnim);
-      const chosen = (filtered.length ? filtered : pool)[Math.floor(Math.random() * (filtered.length || pool.length))];
-      _lastIdleAnim = chosen.cls;
-      mascotAnimate(chosen.cls, chosen.dur);
-    }
+    // 작은 idle 동작 — mood에 따라 풀 선택
+    const pool = IDLE_ANIM_POOLS[mood] || IDLE_ANIM_POOLS.normal;
+    const filtered = pool.filter(a => a.cls !== _lastIdleAnim);
+    const chosen = (filtered.length ? filtered : pool)[Math.floor(Math.random() * (filtered.length || pool.length))];
+    _lastIdleAnim = chosen.cls;
+    mascotAnimate(chosen.cls, chosen.dur);
 
-    // 말/mood 반응은 낮은 확률로만 (너무 자주 말하면 시끄러움)
-    if (idleLong && Math.random() < 0.18) {
-      mascotSay(idleMascotLine(pet), 50);
-      triggerMascotMood(mood);
-    } else if (Math.random() < 0.10) {
-      mascotSay(ambientMascotLine(pet), 10);
-      triggerMascotMood(mood);
+    // 발화: 이전 tick보다 확률 높임, 타입 다양화
+    // idleLong(방치 10분 이상)이면 더 적극적으로 말함
+    const speakRoll = Math.random();
+    const speakThreshold = idleLong ? 0.52 : 0.38;
+
+    if (speakRoll < speakThreshold) {
+      // 대사 타입 풀에서 직전과 다른 것 선택
+      const speakTypes = ['idle', 'ambient', 'time', 'idle', 'ambient'];
+      const filtered2 = speakTypes.filter(t => t !== _lastIdleSpeakType);
+      const type = filtered2[Math.floor(Math.random() * filtered2.length)] || 'ambient';
+      _lastIdleSpeakType = type;
+
+      let line = '';
+      if (type === 'idle') line = idleMascotLine(pet);
+      else if (type === 'time') line = timeMascotLine(pet);
+      else line = ambientMascotLine(pet);
+
+      if (line) {
+        const priority = idleLong ? 55 : 30;
+        mascotSay(line, priority);
+        triggerMascotMood(mood);
+      }
     }
 
     scheduleMascotIdle();
@@ -5034,6 +5323,14 @@ RECENT_CONTEXT:
               <option value="none" ${getMascotOutline() === 'none' ? 'selected' : ''}>없음</option>
             </select>
           </label>
+          <label>
+            <span>마스코트 크기</span>
+            <select id="cigh-clean-mascot-size-input">
+              <option value="2" ${getMascotSize() === 2 ? 'selected' : ''}>작게</option>
+              <option value="3" ${getMascotSize() === 3 ? 'selected' : ''}>보통</option>
+              <option value="4" ${getMascotSize() === 4 ? 'selected' : ''}>크게</option>
+            </select>
+          </label>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;">
           <label class="cigh-clean-checkrow" style="margin:0;">
@@ -5064,13 +5361,15 @@ RECENT_CONTEXT:
             <span class="cigh-acc-hint" id="cigh-acc-hint">위 1~3행에 그리기</span>
           </div>
           <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;">
-            <div>
+            <div style="display:flex;flex-direction:column;gap:4px;">
               <canvas id="cigh-acc-cv" width="112" height="112" style="display:block;border:1px solid var(--cigh-border);cursor:crosshair;image-rendering:pixelated;border-radius:3px;"></canvas>
-              <div style="display:flex;gap:4px;margin-top:4px;">
+              <div style="display:flex;gap:4px;">
                 <button type="button" class="cigh-clean-set-btn" id="cigh-acc-undo">↩</button>
                 <button type="button" class="cigh-clean-set-btn" id="cigh-acc-clear">지우기</button>
                 <button type="button" class="cigh-clean-set-btn" id="cigh-acc-erase-tog">지우개</button>
               </div>
+              <div style="font-size:9px;color:var(--cigh-text-faint);letter-spacing:.06em;margin-top:2px;">미리보기</div>
+              <canvas id="cigh-acc-pv2" width="56" height="68" style="image-rendering:pixelated;"></canvas>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;min-width:88px;">
               <div style="font-size:9px;color:var(--cigh-text-faint);letter-spacing:.06em;">색상</div>
@@ -5078,14 +5377,6 @@ RECENT_CONTEXT:
               <input type="color" id="cigh-acc-custom" title="직접 선택" style="width:36px;height:18px;padding:0;border:none;cursor:pointer;background:none;">
               <div style="font-size:9px;color:var(--cigh-text-faint);margin-top:2px;letter-spacing:.06em;">프리셋</div>
               <div id="cigh-acc-presets" style="display:flex;flex-direction:column;gap:3px;"></div>
-            </div>
-          </div>
-          <div style="margin-top:6px;">
-            <div style="font-size:9px;color:var(--cigh-text-faint);letter-spacing:.06em;margin-bottom:4px;">미리보기</div>
-            <div style="display:flex;gap:8px;align-items:flex-end;">
-              <canvas id="cigh-acc-pv1" width="28" height="34" style="image-rendering:pixelated;"></canvas>
-              <canvas id="cigh-acc-pv2" width="56" height="68" style="image-rendering:pixelated;"></canvas>
-              <canvas id="cigh-acc-pv3" width="112" height="136" style="image-rendering:pixelated;"></canvas>
             </div>
           </div>
           <div style="display:flex;gap:5px;margin-top:7px;">
@@ -5211,34 +5502,27 @@ RECENT_CONTEXT:
       }
 
       function renderPreview() {
-        [[1,'#cigh-acc-pv1'],[2,'#cigh-acc-pv2'],[4,'#cigh-acc-pv3']].forEach(([sz, sel]) => {
-          const pv = box.querySelector(sel);
-          if (!pv) return;
-          const s = sz * 2;
-          // 머리 슬롯 y=0~2 → 스프라이트 위 3행 공간 필요
-          pv.width = ACC_COLS * s; pv.height = (ACC_ROWS + 3) * s;
-          const px = pv.getContext('2d');
-          px.clearRect(0, 0, pv.width, pv.height);
-
-          // 레이어 순서: 머리(스프라이트 앞) → 스프라이트 → 목·얼굴(스프라이트 뒤)
-          // 1) 머리 슬롯: 에디터 y=0~2 → canvas y = y*s (상단 3행 공간)
-          const hg = slotGrids['head'];
+        const pv = box.querySelector('#cigh-acc-pv2');
+        if (!pv) return;
+        const s = 4; // sz=2, s=sz*2=4
+        pv.width = ACC_COLS * s; pv.height = (ACC_ROWS + 3) * s;
+        const px = pv.getContext('2d');
+        px.clearRect(0, 0, pv.width, pv.height);
+        // 1) 머리
+        const hg = slotGrids['head'];
+        for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
+          if (hg[y][x]) { px.fillStyle = hg[y][x]; px.fillRect(x * s, y * s, s, s); }
+        }
+        // 2) 몸통
+        ACC_SPRITE.forEach((row, y) => [...row].forEach((cell, x) => {
+          if (cell === '1') { px.fillStyle = ACC_SPRITE_COLOR; px.fillRect(x * s, (y + 3) * s, s, s); }
+        }));
+        // 3) 목·얼굴
+        ['neck', 'face'].forEach(slot => {
+          const g = slotGrids[slot];
           for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
-            if (hg[y][x]) { px.fillStyle = hg[y][x]; px.fillRect(x * s, y * s, s, s); }
+            if (g[y][x]) { px.fillStyle = g[y][x]; px.fillRect(x * s, (y + 3) * s, s, s); }
           }
-
-          // 2) 스프라이트 몸통 (y오프셋 +3행)
-          ACC_SPRITE.forEach((row, y) => [...row].forEach((cell, x) => {
-            if (cell === '1') { px.fillStyle = ACC_SPRITE_COLOR; px.fillRect(x * s, (y + 3) * s, s, s); }
-          }));
-
-          // 3) 목·얼굴 슬롯: 에디터 y좌표 그대로 + 3행 오프셋(스프라이트와 맞춤)
-          ['neck', 'face'].forEach(slot => {
-            const g = slotGrids[slot];
-            for (let y = 0; y < ACC_ROWS; y++) for (let x = 0; x < ACC_COLS; x++) {
-              if (g[y][x]) { px.fillStyle = g[y][x]; px.fillRect(x * s, (y + 3) * s, s, s); }
-            }
-          });
         });
       }
 
@@ -5327,6 +5611,7 @@ RECENT_CONTEXT:
           drawEditor();
         });
       });
+
 
       // 프리셋
       function buildPresets() {
@@ -5429,11 +5714,17 @@ RECENT_CONTEXT:
       }
 
       setGeminiProvider(providerInput?.value || 'ai-studio');
-      setGeminiKey(apiInput.value);
-      setOpenRouterKey(orKeyInput?.value || '');
+      // password 필드는 브라우저 보안 정책에 따라 .value가 빈 문자열로 읽힐 수 있음.
+      // 입력값이 비어 있으면 기존 저장 키를 보존하고 덮어쓰지 않는다.
+      const apiInputVal = String(apiInput?.value || '').trim();
+      if (apiInputVal) setGeminiKey(apiInputVal);
+      // OR 키: 값이 있을 때만 저장 (clear 버튼은 별도 처리)
+      const orKeyInputVal = String(orKeyInput?.value || '').trim();
+      if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
       setOpenRouterModel(orModelInput?.value || DEFAULT_OPENROUTER_MODEL);
       setGeminiModel(modelInput?.value || DEFAULT_GEMINI_MODEL);
       setMascotOutline(box.querySelector('#cigh-clean-outline-input')?.value || 'outline');
+      setMascotSize(box.querySelector('#cigh-clean-mascot-size-input')?.value || 4);
       updateMascotSprite();
       setThinkingBudget(thinkingInput?.value || DEFAULT_THINKING_BUDGET);
       setUiFontSize(fontSizeInput?.value || 'small');
@@ -6384,7 +6675,7 @@ RECENT_CONTEXT:
       }
       @keyframes cigh-clean-float {
         0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-3px); }
+        50% { transform: translateY(-5px); }
       }
       .cigh-clean-mini-empty {
         color: var(--cigh-text-dim);
@@ -6672,7 +6963,24 @@ RECENT_CONTEXT:
       #${MASCOT_ID}.carried .cigh-clean-mascot-body { animation:cigh-mascot-carried 0.5s ease-in-out; }
       #${MASCOT_ID}.landed .cigh-clean-mascot-body { animation:cigh-mascot-landed 0.55s cubic-bezier(.36,.07,.19,.97); }
       @keyframes cigh-mascot-spin { 0%{transform:rotate(0deg) scale(1)}30%{transform:rotate(180deg) scale(0.85)}70%{transform:rotate(320deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)} }
-      @keyframes cigh-mascot-bounce { 0%,100%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-12px) scale(0.92,1.12)}55%{transform:translateY(0) scale(1.1,0.9)}75%{transform:translateY(-5px) scale(0.96,1.06)} }
+      @keyframes cigh-mascot-bounce { 0%,100%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-18px) scale(0.90,1.14)}55%{transform:translateY(0) scale(1.13,0.88)}75%{transform:translateY(-7px) scale(0.95,1.06)} }
+      /* ── 액세서리별 bounce 변형 ── */
+      /* head: 왕관 — 높이 솟구치고 착지 쾅 */
+      #${MASCOT_ID}.bounce-crown .cigh-clean-mascot-body { animation:cigh-mascot-bounce-crown 0.50s ease;transform-origin:center bottom; }
+      @keyframes cigh-mascot-bounce-crown { 0%,100%{transform:translateY(0) scale(1,1)}28%{transform:translateY(-30px) scale(0.88,1.16)}52%{transform:translateY(0) scale(1.16,0.84)}72%{transform:translateY(-10px) scale(0.94,1.08)} }
+      /* head: 별 — 높이 뛰며 회전 흔들림 */
+      #${MASCOT_ID}.bounce-star .cigh-clean-mascot-body { animation:cigh-mascot-bounce-star 0.52s ease;transform-origin:center bottom; }
+      @keyframes cigh-mascot-bounce-star { 0%,100%{transform:translateY(0) scale(1) rotate(0deg)}25%{transform:translateY(-26px) scale(0.91,1.12) rotate(-6deg)}50%{transform:translateY(0) scale(1.14,0.86) rotate(4deg)}72%{transform:translateY(-8px) scale(0.96,1.06) rotate(-2deg)} }
+      /* head: 리본 — 기울며 귀엽게 */
+      #${MASCOT_ID}.bounce-ribbon .cigh-clean-mascot-body { animation:cigh-mascot-bounce-ribbon 0.44s ease;transform-origin:center bottom; }
+      @keyframes cigh-mascot-bounce-ribbon { 0%,100%{transform:translateY(0) rotate(0deg)}30%{transform:translateY(-16px) rotate(-8deg)}55%{transform:translateY(0) scale(1.10,0.91) rotate(5deg)}75%{transform:translateY(-6px) rotate(-2deg)} }
+      /* head: 꽃 — 가볍게 여러 번 통통 */
+      #${MASCOT_ID}.bounce-flower .cigh-clean-mascot-body { animation:cigh-mascot-bounce-flower 0.46s ease; }
+      @keyframes cigh-mascot-bounce-flower { 0%,100%{transform:translateY(0) scale(1)}28%{transform:translateY(-20px) scale(0.92,1.10)}52%{transform:translateY(0) scale(1.12,0.90)}70%{transform:translateY(-9px) scale(0.96,1.05)}85%{transform:translateY(0) scale(1.05,0.96)} }
+      /* head: 뿔 — 위로 찌르듯 솟구침 */
+      #${MASCOT_ID}.bounce-horn .cigh-clean-mascot-body { animation:cigh-mascot-bounce-horn 0.48s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
+      @keyframes cigh-mascot-bounce-horn { 0%,100%{transform:translateY(0) scale(1,1)}20%{transform:translateY(-28px) scale(0.86,1.18)}45%{transform:translateY(-2px) scale(1.06,0.94)}65%{transform:translateY(-11px) scale(0.92,1.10)}82%{transform:translateY(0) scale(1.07,0.93)} }
+      /* custom: 커스텀 픽셀 — 활기차게 spin+bounce 합성 */20%{transform:translateY(-16px) scale(0.91,1.12) rotate(-6deg)}45%{transform:translateY(0) scale(1.12,0.88) rotate(4deg)}65%{transform:translateY(-8px) scale(0.95,1.06) rotate(-2deg)}82%{transform:translateY(0) scale(1.04,0.97)}100%{transform:translateY(0) scale(1) rotate(0deg)} }
       @keyframes cigh-mascot-tilt { 0%,100%{transform:rotate(0deg)}25%{transform:rotate(-14deg)}75%{transform:rotate(10deg)} }
       @keyframes cigh-mascot-nod { 0%,100%{transform:scaleY(1) translateY(0)}20%{transform:scaleY(0.88) translateY(4px)}45%{transform:scaleY(1.06) translateY(-3px)}65%{transform:scaleY(0.95) translateY(2px)} }
       @keyframes cigh-mascot-wiggle { 0%,100%{transform:translateX(0)}20%{transform:translateX(-5px) rotate(-4deg)}40%{transform:translateX(5px) rotate(4deg)}60%{transform:translateX(-3px) rotate(-2deg)}80%{transform:translateX(3px) rotate(2deg)} }
@@ -7177,6 +7485,7 @@ RECENT_CONTEXT:
         image-rendering: pixelated;
         animation: cigh-clean-float 2.4s ease-in-out infinite;
       }
+
       .cigh-clean-mascot-speech {
         display: none;
         position: absolute;
