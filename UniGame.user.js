@@ -142,7 +142,6 @@
   let autoCandidateKey = '';
   let analyzeBusy = false;
   let audioContext = null;
-  let streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
 
   // ─────────────────────────────────────────────
   // Storage
@@ -2702,15 +2701,9 @@ RECENT_CONTEXT:
   function scheduleAutoAnalyze() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
 
-    // 안정화 pass가 이미 진행 중이면 mutation에 의한 debounce 리셋을 막음
-    // (스트리밍 완료 후 버튼·DOM 변화가 와도 카운트를 망치지 않음)
-    if (streamingStableCheck.pass > 0) return;
-
     clearTimeout(autoAnalyzeTimer);
     autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 900);
   }
-
-  // 스트리밍 안정화 상태 추적 (전역 선언으로 이동됨)
 
   function checkStableAutoAnalyzeTarget() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
@@ -2726,52 +2719,19 @@ RECENT_CONTEXT:
     const analyzedContentKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
     if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedContentKeys.includes(found.contentKey)) {
       autoCandidateKey = '';
-      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       return;
     }
 
-    const currentTextLen = found.latestReply.length;
-    const currentInfoLen = found.infoText.length;
-    const candidateId = found.key.split('|')[0] || found.key; // dom:uid 부분만 비교 (텍스트 변화 무관)
-
-    // 스트리밍 안정화: 같은 메시지(dom id 기준)의 텍스트 길이가
-    // STABLE_DELAY ms 동안 변하지 않아야 최종 트리거
-    const STABLE_PASSES_REQUIRED = 2; // 체크 2회 연속 동일해야 확정
-    const RECHECK_DELAY = 1200; // 재확인 간격 ms
-
-    if (streamingStableCheck.key !== candidateId) {
-      // 새 메시지 등장 — 안정화 카운터 리셋
-      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
-      autoCandidateKey = found.key;
-      clearTimeout(autoAnalyzeTimer);
-      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
-      return;
-    }
-
-    // 같은 메시지 — 텍스트 길이가 변했으면 스트리밍 중, 리셋
-    if (streamingStableCheck.textLen !== currentTextLen || streamingStableCheck.infoLen !== currentInfoLen) {
-      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
-      autoCandidateKey = found.key;
-      clearTimeout(autoAnalyzeTimer);
-      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
-      return;
-    }
-
-    // 텍스트 길이 동일 — pass 증가
-    streamingStableCheck.pass += 1;
-
-    if (streamingStableCheck.pass >= STABLE_PASSES_REQUIRED) {
-      // 충분히 안정화됨 → 분석 실행
-      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
+    if (autoCandidateKey === found.key) {
       autoCandidateKey = '';
       pushLog(['▷새 답변 감지! 자동으로 읽는다!']);
       analyzeLatest(false);
       return;
     }
 
-    // 아직 pass 부족 — 한 번 더 체크
+    autoCandidateKey = found.key;
     clearTimeout(autoAnalyzeTimer);
-    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 1500);
   }
 
   function isMessageRelatedNode(node) {
