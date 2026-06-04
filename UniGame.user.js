@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.4
+// @version      1.2.5
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -130,6 +130,8 @@
   let footerLastText = '';
   let footerPopupRemaining = 0;
   let footerGeneration = 0;
+  let commentPopupQueue = [];
+  let commentPopupTyping = false;
   let commentPopupTypingTimer = null;
   let commentPopupHideTimer = null;
 
@@ -424,9 +426,7 @@
         playTone(ctx, { start: now + 0.225, duration: 0.1, freq: 1047 });
         playTone(ctx, { start: now + 0.34, duration: 0.18, freq: 1319, freqTo: 1568, volume: 0.04 });
       }
-    } catch (err) {
-      console.debug('[UniChat INFO Game HUD] playBeep failed:', err);
-    }
+    } catch {}
   }
 
   function getUiFontSizeLabel(value = getUiFontSize()) {
@@ -652,14 +652,6 @@
     const model = normalizeGeminiModelId(getGeminiModel());
     const headers = { 'Content-Type': 'application/json' };
 
-    console.log('[UniChat INFO Game HUD] Gemini request provider:', {
-      provider,
-      model,
-      hasGeminiKey: hasGeminiKey(),
-      hasFirebaseConfig: hasFirebaseConfig(),
-      firebaseLocation: getFirebaseLocation(),
-      firebaseSdkVersion: getFirebaseSdkVersion(),
-    });
 
     if (provider === 'openrouter') {
       const orKey = getOpenRouterKey();
@@ -2737,54 +2729,40 @@ RECENT_CONTEXT:
 
   function checkStableAutoAnalyzeTarget() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
-    if (analyzeBusy) {
-      scheduleAutoAnalyze();
-      return;
-    }
+    if (analyzeBusy) { scheduleAutoAnalyze(); return; }
 
     const found = findLatestContext();
     if (!found) return;
 
     const room = getRoom();
-    const analyzedContentKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
-    if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedContentKeys.includes(found.contentKey)) {
+    const analyzedKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
+    if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedKeys.includes(found.contentKey)) {
       autoCandidateKey = '';
       streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       return;
     }
 
-    const currentTextLen = found.latestReply.length;
-    const currentInfoLen = found.infoText.length;
-    const candidateId = found.key.split('|')[0] || found.key; // dom:uid 부분만 비교 (텍스트 변화 무관)
-
-    // 스트리밍 안정화: 같은 메시지(dom id 기준)의 텍스트 길이가
-    // STABLE_DELAY ms 동안 변하지 않아야 최종 트리거
-    const STABLE_PASSES_REQUIRED = 2; // 체크 2회 연속 동일해야 확정
-    const RECHECK_DELAY = 1200; // 재확인 간격 ms
-
-    if (streamingStableCheck.key !== candidateId) {
-      // 새 메시지 등장 — 안정화 카운터 리셋
-      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
-      autoCandidateKey = found.key;
+    const STABLE_PASSES = 2;
+    const RECHECK = 1200;
+    const recheck = () => {
       clearTimeout(autoAnalyzeTimer);
-      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK);
+    };
+
+    const candidateId = found.key.split('|')[0] || found.key;
+    const tLen = found.latestReply.length;
+    const iLen = found.infoText.length;
+    const sc = streamingStableCheck;
+
+    if (sc.key !== candidateId || sc.textLen !== tLen || sc.infoLen !== iLen) {
+      streamingStableCheck = { key: candidateId, textLen: tLen, infoLen: iLen, pass: 0 };
+      autoCandidateKey = found.key;
+      recheck();
       return;
     }
 
-    // 같은 메시지 — 텍스트 길이가 변했으면 스트리밍 중, 리셋
-    if (streamingStableCheck.textLen !== currentTextLen || streamingStableCheck.infoLen !== currentInfoLen) {
-      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
-      autoCandidateKey = found.key;
-      clearTimeout(autoAnalyzeTimer);
-      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
-      return;
-    }
-
-    // 텍스트 길이 동일 — pass 증가
     streamingStableCheck.pass += 1;
-
-    if (streamingStableCheck.pass >= STABLE_PASSES_REQUIRED) {
-      // 충분히 안정화됨 → 분석 실행
+    if (streamingStableCheck.pass >= STABLE_PASSES) {
       streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       autoCandidateKey = '';
       pushLog(['▷새 답변 감지! 자동으로 읽는다!']);
@@ -2792,9 +2770,7 @@ RECENT_CONTEXT:
       return;
     }
 
-    // 아직 pass 부족 — 한 번 더 체크
-    clearTimeout(autoAnalyzeTimer);
-    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+    recheck();
   }
 
   function isMessageRelatedNode(node) {
@@ -2906,37 +2882,31 @@ RECENT_CONTEXT:
     const rect = getFabRect();
     const gap = 8;
     const width = Math.min(218, Math.max(180, innerWidth - 24));
-
     el.style.width = `${width}px`;
 
     let left = rect.left;
     if (left + width > innerWidth - 8) left = innerWidth - width - 8;
     left = Math.max(8, left);
-
-    // comment 높이는 실제 렌더된 offsetHeight 사용 (추정값 대신)
-    const visibleComment = document.getElementById(COMMENT_POPUP_ID);
-    const commentShowing = visibleComment?.classList.contains('show');
-    const commentHeight = commentShowing
-      ? Math.max(40, visibleComment.getBoundingClientRect().height || visibleComment.offsetHeight || 52)
-      : 0;
-
-    // log popup 자신의 현재 실제 높이
-    const selfHeight = el.offsetHeight || (kind === 'comment' ? 52 : 120);
-
-    let bottom = Math.max(8, innerHeight - rect.top + gap);
-
-    if (kind === 'log' && commentHeight) {
-      bottom += commentHeight + 6;
-    }
-
     el.style.left = `${left}px`;
     el.style.right = 'auto';
 
+    // 코멘트 팝업 실제 높이: show 여부와 관계없이 offsetHeight 사용
+    // (display:none이 아니므로 opacity:0 상태에서도 레이아웃 높이는 유효)
+    const commentEl = document.getElementById(COMMENT_POPUP_ID);
+    const commentShowing = commentEl?.classList.contains('show');
+    const commentHeight = commentShowing ? (commentEl.offsetHeight || 0) : 0;
+
+    const selfHeight = el.offsetHeight || (kind === 'comment' ? 52 : 120);
+    let bottom = Math.max(8, innerHeight - rect.top + gap);
+
+    if (kind === 'log' && commentHeight > 0) {
+      bottom += commentHeight + 6;
+    }
+
     if (bottom + selfHeight > innerHeight - 8) {
       let top = rect.bottom + gap;
-      if (kind === 'log' && commentHeight) top += commentHeight + 6;
+      if (kind === 'log' && commentHeight > 0) top += commentHeight + 6;
       if (top + selfHeight > innerHeight - 8) top = Math.max(8, innerHeight - selfHeight - 8);
-
       el.style.top = `${top}px`;
       el.style.bottom = 'auto';
     } else {
@@ -2953,50 +2923,85 @@ RECENT_CONTEXT:
     if (comment) positionPopupNearFab(comment, 'comment');
   }
 
-  function showCommentPopup(comment) {
+  // 코멘트 팝업 큐 처리 — footer 타이머와 완전 분리
+  function enqueueCommentPopup(text) {
     if (!isCommentPopupEnabled()) return;
+    const t = shortText(text, 42);
+    if (!t) return;
+    commentPopupQueue.push(t);
+    if (!commentPopupTyping) drainCommentPopupQueue();
+  }
 
-    const text = shortText(comment, 42);
-    if (!text) return;
+  function drainCommentPopupQueue() {
+    if (!commentPopupQueue.length) {
+      commentPopupTyping = false;
+      return;
+    }
+    commentPopupTyping = true;
+    const text = commentPopupQueue.shift();
+    _showOneCommentPopup(text, () => {
+      // 다음 코멘트는 이전 팝업이 사라진 뒤 600ms 후 표시
+      commentPopupTypingTimer = setTimeout(drainCommentPopupQueue, 600);
+    });
+  }
 
+  function _showOneCommentPopup(text, onDone) {
     const el = ensureCommentPopup();
     const body = el.querySelector('.cigh-clean-comment-text');
-    if (!body) return;
+    if (!body) { onDone?.(); return; }
 
-    clearTimeout(commentPopupTypingTimer);
     clearTimeout(commentPopupHideTimer);
 
     const startTyping = () => {
       positionPopupNearFab(el, 'comment');
       el.classList.add('show');
       body.textContent = '';
-      requestAnimationFrame(updateFloatingPopupPositions);
+
+      // 첫 렌더 후 log popup 재배치
+      requestAnimationFrame(() => {
+        updateFloatingPopupPositions();
+      });
 
       let pos = 0;
+      let lastHeight = 0;
       const tick = () => {
         pos += 1;
         body.textContent = text.slice(0, pos);
-        if (pos === 1 || pos >= text.length) requestAnimationFrame(updateFloatingPopupPositions);
+
+        // 높이가 바뀌면 (2줄로 넘어가는 순간) log popup 재배치
+        const h = el.offsetHeight;
+        if (h !== lastHeight) {
+          lastHeight = h;
+          // comment 자신도 재배치 (2줄 높이로 다시 계산)
+          positionPopupNearFab(el, 'comment');
+          updateFloatingPopupPositions();
+        }
 
         if (pos < text.length) {
-          commentPopupTypingTimer = setTimeout(tick, 48);
+          commentPopupTypingTimer = setTimeout(tick, 44);
         } else {
+          // 타이핑 완료 후 위치 최종 확정
+          requestAnimationFrame(updateFloatingPopupPositions);
           commentPopupHideTimer = setTimeout(() => {
             el.classList.remove('show');
             requestAnimationFrame(updateFloatingPopupPositions);
-          }, 3900);
+            onDone?.();
+          }, 3600);
         }
       };
       tick();
     };
 
-    // 이전 팝업이 표시 중이면 transition(260ms) 완료 후 새 텍스트 시작
     if (el.classList.contains('show')) {
       el.classList.remove('show');
-      commentPopupTypingTimer = setTimeout(startTyping, 280);
+      commentPopupTypingTimer = setTimeout(startTyping, 260);
     } else {
       startTyping();
     }
+  }
+
+  function showCommentPopup(comment) {
+    enqueueCommentPopup(comment);
   }
 
   function showPopup(lines) {
@@ -3099,15 +3104,25 @@ RECENT_CONTEXT:
   function stopFooterComments() {
     clearTimeout(footerTypingTimer);
     clearTimeout(footerLoopTimer);
-    clearTimeout(commentPopupTypingTimer);
-    clearTimeout(commentPopupHideTimer);
     footerTypingTimer = null;
     footerLoopTimer = null;
+    footerPopupRemaining = 0;
+    footerGeneration = (footerGeneration || 0) + 1;
+  }
+
+  function stopCommentPopup() {
+    clearTimeout(commentPopupTypingTimer);
+    clearTimeout(commentPopupHideTimer);
     commentPopupTypingTimer = null;
     commentPopupHideTimer = null;
-    footerPopupRemaining = 0;
-    // 루프 중단용 — startFooterComments 때마다 세대 번호 증가
-    footerGeneration = (footerGeneration || 0) + 1;
+    commentPopupQueue = [];
+    commentPopupTyping = false;
+    const el = document.getElementById(COMMENT_POPUP_ID);
+    if (el) {
+      el.classList.remove('show');
+      const body = el.querySelector('.cigh-clean-comment-text');
+      if (body) body.textContent = '';
+    }
   }
 
   function startFooterComments(comments, options = {}) {
@@ -3127,28 +3142,24 @@ RECENT_CONTEXT:
   }
 
   function typeFooterComment(gen) {
-    // 세대가 다르면 이전 루프 — 즉시 중단
     if (gen !== footerGeneration) return;
     if (!footerComments.length) return;
 
-    // 모든 코멘트를 1회씩만 순환 후 종료 (무한 루프 없음)
-    if (footerCommentIndex >= footerComments.length) {
-      // 다 돌았으면 마지막 텍스트 유지하고 루프 종료
-      return;
-    }
+    if (footerCommentIndex >= footerComments.length) return;
 
     const comment = footerComments[footerCommentIndex];
     footerCommentIndex += 1;
     footerLastText = comment;
 
+    // 팝업을 footer 타이핑 시작과 동시에 큐에 추가
     if (footerPopupRemaining > 0) {
-      showCommentPopup(comment);
       footerPopupRemaining -= 1;
+      enqueueCommentPopup(comment);
     }
 
     let pos = 0;
     const tick = () => {
-      if (gen !== footerGeneration) return; // 세대 체크
+      if (gen !== footerGeneration) return;
       pos += 2;
       footerLastText = comment.slice(0, pos);
 
@@ -3158,9 +3169,8 @@ RECENT_CONTEXT:
       if (pos < comment.length) {
         footerTypingTimer = setTimeout(tick, 60);
       } else {
-        // 다음 코멘트가 있으면 딜레이 후 진행, 없으면 종료
         if (footerCommentIndex < footerComments.length) {
-          footerLoopTimer = setTimeout(() => typeFooterComment(gen), 4200);
+          footerLoopTimer = setTimeout(() => typeFooterComment(gen), 4800);
         }
       }
     };
@@ -3171,11 +3181,10 @@ RECENT_CONTEXT:
   function clearTransientUi() {
     clearTimeout(popupRemoveTimer);
     clearTimeout(popupHideTimer);
-    clearTimeout(commentPopupTypingTimer);
-    clearTimeout(commentPopupHideTimer);
     clearTimeout(autoAnalyzeTimer);
 
     stopFooterComments();
+    stopCommentPopup();
 
     logQueue = [];
     isLogTyping = false;
@@ -3188,13 +3197,6 @@ RECENT_CONTEXT:
     if (popup) {
       popup.classList.remove('show');
       popup.innerHTML = '';
-    }
-
-    const comment = document.getElementById(COMMENT_POPUP_ID);
-    if (comment) {
-      comment.classList.remove('show');
-      const body = comment.querySelector('.cigh-clean-comment-text');
-      if (body) body.textContent = '';
     }
   }
 
@@ -5874,38 +5876,19 @@ RECENT_CONTEXT:
       const selectedProvider = providerInput?.value || 'ai-studio';
       setGeminiProvider(selectedProvider);
 
-      // 선택된 provider에 해당하는 키만 필수 검증
-      if (selectedProvider === 'ai-studio') {
-        const apiInputVal = String(apiInput?.value || '').trim();
-        if (apiInputVal) setGeminiKey(apiInputVal);
-        // AI Studio Key가 없고 Firebase도 없으면 경고 (단, 이미 저장된 키가 있으면 통과)
-        if (!hasGeminiKey()) {
-          const ok = confirm('Gemini API Key가 없습니다. AI Studio를 사용하려면 키가 필요합니다.\n그래도 저장할까요?');
-          if (!ok) return;
-        }
-      } else if (selectedProvider === 'openrouter') {
-        const orKeyInputVal = String(orKeyInput?.value || '').trim();
-        if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
-        if (!hasOpenRouterKey()) {
-          const ok = confirm('OpenRouter API Key가 없습니다. OpenRouter를 사용하려면 키가 필요합니다.\n그래도 저장할까요?');
-          if (!ok) return;
-        }
-      } else if (selectedProvider === 'firebase') {
-        // Firebase는 위에서 이미 setFirebaseConfig 처리됨
-        if (!hasFirebaseConfig()) {
-          const ok = confirm('Firebase Config가 없습니다. Firebase AI Logic을 사용하려면 Config가 필요합니다.\n그래도 저장할까요?');
-          if (!ok) return;
-        }
-      }
+      // 각 provider 키: 입력값이 있으면 항상 저장 (선택 여부 무관하게 보존)
+      const apiInputVal = String(apiInput?.value || '').trim();
+      const orKeyInputVal = String(orKeyInput?.value || '').trim();
+      if (apiInputVal) setGeminiKey(apiInputVal);
+      if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
 
-      // 다른 provider의 키는 입력값이 있을 때만 저장 (덮어쓰지 않음)
-      if (selectedProvider !== 'ai-studio') {
-        const apiInputVal = String(apiInput?.value || '').trim();
-        if (apiInputVal) setGeminiKey(apiInputVal);
-      }
-      if (selectedProvider !== 'openrouter') {
-        const orKeyInputVal = String(orKeyInput?.value || '').trim();
-        if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
+      // 선택된 provider에 필요한 키가 없으면 경고
+      if (selectedProvider === 'ai-studio' && !hasGeminiKey()) {
+        if (!confirm('Gemini API Key가 없습니다. AI Studio를 사용하려면 키가 필요합니다.\n그래도 저장할까요?')) return;
+      } else if (selectedProvider === 'openrouter' && !hasOpenRouterKey()) {
+        if (!confirm('OpenRouter API Key가 없습니다. OpenRouter를 사용하려면 키가 필요합니다.\n그래도 저장할까요?')) return;
+      } else if (selectedProvider === 'firebase' && !hasFirebaseConfig()) {
+        if (!confirm('Firebase Config가 없습니다. Firebase AI Logic을 사용하려면 Config가 필요합니다.\n그래도 저장할까요?')) return;
       }
       setOpenRouterModel(orModelInput?.value || DEFAULT_OPENROUTER_MODEL);
       setGeminiModel(modelInput?.value || DEFAULT_GEMINI_MODEL);
