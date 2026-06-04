@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.2
+// @version      1.2.3
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -22,7 +22,7 @@
   if (window.__UCIGH_CLEAN_V1515_LOADED__) return;
   window.__UCIGH_CLEAN_V1515_LOADED__ = true;
 
-  const VERSION = '1.5.15';
+  const VERSION = '1.5.16';
   const FAB_ID = 'cigh-clean-fab';
   const PANEL_ID = 'cigh-clean-panel';
   const POPUP_ID = 'cigh-clean-popup';
@@ -142,6 +142,7 @@
   let autoCandidateKey = '';
   let analyzeBusy = false;
   let audioContext = null;
+  let streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
 
   // ─────────────────────────────────────────────
   // Storage
@@ -313,8 +314,13 @@
       provider = 'firebase';
     }
 
+    // openrouter는 fallback 없이 그대로 반환
     if (provider === 'openrouter') return 'openrouter';
 
+    // firebase로 명시 설정된 경우 그대로 반환 (ai-studio 키 없다고 강제 변경 안 함)
+    if (provider === 'firebase') return 'firebase';
+
+    // ai-studio: Firebase config는 있지만 AI Studio 키가 없는 경우에만 firebase로 fallback
     const hasFirebase = hasFirebaseConfig();
     const hasAiStudioKey = hasGeminiKey();
 
@@ -2055,6 +2061,23 @@
       if (!(msgEl instanceof HTMLElement) || isOwnNode(msgEl)) return null;
       if (msgEl.closest('[role="dialog"]')) return null;
 
+      // 유니챗 사용자 입력 메시지 제외:
+      // 유니챗은 사용자 메시지에 특정 클래스나 구조를 씀.
+      // user bubble은 보통 justify-end 또는 data-role="user" 또는 특정 배경색 클래스.
+      // details 태그(INFO 블록) 없이 아주 짧고, user 역할 표시가 있으면 건너뜀.
+      const isUserMsg = (
+        msgEl.closest?.('[data-role="user"]') ||
+        msgEl.hasAttribute?.('data-user') ||
+        msgEl.classList?.contains?.('justify-end') ||
+        // 부모가 flex justify-end인 경우 (유니챗 user bubble 구조)
+        msgEl.parentElement?.classList?.contains?.('justify-end') ||
+        msgEl.closest?.('.justify-end') ||
+        // data-testid나 aria 속성으로 user 식별
+        msgEl.getAttribute?.('data-testid')?.includes?.('user') ||
+        msgEl.closest?.('[data-testid*="user"]')
+      );
+      if (isUserMsg) return null;
+
       // 전체 텍스트 (body + details 포함)
       const text = getUniChatMsgText(msgEl);
       if (text.length < 2) return null;
@@ -2101,7 +2124,12 @@
 
   function findLatestContext() {
     const entries = getLatestCrackLogEntries();
-    const picked = entries[entries.length - 1];
+    // AI 응답으로 볼 수 있는 항목 중 마지막 것 선택
+    // 최소 길이 30자 이상인 메시지를 우선함 (사용자 단답 제외)
+    const meaningfulEntries = entries.filter(e => e.text.length >= 30);
+    const picked = meaningfulEntries.length
+      ? meaningfulEntries[meaningfulEntries.length - 1]
+      : entries[entries.length - 1];
     if (!picked) return null;
 
     const msgEl = picked.group;
@@ -2674,9 +2702,15 @@ RECENT_CONTEXT:
   function scheduleAutoAnalyze() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
 
+    // 안정화 pass가 이미 진행 중이면 mutation에 의한 debounce 리셋을 막음
+    // (스트리밍 완료 후 버튼·DOM 변화가 와도 카운트를 망치지 않음)
+    if (streamingStableCheck.pass > 0) return;
+
     clearTimeout(autoAnalyzeTimer);
     autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 900);
   }
+
+  // 스트리밍 안정화 상태 추적 (전역 선언으로 이동됨)
 
   function checkStableAutoAnalyzeTarget() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
@@ -2692,19 +2726,52 @@ RECENT_CONTEXT:
     const analyzedContentKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
     if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedContentKeys.includes(found.contentKey)) {
       autoCandidateKey = '';
+      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       return;
     }
 
-    if (autoCandidateKey === found.key) {
+    const currentTextLen = found.latestReply.length;
+    const currentInfoLen = found.infoText.length;
+    const candidateId = found.key.split('|')[0] || found.key; // dom:uid 부분만 비교 (텍스트 변화 무관)
+
+    // 스트리밍 안정화: 같은 메시지(dom id 기준)의 텍스트 길이가
+    // STABLE_DELAY ms 동안 변하지 않아야 최종 트리거
+    const STABLE_PASSES_REQUIRED = 2; // 체크 2회 연속 동일해야 확정
+    const RECHECK_DELAY = 1200; // 재확인 간격 ms
+
+    if (streamingStableCheck.key !== candidateId) {
+      // 새 메시지 등장 — 안정화 카운터 리셋
+      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
+      autoCandidateKey = found.key;
+      clearTimeout(autoAnalyzeTimer);
+      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+      return;
+    }
+
+    // 같은 메시지 — 텍스트 길이가 변했으면 스트리밍 중, 리셋
+    if (streamingStableCheck.textLen !== currentTextLen || streamingStableCheck.infoLen !== currentInfoLen) {
+      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
+      autoCandidateKey = found.key;
+      clearTimeout(autoAnalyzeTimer);
+      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+      return;
+    }
+
+    // 텍스트 길이 동일 — pass 증가
+    streamingStableCheck.pass += 1;
+
+    if (streamingStableCheck.pass >= STABLE_PASSES_REQUIRED) {
+      // 충분히 안정화됨 → 분석 실행
+      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       autoCandidateKey = '';
       pushLog(['▷새 답변 감지! 자동으로 읽는다!']);
       analyzeLatest(false);
       return;
     }
 
-    autoCandidateKey = found.key;
+    // 아직 pass 부족 — 한 번 더 체크
     clearTimeout(autoAnalyzeTimer);
-    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 1500);
+    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
   }
 
   function isMessageRelatedNode(node) {
@@ -5112,7 +5179,7 @@ RECENT_CONTEXT:
     const fab = document.createElement('button');
     fab.id = FAB_ID;
     fab.type = 'button';
-    fab.title = `INFO Game HUD v${VERSION}`;
+    fab.title = `유니챗 펫 키우기`;
     fab.textContent = '◆';
 
     let pressTimer = null;
@@ -5713,14 +5780,42 @@ RECENT_CONTEXT:
         return;
       }
 
-      setGeminiProvider(providerInput?.value || 'ai-studio');
-      // password 필드는 브라우저 보안 정책에 따라 .value가 빈 문자열로 읽힐 수 있음.
-      // 입력값이 비어 있으면 기존 저장 키를 보존하고 덮어쓰지 않는다.
-      const apiInputVal = String(apiInput?.value || '').trim();
-      if (apiInputVal) setGeminiKey(apiInputVal);
-      // OR 키: 값이 있을 때만 저장 (clear 버튼은 별도 처리)
-      const orKeyInputVal = String(orKeyInput?.value || '').trim();
-      if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
+      const selectedProvider = providerInput?.value || 'ai-studio';
+      setGeminiProvider(selectedProvider);
+
+      // 선택된 provider에 해당하는 키만 필수 검증
+      if (selectedProvider === 'ai-studio') {
+        const apiInputVal = String(apiInput?.value || '').trim();
+        if (apiInputVal) setGeminiKey(apiInputVal);
+        // AI Studio Key가 없고 Firebase도 없으면 경고 (단, 이미 저장된 키가 있으면 통과)
+        if (!hasGeminiKey()) {
+          const ok = confirm('Gemini API Key가 없습니다. AI Studio를 사용하려면 키가 필요합니다.\n그래도 저장할까요?');
+          if (!ok) return;
+        }
+      } else if (selectedProvider === 'openrouter') {
+        const orKeyInputVal = String(orKeyInput?.value || '').trim();
+        if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
+        if (!hasOpenRouterKey()) {
+          const ok = confirm('OpenRouter API Key가 없습니다. OpenRouter를 사용하려면 키가 필요합니다.\n그래도 저장할까요?');
+          if (!ok) return;
+        }
+      } else if (selectedProvider === 'firebase') {
+        // Firebase는 위에서 이미 setFirebaseConfig 처리됨
+        if (!hasFirebaseConfig()) {
+          const ok = confirm('Firebase Config가 없습니다. Firebase AI Logic을 사용하려면 Config가 필요합니다.\n그래도 저장할까요?');
+          if (!ok) return;
+        }
+      }
+
+      // 다른 provider의 키는 입력값이 있을 때만 저장 (덮어쓰지 않음)
+      if (selectedProvider !== 'ai-studio') {
+        const apiInputVal = String(apiInput?.value || '').trim();
+        if (apiInputVal) setGeminiKey(apiInputVal);
+      }
+      if (selectedProvider !== 'openrouter') {
+        const orKeyInputVal = String(orKeyInput?.value || '').trim();
+        if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
+      }
       setOpenRouterModel(orModelInput?.value || DEFAULT_OPENROUTER_MODEL);
       setGeminiModel(modelInput?.value || DEFAULT_GEMINI_MODEL);
       setMascotOutline(box.querySelector('#cigh-clean-outline-input')?.value || 'outline');
