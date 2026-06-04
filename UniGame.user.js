@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.3
+// @version      1.2.4
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -52,6 +52,7 @@
   const USAGE_STORE = 'cigh_clean_usage_v1';
 
   const MASCOT_SIZE_STORE = 'cigh_clean_mascot_size_v1';
+  const MASCOT_MOOD_LOCK_STORE = 'cigh_clean_mascot_mood_lock_v1';
   const GEMINI_PROVIDER_STORE = 'cigh_clean_gemini_provider_v1';
   const FIREBASE_CONFIG_STORE = 'cigh_clean_firebase_config_v1';
   const FIREBASE_LOCATION_STORE = 'cigh_clean_firebase_location_v1';
@@ -128,6 +129,7 @@
   let footerLoopTimer = null;
   let footerLastText = '';
   let footerPopupRemaining = 0;
+  let footerGeneration = 0;
   let commentPopupTypingTimer = null;
   let commentPopupHideTimer = null;
 
@@ -142,6 +144,7 @@
   let autoCandidateKey = '';
   let analyzeBusy = false;
   let audioContext = null;
+  let streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
 
   // ─────────────────────────────────────────────
   // Storage
@@ -1268,6 +1271,7 @@
       _inferredStatus: false,
       _infoFound: false,
       _fromGeminiInfo: false,
+      petMood: null,
       _seen: {
         relations: false,
         inventory: false,
@@ -1397,6 +1401,10 @@
     d._infoFound = !!d._infoFound;
     d._fromGeminiInfo = !!d._fromGeminiInfo;
 
+    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
+    const rawPetMood = String(d.petMood || '').trim().toLowerCase();
+    d.petMood = validMoods.includes(rawPetMood) ? rawPetMood : null;
+
     d._seen = {
       relations: !!d._seen?.relations,
       inventory: !!d._seen?.inventory,
@@ -1522,6 +1530,7 @@
       narrativeLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       pokemonLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       hudComments: ai.hudComments.length ? ai.hudComments : [],
+      petMood: ai.petMood || null,
       _inferredStatus: useAiStatus,
       _seen: info._seen,
     });
@@ -2177,8 +2186,19 @@
   "narrativeLogs": ["", ""],
   "relationshipDeltas": [{"name":"","delta":0,"label":"관계","memo":"이번 변화 근거"}],
   "hudComments": ["", "", ""],
-  "petLine": ""
+  "petLine": "",
+  "petMood": "normal"
 }
+
+펫 기분(petMood) 규칙:
+- petMood는 최신 장면의 전체 감정 톤을 펫 시점에서 판단한다.
+- 반드시 다음 5개 값 중 하나만 사용한다: "love" / "happy" / "normal" / "sad" / "scared"
+- love: 고백·키스·포옹·설렘·연애 감정이 중심인 장면
+- happy: 웃음·장난·다정함·안심·유쾌한 분위기가 중심인 장면
+- scared: 위협·공포·긴장·위험·갈등·싸움이 중심인 장면
+- sad: 이별·상실·눈물·절망·외로움이 중심인 장면. 단순히 "슬프다"는 단어가 등장해도 장면 전체 톤이 슬프지 않으면 sad로 판단하지 않는다.
+- normal: 위 어느 것도 아닌 평범하거나 중립적인 장면
+- 장면 전체의 감정 흐름으로 판단한다. 단어 하나만 보고 결정하지 않는다.
 
 LOG 문체 지침:
 {{STYLE_PROMPT}}
@@ -2434,6 +2454,10 @@ RECENT_CONTEXT:
       ? raw.hudComments.map(x => shortText(x, 42)).filter(Boolean).slice(0, 3)
       : [];
     d.petLine = shortText(raw?.petLine, 40);
+
+    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
+    const rawMood = String(raw?.petMood || '').trim().toLowerCase();
+    d.petMood = validMoods.includes(rawMood) ? rawMood : null; // null이면 로컬 fallback 사용
 
     return sanitizeData(d);
   }
@@ -2701,9 +2725,15 @@ RECENT_CONTEXT:
   function scheduleAutoAnalyze() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
 
+    // 안정화 pass가 이미 진행 중이면 mutation에 의한 debounce 리셋을 막음
+    // (스트리밍 완료 후 버튼·DOM 변화가 와도 카운트를 망치지 않음)
+    if (streamingStableCheck.pass > 0) return;
+
     clearTimeout(autoAnalyzeTimer);
     autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 900);
   }
+
+  // 스트리밍 안정화 상태 추적 (전역 선언으로 이동됨)
 
   function checkStableAutoAnalyzeTarget() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
@@ -2719,19 +2749,52 @@ RECENT_CONTEXT:
     const analyzedContentKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
     if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedContentKeys.includes(found.contentKey)) {
       autoCandidateKey = '';
+      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       return;
     }
 
-    if (autoCandidateKey === found.key) {
+    const currentTextLen = found.latestReply.length;
+    const currentInfoLen = found.infoText.length;
+    const candidateId = found.key.split('|')[0] || found.key; // dom:uid 부분만 비교 (텍스트 변화 무관)
+
+    // 스트리밍 안정화: 같은 메시지(dom id 기준)의 텍스트 길이가
+    // STABLE_DELAY ms 동안 변하지 않아야 최종 트리거
+    const STABLE_PASSES_REQUIRED = 2; // 체크 2회 연속 동일해야 확정
+    const RECHECK_DELAY = 1200; // 재확인 간격 ms
+
+    if (streamingStableCheck.key !== candidateId) {
+      // 새 메시지 등장 — 안정화 카운터 리셋
+      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
+      autoCandidateKey = found.key;
+      clearTimeout(autoAnalyzeTimer);
+      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+      return;
+    }
+
+    // 같은 메시지 — 텍스트 길이가 변했으면 스트리밍 중, 리셋
+    if (streamingStableCheck.textLen !== currentTextLen || streamingStableCheck.infoLen !== currentInfoLen) {
+      streamingStableCheck = { key: candidateId, textLen: currentTextLen, infoLen: currentInfoLen, pass: 0 };
+      autoCandidateKey = found.key;
+      clearTimeout(autoAnalyzeTimer);
+      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
+      return;
+    }
+
+    // 텍스트 길이 동일 — pass 증가
+    streamingStableCheck.pass += 1;
+
+    if (streamingStableCheck.pass >= STABLE_PASSES_REQUIRED) {
+      // 충분히 안정화됨 → 분석 실행
+      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       autoCandidateKey = '';
       pushLog(['▷새 답변 감지! 자동으로 읽는다!']);
       analyzeLatest(false);
       return;
     }
 
-    autoCandidateKey = found.key;
+    // 아직 pass 부족 — 한 번 더 체크
     clearTimeout(autoAnalyzeTimer);
-    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 1500);
+    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK_DELAY);
   }
 
   function isMessageRelatedNode(node) {
@@ -2850,15 +2913,15 @@ RECENT_CONTEXT:
     if (left + width > innerWidth - 8) left = innerWidth - width - 8;
     left = Math.max(8, left);
 
+    // comment 높이는 실제 렌더된 offsetHeight 사용 (추정값 대신)
     const visibleComment = document.getElementById(COMMENT_POPUP_ID);
-    const commentHeight = visibleComment?.classList.contains('show')
-      ? Math.max(48, visibleComment.offsetHeight || 58)
+    const commentShowing = visibleComment?.classList.contains('show');
+    const commentHeight = commentShowing
+      ? Math.max(40, visibleComment.getBoundingClientRect().height || visibleComment.offsetHeight || 52)
       : 0;
 
-    const height = Math.max(
-      kind === 'comment' ? 48 : 72,
-      Math.min(el.offsetHeight || (kind === 'comment' ? 58 : 150), kind === 'comment' ? 92 : 220)
-    );
+    // log popup 자신의 현재 실제 높이
+    const selfHeight = el.offsetHeight || (kind === 'comment' ? 52 : 120);
 
     let bottom = Math.max(8, innerHeight - rect.top + gap);
 
@@ -2869,10 +2932,10 @@ RECENT_CONTEXT:
     el.style.left = `${left}px`;
     el.style.right = 'auto';
 
-    if (bottom + height > innerHeight - 8) {
+    if (bottom + selfHeight > innerHeight - 8) {
       let top = rect.bottom + gap;
       if (kind === 'log' && commentHeight) top += commentHeight + 6;
-      if (top + height > innerHeight - 8) top = Math.max(8, innerHeight - height - 8);
+      if (top + selfHeight > innerHeight - 8) top = Math.max(8, innerHeight - selfHeight - 8);
 
       el.style.top = `${top}px`;
       el.style.bottom = 'auto';
@@ -3043,6 +3106,66 @@ RECENT_CONTEXT:
     commentPopupTypingTimer = null;
     commentPopupHideTimer = null;
     footerPopupRemaining = 0;
+    // 루프 중단용 — startFooterComments 때마다 세대 번호 증가
+    footerGeneration = (footerGeneration || 0) + 1;
+  }
+
+  function startFooterComments(comments, options = {}) {
+    footerComments = Array.isArray(comments)
+      ? comments.map(x => shortText(x, 42)).filter(Boolean).slice(0, 3)
+      : [];
+
+    footerCommentIndex = 0;
+    stopFooterComments();
+
+    footerPopupRemaining = (options.popup !== false && isCommentPopupEnabled()) ? footerComments.length : 0;
+
+    if (!footerComments.length) return;
+
+    const gen = footerGeneration;
+    typeFooterComment(gen);
+  }
+
+  function typeFooterComment(gen) {
+    // 세대가 다르면 이전 루프 — 즉시 중단
+    if (gen !== footerGeneration) return;
+    if (!footerComments.length) return;
+
+    // 모든 코멘트를 1회씩만 순환 후 종료 (무한 루프 없음)
+    if (footerCommentIndex >= footerComments.length) {
+      // 다 돌았으면 마지막 텍스트 유지하고 루프 종료
+      return;
+    }
+
+    const comment = footerComments[footerCommentIndex];
+    footerCommentIndex += 1;
+    footerLastText = comment;
+
+    if (footerPopupRemaining > 0) {
+      showCommentPopup(comment);
+      footerPopupRemaining -= 1;
+    }
+
+    let pos = 0;
+    const tick = () => {
+      if (gen !== footerGeneration) return; // 세대 체크
+      pos += 2;
+      footerLastText = comment.slice(0, pos);
+
+      const el = document.getElementById('cigh-clean-ft');
+      if (el) el.textContent = footerLastText;
+
+      if (pos < comment.length) {
+        footerTypingTimer = setTimeout(tick, 60);
+      } else {
+        // 다음 코멘트가 있으면 딜레이 후 진행, 없으면 종료
+        if (footerCommentIndex < footerComments.length) {
+          footerLoopTimer = setTimeout(() => typeFooterComment(gen), 4200);
+        }
+      }
+    };
+
+    tick();
   }
 
   function clearTransientUi() {
@@ -3075,47 +3198,6 @@ RECENT_CONTEXT:
     }
   }
 
-  function startFooterComments(comments, options = {}) {
-    footerComments = Array.isArray(comments)
-      ? comments.map(x => shortText(x, 42)).filter(Boolean).slice(0, 3)
-      : [];
-
-    footerCommentIndex = 0;
-    stopFooterComments();
-
-    footerPopupRemaining = (options.popup !== false && isCommentPopupEnabled()) ? footerComments.length : 0;
-
-    if (!footerComments.length) return;
-
-    typeFooterComment();
-  }
-
-  function typeFooterComment() {
-    if (!footerComments.length) return;
-
-    const comment = footerComments[footerCommentIndex % footerComments.length];
-    footerCommentIndex += 1;
-    footerLastText = comment;
-
-    if (footerPopupRemaining > 0) {
-      showCommentPopup(comment);
-      footerPopupRemaining -= 1;
-    }
-
-    let pos = 0;
-    const tick = () => {
-      pos += 2;
-      footerLastText = comment.slice(0, pos);
-
-      const el = document.getElementById('cigh-clean-ft');
-      if (el) el.textContent = footerLastText;
-
-      if (pos < comment.length) footerTypingTimer = setTimeout(tick, 60);
-      else footerLoopTimer = setTimeout(typeFooterComment, 6400);
-    };
-
-    tick();
-  }
 
   // ─────────────────────────────────────────────
   // UI rendering
@@ -3276,12 +3358,13 @@ RECENT_CONTEXT:
 
   function detectPetMood(text, deltaSum) {
     const t = normalize(text);
-    if (/고백|사랑|키스|입맞|포옹|안아|끌어안|설렘|두근|심장|좋아해/.test(t)) return 'love';
-    if (/눈물|울|흐느|상처|버림|외로|무너|슬픔|비참|아파/.test(t)) return 'sad';
-    if (/분노|화났|소리|외쳤|위협|죽|피|공포|두려|위험|긴장/.test(t)) return 'scared';
+    if (/고백|사랑|키스|입맞|포옹|안아|끌어안|설렘|두근|심장이|좋아해/.test(t)) return 'love';
+    // '울' 단독은 오탐 많음(울리다/울창/울타리) → '울었|울고|울며|울어|눈물' 등 확실한 표현만
+    if (/눈물이|눈물을|눈물이|흐느|울었|울고|울며|울어|울컥|울음|버림받|외로워|외롭|무너져|슬픔|비참|마음이 아파|마음이아파|가슴이 아파|상처받|상처를 입/.test(t)) return 'sad';
+    if (/분노|화났|소리쳤|외쳤|위협|죽|피가|공포|두려|위험|긴장/.test(t)) return 'scared';
     if (/웃|미소|다정|부드럽|귀엽|장난|간질|놀리|안심/.test(t)) return 'happy';
-    if (deltaSum > 0) return 'happy';
-    if (deltaSum < 0) return 'sad';
+    if (deltaSum >= 3) return 'happy';
+    if (deltaSum <= -3) return 'sad';
     return 'normal';
   }
 
@@ -3436,6 +3519,18 @@ RECENT_CONTEXT:
     const n = Number(v);
     localStorage.setItem(MASCOT_SIZE_STORE, String([2, 3, 4].includes(n) ? n : 4));
   }
+
+  // mood lock: '' (자동) | 'love' | 'happy' | 'normal' | 'sad' | 'scared'
+  function getMascotMoodLock() {
+    const v = String(localStorage.getItem(MASCOT_MOOD_LOCK_STORE) || '').trim();
+    return ['love', 'happy', 'normal', 'sad', 'scared'].includes(v) ? v : '';
+  }
+  function setMascotMoodLock(v) {
+    const safe = ['love', 'happy', 'normal', 'sad', 'scared'].includes(v) ? v : '';
+    if (safe) localStorage.setItem(MASCOT_MOOD_LOCK_STORE, safe);
+    else localStorage.removeItem(MASCOT_MOOD_LOCK_STORE);
+  }
+
 
   // outline: 'outline' | 'shadow' | 'none'
   function getMascotOutline() {
@@ -3648,7 +3743,10 @@ RECENT_CONTEXT:
     pet.feedCount = (pet.feedCount || 0) + 1;
     pet.level = petLevelFromExp(pet.exp);
     pet.stage = petStageFromLevel(pet.level).stage;
-    pet.mood = detectPetMood(latestReply, deltaSum);
+    // AI가 판단한 petMood가 있으면 우선 사용, 없으면 로컬 정규식 fallback
+    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
+    const aiMood = String(merged?.petMood || '').trim().toLowerCase();
+    pet.mood = validMoods.includes(aiMood) ? aiMood : detectPetMood(latestReply, deltaSum);
     pet.tally[petMoodBucket(pet.mood)] = Number(pet.tally[petMoodBucket(pet.mood)] || 0) + 1;
     pet.finalType = petFinalType(pet.tally);
     pet.bondLevel = petBondLevel(pet.feedCount);
@@ -3792,6 +3890,8 @@ RECENT_CONTEXT:
   }
 
   function getEffectiveMood(pet = getPet()) {
+    const lock = getMascotMoodLock();
+    if (lock) return lock;
     const last = Number(pet?.lastFedAt || 0);
     if (last && Date.now() - last < MOOD_WINDOW) return String(pet?.mood || 'normal');
     return 'normal';
@@ -4635,7 +4735,10 @@ RECENT_CONTEXT:
 
   function scheduleMascotWander() {
     clearTimeout(mascotWanderTimer);
-    mascotWanderTimer = setTimeout(mascotWander, 4200 + Math.random() * 4200);
+    const pet = getPet();
+    const mood = getEffectiveMood(pet);
+    const baseDelay = { love: 5000, happy: 6000, normal: 8000, sad: 11000, scared: 9000 }[mood] || 8000;
+    mascotWanderTimer = setTimeout(mascotWander, baseDelay + Math.random() * baseDelay * 0.6);
   }
 
   function mascotWander() {
@@ -4647,19 +4750,47 @@ RECENT_CONTEXT:
     const w = el.offsetWidth || 60;
     const h = el.offsetHeight || 70;
     const cur = el.getBoundingClientRect();
-    const homeLeft = Number(el.dataset.homeLeft || cur.left);
-    const homeTop = Number(el.dataset.homeTop || cur.top);
-    const dx = Math.round((Math.random() - 0.5) * 28);
-    const dy = Math.round((Math.random() - 0.5) * 18);
-    const targetLeft = clamp(homeLeft + dx, 0, innerWidth - w);
-    const targetTop = clamp(homeTop + dy, 0, innerHeight - h);
+    const pet = getPet();
+    const mood = getEffectiveMood(pet);
+
+    const range = {
+      love:   { x: 70,  y: 50  },
+      happy:  { x: 90,  y: 60  },
+      normal: { x: 55,  y: 38  },
+      sad:    { x: 25,  y: 18  },
+      scared: { x: 38,  y: 28  },
+    }[mood] || { x: 55, y: 38 };
+
+    // 5% 확률로 대이동 (love/happy만)
+    const bigJump = (mood === 'love' || mood === 'happy') && Math.random() < 0.05;
+    let targetLeft, targetTop;
+
+    if (bigJump) {
+      targetLeft = Math.round(Math.random() * (innerWidth - w - 16) + 8);
+      targetTop  = Math.round(Math.random() * (innerHeight - h - 16) + 8);
+    } else {
+      const dx = Math.round((Math.random() - 0.5) * 2 * range.x);
+      const dy = Math.round((Math.random() - 0.5) * 2 * range.y);
+      targetLeft = clamp(cur.left + dx, 8, innerWidth - w - 8);
+      targetTop  = clamp(cur.top  + dy, 8, innerHeight - h - 8);
+    }
+
+    const moveDist = Math.hypot(targetLeft - cur.left, targetTop - cur.top);
+    const duration = bigJump
+      ? (1400 + moveDist * 1.0).toFixed(0)
+      : clamp(700 + moveDist * 3.0, 700, 2000).toFixed(0);
 
     const body = el.querySelector('.cigh-clean-mascot-body');
-    if (body && Math.abs(targetLeft - cur.left) > 2) body.style.transform = targetLeft < cur.left ? 'scaleX(-1)' : 'scaleX(1)';
+    if (body && Math.abs(targetLeft - cur.left) > 4) {
+      body.style.transform = targetLeft < cur.left ? 'scaleX(-1)' : 'scaleX(1)';
+    }
 
-    el.style.transition = 'left 1.1s ease-in-out, top 1.1s ease-in-out';
+    el.style.transition = `left ${duration}ms ease-in-out, top ${duration}ms ease-in-out`;
     el.style.left = `${targetLeft}px`;
-    el.style.top = `${targetTop}px`;
+    el.style.top  = `${targetTop}px`;
+
+    el.dataset.homeLeft = String(targetLeft);
+    el.dataset.homeTop  = String(targetTop);
 
     scheduleMascotWander();
   }
