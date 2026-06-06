@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.6
+// @version      1.2.7
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -3894,7 +3894,7 @@ RECENT_CONTEXT:
     const shouldAnimate = hasImage && (mode === 'sleep' || mode === 'smile' || mode === 'drag');
     if (isMascotEnabled()) updateMascotSprite();
     if (mode === 'sleep') triggerMascotSleepFx();
-    if (activeTab === 'pet' && hasImage && (shouldAnimate || mode === 'half')) updatePetPanelSprite();
+    if (activeTab === 'pet') updatePetPanelSprite();
     schedulePetVisualTick(shouldAnimate ? (mode === 'sleep' ? 900 : mode === 'drag' ? 180 : 360) : 1600);
   }
 
@@ -5451,7 +5451,7 @@ RECENT_CONTEXT:
         <div class="cigh-clean-pet-wrap">
           <div class="cigh-clean-pet-speech">${esc(pet.lastLine || '쓰다듬어줘!')}</div>
           <div class="cigh-clean-pet-stage">${petName ? `${esc(petName)} · ` : ''}${esc(displayName)} · Lv.${pet.level}</div>
-          <div class="cigh-clean-pet-sprite" title="쓰다듬기">${petSpriteSVG(stageObj, pet.mood, pet.finalType)}</div>
+          <div class="cigh-clean-pet-sprite" title="쓰다듬기">${petSpriteSVG(stageObj, getEffectiveMood(pet), getPetDisplayFinalType(pet))}</div>
           <div class="cigh-clean-pet-mood">${esc(moodLabel)}</div>
         </div>
       ` + section('♥ BPM', `
