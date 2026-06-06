@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.5
+// @version      1.2.6
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -22,7 +22,7 @@
   if (window.__UCIGH_CLEAN_V1515_LOADED__) return;
   window.__UCIGH_CLEAN_V1515_LOADED__ = true;
 
-  const VERSION = '1.5.16';
+  const VERSION = '1.5.15';
   const FAB_ID = 'cigh-clean-fab';
   const PANEL_ID = 'cigh-clean-panel';
   const POPUP_ID = 'cigh-clean-popup';
@@ -50,9 +50,12 @@
   const SFX_STORE = 'cigh_clean_sfx_v1';
   const SETTINGS_FOLD_STORE = 'cigh_clean_settings_fold_v1';
   const USAGE_STORE = 'cigh_clean_usage_v1';
+  const ACHV_STORE = 'cigh_clean_achv_v1';
+  const ACHV_EQUIPPED_STORE = 'cigh_clean_achv_equipped_v1';
 
+  const PET_TOKEN_EXP_INPUT_UNIT = 1000;
+  const PET_TOKEN_EXP_MAX = 30;
   const MASCOT_SIZE_STORE = 'cigh_clean_mascot_size_v1';
-  const MASCOT_MOOD_LOCK_STORE = 'cigh_clean_mascot_mood_lock_v1';
   const GEMINI_PROVIDER_STORE = 'cigh_clean_gemini_provider_v1';
   const FIREBASE_CONFIG_STORE = 'cigh_clean_firebase_config_v1';
   const FIREBASE_LOCATION_STORE = 'cigh_clean_firebase_location_v1';
@@ -107,6 +110,7 @@
     { id: 'info', label: 'INFO' },
     { id: 'hud', label: 'HUD' },
     { id: 'pet', label: 'PET' },
+    { id: 'achv', label: 'ACHV' },
   ];
 
   let activeTab = 'log';
@@ -129,9 +133,6 @@
   let footerLoopTimer = null;
   let footerLastText = '';
   let footerPopupRemaining = 0;
-  let footerGeneration = 0;
-  let commentPopupQueue = [];
-  let commentPopupTyping = false;
   let commentPopupTypingTimer = null;
   let commentPopupHideTimer = null;
 
@@ -146,7 +147,6 @@
   let autoCandidateKey = '';
   let analyzeBusy = false;
   let audioContext = null;
-  let streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
 
   // ─────────────────────────────────────────────
   // Storage
@@ -318,13 +318,8 @@
       provider = 'firebase';
     }
 
-    // openrouter는 fallback 없이 그대로 반환
     if (provider === 'openrouter') return 'openrouter';
 
-    // firebase로 명시 설정된 경우 그대로 반환 (ai-studio 키 없다고 강제 변경 안 함)
-    if (provider === 'firebase') return 'firebase';
-
-    // ai-studio: Firebase config는 있지만 AI Studio 키가 없는 경우에만 firebase로 fallback
     const hasFirebase = hasFirebaseConfig();
     const hasAiStudioKey = hasGeminiKey();
 
@@ -426,7 +421,9 @@
         playTone(ctx, { start: now + 0.225, duration: 0.1, freq: 1047 });
         playTone(ctx, { start: now + 0.34, duration: 0.18, freq: 1319, freqTo: 1568, volume: 0.04 });
       }
-    } catch {}
+    } catch (err) {
+      console.debug('[UniChat INFO Game HUD] playBeep failed:', err);
+    }
   }
 
   function getUiFontSizeLabel(value = getUiFontSize()) {
@@ -652,6 +649,14 @@
     const model = normalizeGeminiModelId(getGeminiModel());
     const headers = { 'Content-Type': 'application/json' };
 
+    console.log('[UniChat INFO Game HUD] Gemini request provider:', {
+      provider,
+      model,
+      hasGeminiKey: hasGeminiKey(),
+      hasFirebaseConfig: hasFirebaseConfig(),
+      firebaseLocation: getFirebaseLocation(),
+      firebaseSdkVersion: getFirebaseSdkVersion(),
+    });
 
     if (provider === 'openrouter') {
       const orKey = getOpenRouterKey();
@@ -1081,6 +1086,231 @@
 
 
   // ─────────────────────────────────────────────
+  // 업적 (Achievement) 시스템
+  // ─────────────────────────────────────────────
+  const ACHV_RANK_EXP_BONUS = { N: 0.002, R: 0.005, SR: 0.01, SSR: 0.015 };
+
+  const ACHV_DEFS = [
+    { id: 'first_step',   name: '첫 발자국',       icon: '📖', rank: 'N',   counter: 'analyzeTotal',    target: 1,     hidden: true,  desc: '첫 분석' },
+    { id: 'story_collect',name: '이야기 수집가',   icon: '🔁', rank: 'N',   counter: 'analyzeTotal',    target: 100,   hidden: false, desc: '누적 분석 100회' },
+    { id: 'story_keeper', name: '이야기 사서',     icon: '📚', rank: 'SR',  counter: 'analyzeTotal',    target: 1000,  hidden: false, desc: '누적 분석 1000회' },
+    { id: 'story_chronicler',name:'이야기 사관',   icon: '🏛️', rank: 'SSR', counter: 'analyzeTotal',    target: 10000, hidden: false, desc: '누적 분석 10000회' },
+    { id: 'night_butler', name: '밤샘 집사',       icon: '🌙', rank: 'R',   counter: 'hourDawn',        target: 100,   hidden: false, desc: '새벽(0~5시) 분석 100회' },
+    { id: 'morning_butler',name:'아침형 집사',     icon: '🌅', rank: 'N',   counter: 'hourMorning',     target: 100,   hidden: false, desc: '아침(6~10시) 분석 100회' },
+    { id: 'noon_butler',  name: '한낮 집사',       icon: '☀️', rank: 'N',   counter: 'hourNoon',        target: 100,   hidden: false, desc: '한낮(11~14시) 분석 100회' },
+    { id: 'dusk_butler',  name: '황혼 집사',       icon: '🌇', rank: 'N',   counter: 'hourDusk',        target: 100,   hidden: false, desc: '황혼(17~20시) 분석 100회' },
+    { id: 'nocturnal_butler',name:'야행성 집사',   icon: '🌃', rank: 'R',   counter: 'hourLateNight',   target: 100,   hidden: false, desc: '심야(21~23시) 분석 100회' },
+    { id: 'first_love',   name: '첫 고백 목격자', icon: '💞', rank: 'R',   counter: 'bigPosDelta',     target: 1,     hidden: true,  desc: 'delta +6 이상 1회' },
+    { id: 'conflict',     name: '갈등 수집가',     icon: '💔', rank: 'R',   counter: 'negDelta',        target: 50,    hidden: false, desc: 'delta -5 이하 누적 50회' },
+    { id: 'hatched',      name: '부화 완료',       icon: '🐣', rank: 'N',   counter: 'petBaby',         target: 1,     hidden: false, desc: '펫 아기단계 도달' },
+    { id: 'best_friend',  name: '단짝',           icon: '⭐', rank: 'SR',  counter: 'petBondMax',      target: 1,     hidden: false, desc: '펫 유대 최고단계' },
+    { id: 'evo_witness',  name: '진화의 증인',     icon: '👑', rank: 'SR',  counter: 'petFinal',        target: 1,     hidden: false, desc: '펫 완전체 도달' },
+    { id: 'dex_master',   name: '도감 마스터',     icon: '🌈', rank: 'SSR', counter: 'finalFormKinds',  target: 5,     hidden: false, desc: '완전체 5종 전부 키워봄' },
+    { id: 'destined',     name: '운명의 상대',     icon: '💗', rank: 'SR',  counter: 'meterMax',        target: 1,     hidden: true,  desc: '한 인물 미터 100 도달' },
+    { id: 'chatterbox',   name: '수다쟁이',       icon: '🗣️', rank: 'N',   counter: 'petTouch',        target: 300,   hidden: false, desc: '누적 쓰담+콕콕 300회' },
+    { id: 'storm_focus',  name: '폭풍 몰입',       icon: '🔥', rank: 'R',   counter: 'storm10min',      target: 1,     hidden: false, desc: '10분 내 분석 5회' },
+    { id: 'mood_heart',   name: '애정 연대기',     icon: '💗', rank: 'R',   counter: 'moodHeart',       target: 100,   hidden: false, desc: '애정형 로그 100회' },
+    { id: 'mood_bloom',   name: '명랑 연대기',     icon: '🌼', rank: 'R',   counter: 'moodBloom',       target: 100,   hidden: false, desc: '명랑형 로그 100회' },
+    { id: 'mood_peace',   name: '평온 연대기',     icon: '🍵', rank: 'R',   counter: 'moodPeace',       target: 100,   hidden: false, desc: '평온형 로그 100회' },
+    { id: 'mood_tear',    name: '애상 연대기',     icon: '🌧️', rank: 'R',   counter: 'moodTear',        target: 100,   hidden: false, desc: '애상형 로그 100회' },
+    { id: 'mood_blade',   name: '시련 연대기',     icon: '⚔️', rank: 'R',   counter: 'moodBlade',       target: 100,   hidden: false, desc: '시련형 로그 100회' },
+    { id: 'kaleidoscope', name: '만화경',         icon: '🎭', rank: 'SSR', counter: 'moodAllFull',     target: 1,     hidden: false, desc: '5성향 전부 100회 달성' },
+    { id: 'catastrophe',  name: '파국',           icon: '❄️', rank: 'SR',  counter: 'meterZero',       target: 1,     hidden: true,  desc: '한 인물 미터 0 도달' },
+    { id: 'dawn_to_dusk', name: '하루의 시작과 끝',icon: '🌗', rank: 'R',   counter: 'dawnNightSameDay',target: 1,     hidden: false, desc: '같은 날 새벽+심야 분석' },
+    { id: 'bond_collect', name: '인연 수집가',     icon: '🌈', rank: 'R',   counter: 'relations5',      target: 1,     hidden: false, desc: '동시에 관계 5명 이상' },
+    { id: 'beloved',      name: '만인의 연인',     icon: '🌟', rank: 'SR',  counter: 'relations10',     target: 1,     hidden: false, desc: '동시에 관계 10명 이상' },
+    { id: 'home_cook',    name: '집밥의 힘',       icon: '🍙', rank: 'SR',  counter: 'feedTotal',       target: 500,   hidden: false, desc: '누적 분석(먹이기) 500회' },
+  ];
+
+  function defaultAchvState() {
+    return { counters: {}, unlocked: {}, finalFormsSeen: [], stormStamps: [], dayPhase: null };
+  }
+
+  function readAchvState() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(ACHV_STORE) || '{}');
+      const base = defaultAchvState();
+      return {
+        counters: (raw && typeof raw.counters === 'object') ? raw.counters : base.counters,
+        unlocked: (raw && typeof raw.unlocked === 'object') ? raw.unlocked : base.unlocked,
+        finalFormsSeen: Array.isArray(raw?.finalFormsSeen) ? raw.finalFormsSeen.slice(0, 8) : base.finalFormsSeen,
+        stormStamps: Array.isArray(raw?.stormStamps) ? raw.stormStamps.slice(-STORM_NEED) : [],
+        dayPhase: (raw?.dayPhase && typeof raw.dayPhase === 'object') ? raw.dayPhase : base.dayPhase,
+      };
+    } catch { return defaultAchvState(); }
+  }
+
+  function writeAchvState(state) {
+    localStorage.setItem(ACHV_STORE, JSON.stringify(state));
+  }
+
+  function bumpAchvCounter(counterKey, amount = 1, once = false) {
+    if (!counterKey || !amount) return;
+    const state = readAchvState();
+    if (once) {
+      if (Number(state.counters[counterKey] || 0) >= 1) return;
+      state.counters[counterKey] = 1;
+    } else {
+      state.counters[counterKey] = Math.max(0, Number(state.counters[counterKey] || 0) + Number(amount));
+    }
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
+  const STORM_WINDOW_MS = 10 * 60 * 1000;
+  const STORM_NEED = 5;
+  function registerStormWindow() {
+    const state = readAchvState();
+    const now = Date.now();
+    const list = Array.isArray(state.stormStamps) ? state.stormStamps : [];
+    const next = [...list, now].filter(t => now - Number(t) <= STORM_WINDOW_MS).slice(-STORM_NEED);
+    state.stormStamps = next;
+    if (next.length >= STORM_NEED && !Number(state.counters.storm10min)) state.counters.storm10min = 1;
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
+  function registerDayPhase() {
+    const now = new Date();
+    const h = now.getHours();
+    const isDawn = h >= 0 && h <= 5;
+    const isLate = h >= 21 && h <= 23;
+    if (!isDawn && !isLate) return;
+    const today = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    const state = readAchvState();
+    const dp = (state.dayPhase && state.dayPhase.date === today)
+      ? state.dayPhase : { date: today, dawn: false, late: false };
+    if (isDawn) dp.dawn = true;
+    if (isLate) dp.late = true;
+    state.dayPhase = dp;
+    if (dp.dawn && dp.late && !Number(state.counters.dawnNightSameDay)) state.counters.dawnNightSameDay = 1;
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
+  function bumpAchvFinalForm(finalType) {
+    const key = String(finalType || '').trim();
+    if (!key) return;
+    const state = readAchvState();
+    if (!state.finalFormsSeen.includes(key)) {
+      state.finalFormsSeen.push(key);
+      state.finalFormsSeen = state.finalFormsSeen.slice(0, 8);
+    }
+    state.counters.finalFormKinds = state.finalFormsSeen.length;
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
+  function evaluateAchvUnlocks(state) {
+    if (!Number(state.counters.moodAllFull)
+        && ['moodHeart','moodBloom','moodPeace','moodTear','moodBlade'].every(k => Number(state.counters[k] || 0) >= 100)) {
+      state.counters.moodAllFull = 1;
+    }
+    for (const def of ACHV_DEFS) {
+      if (state.unlocked[def.id]) continue;
+      const cur = Number(state.counters[def.counter] || 0);
+      if (cur >= def.target) {
+        state.unlocked[def.id] = Date.now();
+        achvUnlockQueue.push(def);
+        console.log(`[유니챗 HUD] 🏆 업적 달성: ${def.icon} ${def.name} (${def.rank}) — ${def.desc}`);
+      }
+    }
+  }
+
+  function hourBucketCounter(d = new Date()) {
+    const h = d.getHours();
+    if (h >= 0 && h <= 5) return 'hourDawn';
+    if (h >= 6 && h <= 10) return 'hourMorning';
+    if (h >= 11 && h <= 14) return 'hourNoon';
+    if (h >= 17 && h <= 20) return 'hourDusk';
+    if (h >= 21 && h <= 23) return 'hourLateNight';
+    return null;
+  }
+
+  function achvDebugDump() {
+    const state = readAchvState();
+    const rows = ACHV_DEFS.map(def => ({
+      업적: `${def.icon} ${def.name}`, 등급: def.rank,
+      진행도: `${Number(state.counters[def.counter] || 0)}/${def.target}`,
+      달성: state.unlocked[def.id] ? 'O' : '-', 히든: def.hidden ? 'H' : '',
+    }));
+    console.table(rows);
+    return state;
+  }
+  window.__cighAchvDebug = achvDebugDump;
+
+  let pendingAchvCelebrate = null;
+  const achvUnlockQueue = [];
+
+  const ACHV_RANK_META = {
+    N:   { label: 'N',   color: '#8a8f98', bonus: ACHV_RANK_EXP_BONUS.N },
+    R:   { label: 'R',   color: '#5a9be0', bonus: ACHV_RANK_EXP_BONUS.R },
+    SR:  { label: 'SR',  color: '#c08ae0', bonus: ACHV_RANK_EXP_BONUS.SR },
+    SSR: { label: 'SSR', color: '#e0b24b', bonus: ACHV_RANK_EXP_BONUS.SSR },
+  };
+  const ACHV_RANK_ORDER = { N: 0, R: 1, SR: 2, SSR: 3 };
+
+  function getAchvProgress(def, state = readAchvState()) {
+    const cur = Math.max(0, Number(state.counters[def.counter] || 0));
+    return { cur: Math.min(cur, def.target), target: def.target, unlocked: !!state.unlocked[def.id] };
+  }
+
+  function getAchvExpBonusMultiplier(state = readAchvState()) {
+    let bonus = 0;
+    for (const def of ACHV_DEFS) {
+      if (state.unlocked[def.id]) bonus += Number(ACHV_RANK_EXP_BONUS[def.rank] || 0);
+    }
+    return 1 + bonus;
+  }
+
+  function readEquippedAchvId() {
+    return String(localStorage.getItem(ACHV_EQUIPPED_STORE) || '').trim();
+  }
+
+  function getEquippedAchvDef() {
+    const id = readEquippedAchvId();
+    if (!id) return null;
+    const state = readAchvState();
+    if (!state.unlocked[id]) return null;
+    return ACHV_DEFS.find(def => def.id === id) || null;
+  }
+
+  function setEquippedAchv(id) {
+    const value = String(id || '').trim();
+    if (value) localStorage.setItem(ACHV_EQUIPPED_STORE, value);
+    else localStorage.removeItem(ACHV_EQUIPPED_STORE);
+  }
+
+  function toggleEquippedAchv(id) {
+    const target = String(id || '').trim();
+    if (!target) return false;
+    const state = readAchvState();
+    if (!state.unlocked[target]) return false;
+    if (readEquippedAchvId() === target) setEquippedAchv('');
+    else setEquippedAchv(target);
+    return true;
+  }
+
+  function announceAchvUnlocks() {
+    if (!achvUnlockQueue.length) return;
+    const unlocked = achvUnlockQueue.splice(0, achvUnlockQueue.length);
+    for (const def of unlocked) {
+      const meta = ACHV_RANK_META[def.rank] || ACHV_RANK_META.N;
+      pushLog([`▶업적 달성! ${def.icon} ${def.name} (${meta.label})`]);
+      showPopup([`▶업적 달성! ${def.icon} ${def.name}`, `▷${def.desc}`]);
+    }
+    const topRank = unlocked.reduce((best, def) => (ACHV_RANK_ORDER[def.rank] > ACHV_RANK_ORDER[best] ? def.rank : best), 'N');
+    playBeep(ACHV_RANK_ORDER[topRank] >= 2 ? 'evolve' : 'levelup');
+    pendingAchvCelebrate = unlocked[unlocked.length - 1];
+    if (isMascotEnabled()) {
+      const first = unlocked[0];
+      mascotSay(`${first.icon} ${first.name} 달성!`, 95, { allowEgg: true, allowSleeping: true });
+    }
+    if (activeTab === 'achv') renderContent();
+  }
+
+
+  // ─────────────────────────────────────────────
   // Utils
   // ─────────────────────────────────────────────
   function normalize(value) {
@@ -1263,7 +1493,6 @@
       _inferredStatus: false,
       _infoFound: false,
       _fromGeminiInfo: false,
-      petMood: null,
       _seen: {
         relations: false,
         inventory: false,
@@ -1393,10 +1622,6 @@
     d._infoFound = !!d._infoFound;
     d._fromGeminiInfo = !!d._fromGeminiInfo;
 
-    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
-    const rawPetMood = String(d.petMood || '').trim().toLowerCase();
-    d.petMood = validMoods.includes(rawPetMood) ? rawPetMood : null;
-
     d._seen = {
       relations: !!d._seen?.relations,
       inventory: !!d._seen?.inventory,
@@ -1522,7 +1747,6 @@
       narrativeLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       pokemonLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       hudComments: ai.hudComments.length ? ai.hudComments : [],
-      petMood: ai.petMood || null,
       _inferredStatus: useAiStatus,
       _seen: info._seen,
     });
@@ -2061,23 +2285,6 @@
       if (!(msgEl instanceof HTMLElement) || isOwnNode(msgEl)) return null;
       if (msgEl.closest('[role="dialog"]')) return null;
 
-      // 유니챗 사용자 입력 메시지 제외:
-      // 유니챗은 사용자 메시지에 특정 클래스나 구조를 씀.
-      // user bubble은 보통 justify-end 또는 data-role="user" 또는 특정 배경색 클래스.
-      // details 태그(INFO 블록) 없이 아주 짧고, user 역할 표시가 있으면 건너뜀.
-      const isUserMsg = (
-        msgEl.closest?.('[data-role="user"]') ||
-        msgEl.hasAttribute?.('data-user') ||
-        msgEl.classList?.contains?.('justify-end') ||
-        // 부모가 flex justify-end인 경우 (유니챗 user bubble 구조)
-        msgEl.parentElement?.classList?.contains?.('justify-end') ||
-        msgEl.closest?.('.justify-end') ||
-        // data-testid나 aria 속성으로 user 식별
-        msgEl.getAttribute?.('data-testid')?.includes?.('user') ||
-        msgEl.closest?.('[data-testid*="user"]')
-      );
-      if (isUserMsg) return null;
-
       // 전체 텍스트 (body + details 포함)
       const text = getUniChatMsgText(msgEl);
       if (text.length < 2) return null;
@@ -2124,12 +2331,7 @@
 
   function findLatestContext() {
     const entries = getLatestCrackLogEntries();
-    // AI 응답으로 볼 수 있는 항목 중 마지막 것 선택
-    // 최소 길이 30자 이상인 메시지를 우선함 (사용자 단답 제외)
-    const meaningfulEntries = entries.filter(e => e.text.length >= 30);
-    const picked = meaningfulEntries.length
-      ? meaningfulEntries[meaningfulEntries.length - 1]
-      : entries[entries.length - 1];
+    const picked = entries[entries.length - 1];
     if (!picked) return null;
 
     const msgEl = picked.group;
@@ -2178,19 +2380,8 @@
   "narrativeLogs": ["", ""],
   "relationshipDeltas": [{"name":"","delta":0,"label":"관계","memo":"이번 변화 근거"}],
   "hudComments": ["", "", ""],
-  "petLine": "",
-  "petMood": "normal"
+  "petLine": ""
 }
-
-펫 기분(petMood) 규칙:
-- petMood는 최신 장면의 전체 감정 톤을 펫 시점에서 판단한다.
-- 반드시 다음 5개 값 중 하나만 사용한다: "love" / "happy" / "normal" / "sad" / "scared"
-- love: 고백·키스·포옹·설렘·연애 감정이 중심인 장면
-- happy: 웃음·장난·다정함·안심·유쾌한 분위기가 중심인 장면
-- scared: 위협·공포·긴장·위험·갈등·싸움이 중심인 장면
-- sad: 이별·상실·눈물·절망·외로움이 중심인 장면. 단순히 "슬프다"는 단어가 등장해도 장면 전체 톤이 슬프지 않으면 sad로 판단하지 않는다.
-- normal: 위 어느 것도 아닌 평범하거나 중립적인 장면
-- 장면 전체의 감정 흐름으로 판단한다. 단어 하나만 보고 결정하지 않는다.
 
 LOG 문체 지침:
 {{STYLE_PROMPT}}
@@ -2447,10 +2638,6 @@ RECENT_CONTEXT:
       : [];
     d.petLine = shortText(raw?.petLine, 40);
 
-    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
-    const rawMood = String(raw?.petMood || '').trim().toLowerCase();
-    d.petMood = validMoods.includes(rawMood) ? rawMood : null; // null이면 로컬 fallback 사용
-
     return sanitizeData(d);
   }
 
@@ -2670,6 +2857,39 @@ RECENT_CONTEXT:
         }
       });
 
+      // [업적] 분석/시간대/델타/폭풍몰입 카운터
+      bumpAchvCounter('analyzeTotal', 1);
+      const hourCounter = hourBucketCounter();
+      if (hourCounter) bumpAchvCounter(hourCounter, 1);
+      {
+        const deltas = merged.relationshipDeltas || [];
+        const bigPos = deltas.filter(d => Number(d.delta) >= 6).length;
+        const neg = deltas.filter(d => Number(d.delta) <= -5).length;
+        if (bigPos) bumpAchvCounter('bigPosDelta', bigPos);
+        if (neg) bumpAchvCounter('negDelta', neg);
+        const meterMaxHit = (merged.affection || []).some(m => clamp(normalizeMeter(m, 50).value, 0, 100) >= 100);
+        if (meterMaxHit) bumpAchvCounter('meterMax', 1);
+      }
+      registerStormWindow();
+      bumpAchvCounter('feedTotal', 1);
+      {
+        const moodCounterKey = {
+          love: 'moodHeart', happy: 'moodBloom', normal: 'moodPeace', sad: 'moodTear', scared: 'moodBlade',
+        }[getPet().mood];
+        if (moodCounterKey) bumpAchvCounter(moodCounterKey, 1);
+      }
+      {
+        const relCount = (merged.affection || []).filter(m => isValidRelationName(normalizeMeter(m, 50).name)).length;
+        if (relCount >= 5) bumpAchvCounter('relations5', 1, true);
+        if (relCount >= 10) bumpAchvCounter('relations10', 1, true);
+      }
+      {
+        const meterZeroHit = (merged.affection || []).some(m => clamp(normalizeMeter(m, 50).value, 0, 100) <= 0);
+        if (meterZeroHit) bumpAchvCounter('meterZero', 1, true);
+      }
+      registerDayPhase();
+      announceAchvUnlocks();
+
       announcePetEvent(petEvent);
       if (isMascotEnabled()) {
         const petNow = getPet();
@@ -2717,60 +2937,37 @@ RECENT_CONTEXT:
   function scheduleAutoAnalyze() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
 
-    // 안정화 pass가 이미 진행 중이면 mutation에 의한 debounce 리셋을 막음
-    // (스트리밍 완료 후 버튼·DOM 변화가 와도 카운트를 망치지 않음)
-    if (streamingStableCheck.pass > 0) return;
-
     clearTimeout(autoAnalyzeTimer);
     autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 900);
   }
 
-  // 스트리밍 안정화 상태 추적 (전역 선언으로 이동됨)
-
   function checkStableAutoAnalyzeTarget() {
     if (!isAutoAnalyzeEnabled() || !isEpisodePath()) return;
-    if (analyzeBusy) { scheduleAutoAnalyze(); return; }
+    if (analyzeBusy) {
+      scheduleAutoAnalyze();
+      return;
+    }
 
     const found = findLatestContext();
     if (!found) return;
 
     const room = getRoom();
-    const analyzedKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
-    if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedKeys.includes(found.contentKey)) {
+    const analyzedContentKeys = Array.isArray(room.analyzedContentKeys) ? room.analyzedContentKeys : [];
+    if (room.lastAnalyzedKey === found.key || room.lastAnalyzedContentKey === found.contentKey || analyzedContentKeys.includes(found.contentKey)) {
       autoCandidateKey = '';
-      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
       return;
     }
 
-    const STABLE_PASSES = 2;
-    const RECHECK = 1200;
-    const recheck = () => {
-      clearTimeout(autoAnalyzeTimer);
-      autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, RECHECK);
-    };
-
-    const candidateId = found.key.split('|')[0] || found.key;
-    const tLen = found.latestReply.length;
-    const iLen = found.infoText.length;
-    const sc = streamingStableCheck;
-
-    if (sc.key !== candidateId || sc.textLen !== tLen || sc.infoLen !== iLen) {
-      streamingStableCheck = { key: candidateId, textLen: tLen, infoLen: iLen, pass: 0 };
-      autoCandidateKey = found.key;
-      recheck();
-      return;
-    }
-
-    streamingStableCheck.pass += 1;
-    if (streamingStableCheck.pass >= STABLE_PASSES) {
-      streamingStableCheck = { key: '', textLen: -1, infoLen: -1, pass: 0 };
+    if (autoCandidateKey === found.key) {
       autoCandidateKey = '';
       pushLog(['▷새 답변 감지! 자동으로 읽는다!']);
       analyzeLatest(false);
       return;
     }
 
-    recheck();
+    autoCandidateKey = found.key;
+    clearTimeout(autoAnalyzeTimer);
+    autoAnalyzeTimer = setTimeout(checkStableAutoAnalyzeTarget, 1500);
   }
 
   function isMessageRelatedNode(node) {
@@ -2882,31 +3079,37 @@ RECENT_CONTEXT:
     const rect = getFabRect();
     const gap = 8;
     const width = Math.min(218, Math.max(180, innerWidth - 24));
+
     el.style.width = `${width}px`;
 
     let left = rect.left;
     if (left + width > innerWidth - 8) left = innerWidth - width - 8;
     left = Math.max(8, left);
-    el.style.left = `${left}px`;
-    el.style.right = 'auto';
 
-    // 코멘트 팝업 실제 높이: show 여부와 관계없이 offsetHeight 사용
-    // (display:none이 아니므로 opacity:0 상태에서도 레이아웃 높이는 유효)
-    const commentEl = document.getElementById(COMMENT_POPUP_ID);
-    const commentShowing = commentEl?.classList.contains('show');
-    const commentHeight = commentShowing ? (commentEl.offsetHeight || 0) : 0;
+    const visibleComment = document.getElementById(COMMENT_POPUP_ID);
+    const commentHeight = visibleComment?.classList.contains('show')
+      ? Math.max(48, visibleComment.offsetHeight || 58)
+      : 0;
 
-    const selfHeight = el.offsetHeight || (kind === 'comment' ? 52 : 120);
+    const height = Math.max(
+      kind === 'comment' ? 48 : 72,
+      Math.min(el.offsetHeight || (kind === 'comment' ? 58 : 150), kind === 'comment' ? 92 : 220)
+    );
+
     let bottom = Math.max(8, innerHeight - rect.top + gap);
 
-    if (kind === 'log' && commentHeight > 0) {
+    if (kind === 'log' && commentHeight) {
       bottom += commentHeight + 6;
     }
 
-    if (bottom + selfHeight > innerHeight - 8) {
+    el.style.left = `${left}px`;
+    el.style.right = 'auto';
+
+    if (bottom + height > innerHeight - 8) {
       let top = rect.bottom + gap;
-      if (kind === 'log' && commentHeight > 0) top += commentHeight + 6;
-      if (top + selfHeight > innerHeight - 8) top = Math.max(8, innerHeight - selfHeight - 8);
+      if (kind === 'log' && commentHeight) top += commentHeight + 6;
+      if (top + height > innerHeight - 8) top = Math.max(8, innerHeight - height - 8);
+
       el.style.top = `${top}px`;
       el.style.bottom = 'auto';
     } else {
@@ -2923,85 +3126,50 @@ RECENT_CONTEXT:
     if (comment) positionPopupNearFab(comment, 'comment');
   }
 
-  // 코멘트 팝업 큐 처리 — footer 타이머와 완전 분리
-  function enqueueCommentPopup(text) {
+  function showCommentPopup(comment) {
     if (!isCommentPopupEnabled()) return;
-    const t = shortText(text, 42);
-    if (!t) return;
-    commentPopupQueue.push(t);
-    if (!commentPopupTyping) drainCommentPopupQueue();
-  }
 
-  function drainCommentPopupQueue() {
-    if (!commentPopupQueue.length) {
-      commentPopupTyping = false;
-      return;
-    }
-    commentPopupTyping = true;
-    const text = commentPopupQueue.shift();
-    _showOneCommentPopup(text, () => {
-      // 다음 코멘트는 이전 팝업이 사라진 뒤 600ms 후 표시
-      commentPopupTypingTimer = setTimeout(drainCommentPopupQueue, 600);
-    });
-  }
+    const text = shortText(comment, 42);
+    if (!text) return;
 
-  function _showOneCommentPopup(text, onDone) {
     const el = ensureCommentPopup();
     const body = el.querySelector('.cigh-clean-comment-text');
-    if (!body) { onDone?.(); return; }
+    if (!body) return;
 
+    clearTimeout(commentPopupTypingTimer);
     clearTimeout(commentPopupHideTimer);
 
     const startTyping = () => {
       positionPopupNearFab(el, 'comment');
       el.classList.add('show');
       body.textContent = '';
-
-      // 첫 렌더 후 log popup 재배치
-      requestAnimationFrame(() => {
-        updateFloatingPopupPositions();
-      });
+      requestAnimationFrame(updateFloatingPopupPositions);
 
       let pos = 0;
-      let lastHeight = 0;
       const tick = () => {
         pos += 1;
         body.textContent = text.slice(0, pos);
-
-        // 높이가 바뀌면 (2줄로 넘어가는 순간) log popup 재배치
-        const h = el.offsetHeight;
-        if (h !== lastHeight) {
-          lastHeight = h;
-          // comment 자신도 재배치 (2줄 높이로 다시 계산)
-          positionPopupNearFab(el, 'comment');
-          updateFloatingPopupPositions();
-        }
+        if (pos === 1 || pos >= text.length) requestAnimationFrame(updateFloatingPopupPositions);
 
         if (pos < text.length) {
-          commentPopupTypingTimer = setTimeout(tick, 44);
+          commentPopupTypingTimer = setTimeout(tick, 48);
         } else {
-          // 타이핑 완료 후 위치 최종 확정
-          requestAnimationFrame(updateFloatingPopupPositions);
           commentPopupHideTimer = setTimeout(() => {
             el.classList.remove('show');
             requestAnimationFrame(updateFloatingPopupPositions);
-            onDone?.();
-          }, 3600);
+          }, 3900);
         }
       };
       tick();
     };
 
+    // 이전 팝업이 표시 중이면 transition(260ms) 완료 후 새 텍스트 시작
     if (el.classList.contains('show')) {
       el.classList.remove('show');
-      commentPopupTypingTimer = setTimeout(startTyping, 260);
+      commentPopupTypingTimer = setTimeout(startTyping, 280);
     } else {
       startTyping();
     }
-  }
-
-  function showCommentPopup(comment) {
-    enqueueCommentPopup(comment);
   }
 
   function showPopup(lines) {
@@ -3104,23 +3272,41 @@ RECENT_CONTEXT:
   function stopFooterComments() {
     clearTimeout(footerTypingTimer);
     clearTimeout(footerLoopTimer);
-    footerTypingTimer = null;
-    footerLoopTimer = null;
-    footerPopupRemaining = 0;
-    footerGeneration = (footerGeneration || 0) + 1;
-  }
-
-  function stopCommentPopup() {
     clearTimeout(commentPopupTypingTimer);
     clearTimeout(commentPopupHideTimer);
+    footerTypingTimer = null;
+    footerLoopTimer = null;
     commentPopupTypingTimer = null;
     commentPopupHideTimer = null;
-    commentPopupQueue = [];
-    commentPopupTyping = false;
-    const el = document.getElementById(COMMENT_POPUP_ID);
-    if (el) {
-      el.classList.remove('show');
-      const body = el.querySelector('.cigh-clean-comment-text');
+    footerPopupRemaining = 0;
+  }
+
+  function clearTransientUi() {
+    clearTimeout(popupRemoveTimer);
+    clearTimeout(popupHideTimer);
+    clearTimeout(commentPopupTypingTimer);
+    clearTimeout(commentPopupHideTimer);
+    clearTimeout(autoAnalyzeTimer);
+
+    stopFooterComments();
+
+    logQueue = [];
+    isLogTyping = false;
+    popupQueue = [];
+    popupTyping = false;
+    popupLines = [];
+    autoCandidateKey = '';
+
+    const popup = document.getElementById(POPUP_ID);
+    if (popup) {
+      popup.classList.remove('show');
+      popup.innerHTML = '';
+    }
+
+    const comment = document.getElementById(COMMENT_POPUP_ID);
+    if (comment) {
+      comment.classList.remove('show');
+      const body = comment.querySelector('.cigh-clean-comment-text');
       if (body) body.textContent = '';
     }
   }
@@ -3137,69 +3323,35 @@ RECENT_CONTEXT:
 
     if (!footerComments.length) return;
 
-    const gen = footerGeneration;
-    typeFooterComment(gen);
+    typeFooterComment();
   }
 
-  function typeFooterComment(gen) {
-    if (gen !== footerGeneration) return;
+  function typeFooterComment() {
     if (!footerComments.length) return;
 
-    if (footerCommentIndex >= footerComments.length) return;
-
-    const comment = footerComments[footerCommentIndex];
+    const comment = footerComments[footerCommentIndex % footerComments.length];
     footerCommentIndex += 1;
     footerLastText = comment;
 
-    // 팝업을 footer 타이핑 시작과 동시에 큐에 추가
     if (footerPopupRemaining > 0) {
+      showCommentPopup(comment);
       footerPopupRemaining -= 1;
-      enqueueCommentPopup(comment);
     }
 
     let pos = 0;
     const tick = () => {
-      if (gen !== footerGeneration) return;
       pos += 2;
       footerLastText = comment.slice(0, pos);
 
       const el = document.getElementById('cigh-clean-ft');
       if (el) el.textContent = footerLastText;
 
-      if (pos < comment.length) {
-        footerTypingTimer = setTimeout(tick, 60);
-      } else {
-        if (footerCommentIndex < footerComments.length) {
-          footerLoopTimer = setTimeout(() => typeFooterComment(gen), 4800);
-        }
-      }
+      if (pos < comment.length) footerTypingTimer = setTimeout(tick, 60);
+      else footerLoopTimer = setTimeout(typeFooterComment, 6400);
     };
 
     tick();
   }
-
-  function clearTransientUi() {
-    clearTimeout(popupRemoveTimer);
-    clearTimeout(popupHideTimer);
-    clearTimeout(autoAnalyzeTimer);
-
-    stopFooterComments();
-    stopCommentPopup();
-
-    logQueue = [];
-    isLogTyping = false;
-    popupQueue = [];
-    popupTyping = false;
-    popupLines = [];
-    autoCandidateKey = '';
-
-    const popup = document.getElementById(POPUP_ID);
-    if (popup) {
-      popup.classList.remove('show');
-      popup.innerHTML = '';
-    }
-  }
-
 
   // ─────────────────────────────────────────────
   // UI rendering
@@ -3360,18 +3512,42 @@ RECENT_CONTEXT:
 
   function detectPetMood(text, deltaSum) {
     const t = normalize(text);
-    if (/고백|사랑|키스|입맞|포옹|안아|끌어안|설렘|두근|심장이|좋아해/.test(t)) return 'love';
-    // '울' 단독은 오탐 많음(울리다/울창/울타리) → '울었|울고|울며|울어|눈물' 등 확실한 표현만
-    if (/눈물이|눈물을|눈물이|흐느|울었|울고|울며|울어|울컥|울음|버림받|외로워|외롭|무너져|슬픔|비참|마음이 아파|마음이아파|가슴이 아파|상처받|상처를 입/.test(t)) return 'sad';
-    if (/분노|화났|소리쳤|외쳤|위협|죽|피가|공포|두려|위험|긴장/.test(t)) return 'scared';
+    if (/고백|사랑|키스|입맞|포옹|안아|끌어안|설렘|두근|심장|좋아해/.test(t)) return 'love';
+    if (/눈물|울|흐느|상처|버림|외로|무너|슬픔|비참|아파/.test(t)) return 'sad';
+    if (/분노|화났|소리|외쳤|위협|죽|피|공포|두려|위험|긴장/.test(t)) return 'scared';
     if (/웃|미소|다정|부드럽|귀엽|장난|간질|놀리|안심/.test(t)) return 'happy';
-    if (deltaSum >= 3) return 'happy';
-    if (deltaSum <= -3) return 'sad';
+    if (deltaSum > 0) return 'happy';
+    if (deltaSum < 0) return 'sad';
     return 'normal';
   }
 
   function petExpGain(deltaSum) {
     return 10 + Math.min(Math.round(deltaSum), 20);
+  }
+
+  function petTokenExpGain(tokens) {
+    const input = Math.max(0, Math.floor(Number(tokens?.input || 0)));
+    if (!input) return 0;
+    return clamp(Math.floor(input / PET_TOKEN_EXP_INPUT_UNIT), 0, PET_TOKEN_EXP_MAX);
+  }
+
+  function weightedPetFinalType(tally = {}) {
+    const entries = TENDENCY_KEYS.map(key => [key, Math.max(0, Number(tally?.[key] || 0))]).filter(([, value]) => value > 0);
+    const total = entries.reduce((sum, [, value]) => sum + value, 0);
+    if (!total) return 'peace';
+    let roll = Math.random() * total;
+    for (const [key, value] of entries) {
+      roll -= value;
+      if (roll < 0) return key;
+    }
+    return entries[entries.length - 1]?.[0] || 'peace';
+  }
+
+  function getPetDisplayFinalType(pet = getPet()) {
+    const fixed = String(pet?.fixedFinalType || '');
+    if (petStageFromLevel(Number(pet?.level || 1)).stage >= 3 && TENDENCY_KEYS.includes(fixed)) return fixed;
+    const live = String(pet?.finalType || 'peace');
+    return TENDENCY_KEYS.includes(live) ? live : 'peace';
   }
 
   // ─────────────────────────────────────────────
@@ -3522,18 +3698,6 @@ RECENT_CONTEXT:
     localStorage.setItem(MASCOT_SIZE_STORE, String([2, 3, 4].includes(n) ? n : 4));
   }
 
-  // mood lock: '' (자동) | 'love' | 'happy' | 'normal' | 'sad' | 'scared'
-  function getMascotMoodLock() {
-    const v = String(localStorage.getItem(MASCOT_MOOD_LOCK_STORE) || '').trim();
-    return ['love', 'happy', 'normal', 'sad', 'scared'].includes(v) ? v : '';
-  }
-  function setMascotMoodLock(v) {
-    const safe = ['love', 'happy', 'normal', 'sad', 'scared'].includes(v) ? v : '';
-    if (safe) localStorage.setItem(MASCOT_MOOD_LOCK_STORE, safe);
-    else localStorage.removeItem(MASCOT_MOOD_LOCK_STORE);
-  }
-
-
   // outline: 'outline' | 'shadow' | 'none'
   function getMascotOutline() {
     const v = String(localStorage.getItem(MASCOT_OUTLINE_STORE) || 'outline').trim();
@@ -3584,6 +3748,236 @@ RECENT_CONTEXT:
       for (let x = 0; x < map[0].length; x++)
         if (map[y][x] === '1') filled.add(`${x},${y}`);
     return _buildOutlineFromSet(filled, size, outlineColor);
+  }
+
+
+  // ─────────────────────────────────────────────
+  // 펫 이미지 프레임 (완전체 stage>=3용)
+  // ─────────────────────────────────────────────
+  const PET_IMAGE_FRAME_KEYS = ['normal', 'smile1', 'smile2', 'half', 'sleep1', 'sleep2', 'drag1', 'drag2'];
+  const PET_IMAGE_FRAMES = {
+    // ♥ 애정형: 고양이
+    heart: {
+      normal: 'https://i.postimg.cc/brh5wnNW/heart-cat-normal.png',
+      smile1: 'https://i.postimg.cc/0js4yS2T/heart-cat-smile.png',
+      smile2: 'https://i.postimg.cc/SRhPx9x4/heart-cat-smile-(1).png',
+      half:   'https://i.postimg.cc/L5pW8P6r/heart-cat-half.png',
+      sleep1: 'https://i.postimg.cc/4yg0xcNj/heart-cat-sleep-(1).png',
+      sleep2: 'https://i.postimg.cc/vTsKZnZR/heart-cat-sleep-(2).png',
+      drag1:  'https://i.postimg.cc/90hkQ9QH/heart-cat-drag-(1).png',
+      drag2:  'https://i.postimg.cc/hvBYtmtq/heart-cat-drag-(2).png',
+    },
+    // ✿ 명랑형: 햄스터
+    bloom: {
+      normal: 'https://i.postimg.cc/Mpc19bBL/cheerful-hamster-normal.png',
+      smile1: 'https://i.postimg.cc/6p7CMLZF/cheerful-hamster-smile.png',
+      smile2: 'https://i.postimg.cc/sgB5T9Wt/cheerful-hamster-smile-(1).png',
+      half:   'https://i.postimg.cc/SxXcg795/cheerful-hamster-half.png',
+      sleep1: 'https://i.postimg.cc/rFZSGYdT/cheerful-hamster-sleep-(1).png',
+      sleep2: 'https://i.postimg.cc/NfC18PyY/cheerful-hamster-sleep-(2).png',
+      drag1:  'https://i.postimg.cc/7ZCSKMzW/cheerful-hamster-drag-(1).png',
+      drag2:  'https://i.postimg.cc/y8J0LXRt/cheerful-hamster-drag-(2).png',
+    },
+    // ☺ 평화형: 곰
+    peace: {
+      normal: 'https://i.postimg.cc/Jn8J7fFM/peace-bear-normal.png',
+      smile1: 'https://i.postimg.cc/sXzSfkL5/peace-bear-smile.png',
+      smile2: 'https://i.postimg.cc/V6wMsxhn/peace-bear-smile-(1).png',
+      half:   'https://i.postimg.cc/PxHZfg7D/peace-bear-half.png',
+      sleep1: 'https://i.postimg.cc/gJpRcC70/peace-bear-sleep-(1).png',
+      sleep2: 'https://i.postimg.cc/nzx7VyWh/peace-bear-sleep-(2).png',
+      drag1:  'https://i.postimg.cc/KzbLc6Wk/peace-bear-drag-(1).png',
+      drag2:  'https://i.postimg.cc/wvzJxCrT/peace-bear-drag-(2).png',
+    },
+    // ☂ 애상형: 양
+    tear: {
+      normal: 'https://i.postimg.cc/qvCCsBVd/sorrow-lamb-normal.png',
+      smile1: 'https://i.postimg.cc/Dwbbrfkm/sorrow-lamb-smile.png',
+      smile2: 'https://i.postimg.cc/kgttQM3G/sorrow-lamb-smile-(1).png',
+      half:   'https://i.postimg.cc/T3WWV2Mw/sorrow-lamb-half.png',
+      sleep1: 'https://i.postimg.cc/GmssF3wn/sorrow-lamb-sleep-(1).png',
+      sleep2: 'https://i.postimg.cc/7YR2JGcY/sorrow-lamb-sleep-(2).png',
+      drag1:  'https://i.postimg.cc/VkbbqsQk/sorrow-lamb-drag-(1).png',
+      drag2:  'https://i.postimg.cc/g266VcFd/sorrow-lamb-drag-(2).png',
+    },
+    // ⚔ 시련형: 용
+    blade: {
+      normal: 'https://i.postimg.cc/T27yB5Tp/trial-dragon-normal.png',
+      smile1: 'https://i.postimg.cc/bNZGPYv2/trial-dragon-smile.png',
+      smile2: 'https://i.postimg.cc/7Y5C4PLG/trial-dragon-smile-(1).png',
+      half:   'https://i.postimg.cc/Yqv472S4/trial-dragon-half.png',
+      sleep1: 'https://i.postimg.cc/jqgWBnRJ/trial-dragon-sleep-(1).png',
+      sleep2: 'https://i.postimg.cc/BZY8RPJF/trial-dragon-sleep-(2).png',
+      drag1:  'https://i.postimg.cc/WpWDxqsD/trial-dragon-drag-(1).png',
+      drag2:  'https://i.postimg.cc/tRS18n9t/trial-dragon-drag-(2).png',
+    },
+  };
+
+  function getPetImageFrames(finalType) {
+    const key = TENDENCY_KEYS.includes(String(finalType || '')) ? String(finalType) : 'peace';
+    return PET_IMAGE_FRAMES[key] || null;
+  }
+
+  function hasPetImageFrames(finalType) {
+    const frames = getPetImageFrames(finalType);
+    return !!(frames && frames.normal);
+  }
+
+  function preloadPetImageFrames() {
+    try {
+      const urls = new Set();
+      Object.values(PET_IMAGE_FRAMES || {}).forEach(frames => {
+        PET_IMAGE_FRAME_KEYS.forEach(key => {
+          const src = String(frames?.[key] || '').trim();
+          if (src) urls.add(src);
+        });
+      });
+      urls.forEach(src => { const img = new Image(); img.referrerPolicy = 'no-referrer'; img.src = src; });
+    } catch (err) { console.debug('[유니챗 HUD] pet image preload failed:', err); }
+  }
+
+  function pickAnimatedPair(a, b, period, now = Date.now()) {
+    const first = String(a || '').trim();
+    const second = String(b || '').trim();
+    if (!first && !second) return '';
+    if (!first) return second;
+    if (!second) return first;
+    return Math.floor(now / Math.max(120, Number(period) || 1)) % 2 === 0 ? first : second;
+  }
+
+  let petVisualTickTimer = null;
+  const PET_VISUAL_IDLE_SLEEP_MS = 80000;
+  const PET_VISUAL_POST_DRAG_MS = 1200;
+  const PET_VISUAL_STATE = {
+    mode: 'normal',
+    until: 0,
+    lastActiveAt: Date.now(),
+    dragActive: false,
+  };
+
+  function getPetVisualMode(pet = getPet()) {
+    const now = Date.now();
+    if (PET_VISUAL_STATE.dragActive) return 'drag';
+    if (PET_VISUAL_STATE.until && now < PET_VISUAL_STATE.until) return PET_VISUAL_STATE.mode || 'normal';
+    if (PET_VISUAL_STATE.until && now >= PET_VISUAL_STATE.until) {
+      PET_VISUAL_STATE.mode = 'normal';
+      PET_VISUAL_STATE.until = 0;
+    }
+    const idleMs = now - Number(PET_VISUAL_STATE.lastActiveAt || now);
+    if (idleMs >= PET_VISUAL_IDLE_SLEEP_MS) return 'sleep';
+    const mood = String(getEffectiveMood(pet) || pet?.mood || 'normal');
+    if (mood === 'love' || mood === 'happy') return 'smile';
+    if (mood === 'sad' || mood === 'scared') return 'half';
+    return 'normal';
+  }
+
+  function pickPetImageFrame(frames, mode, pet = getPet(), now = Date.now()) {
+    if (!frames || !frames.normal) return '';
+    const currentMode = String(mode || getPetVisualMode(pet) || 'normal');
+    if (currentMode === 'drag') return pickAnimatedPair(frames.drag1 || frames.normal, frames.drag2 || frames.drag1 || frames.normal, 240, now) || frames.normal;
+    if (currentMode === 'sleep') return pickAnimatedPair(frames.sleep1 || frames.normal, frames.sleep2 || frames.sleep1 || frames.normal, 1400, now) || frames.normal;
+    if (currentMode === 'smile') return pickAnimatedPair(frames.smile1 || frames.normal, frames.smile2 || frames.smile1 || frames.normal, 360, now) || frames.normal;
+    if (currentMode === 'half') return String(frames.half || frames.normal || '').trim();
+    return String(frames.normal || '').trim();
+  }
+
+  function schedulePetVisualTick(delay = 900) {
+    clearTimeout(petVisualTickTimer);
+    petVisualTickTimer = setTimeout(petVisualTick, Math.max(120, Number(delay) || 900));
+  }
+
+  function petVisualTick() {
+    petVisualTickTimer = null;
+    const pet = getPet();
+    const mode = getPetVisualMode(pet);
+    const hasImage = petStageFromLevel(Number(pet?.level || 1)).stage >= 3 && hasPetImageFrames(getPetDisplayFinalType(pet));
+    const shouldAnimate = hasImage && (mode === 'sleep' || mode === 'smile' || mode === 'drag');
+    if (isMascotEnabled()) updateMascotSprite();
+    if (mode === 'sleep') triggerMascotSleepFx();
+    if (activeTab === 'pet' && hasImage && (shouldAnimate || mode === 'half')) updatePetPanelSprite();
+    schedulePetVisualTick(shouldAnimate ? (mode === 'sleep' ? 900 : mode === 'drag' ? 180 : 360) : 1600);
+  }
+
+  function touchPetVisual(mode = '', duration = 0) {
+    const now = Date.now();
+    PET_VISUAL_STATE.lastActiveAt = now;
+    PET_VISUAL_STATE.dragActive = false;
+    if (mode) {
+      PET_VISUAL_STATE.mode = String(mode);
+      PET_VISUAL_STATE.until = duration > 0 ? now + duration : 0;
+    } else {
+      PET_VISUAL_STATE.mode = 'normal';
+      PET_VISUAL_STATE.until = 0;
+    }
+    if (isMascotEnabled()) updateMascotSprite();
+    updatePetPanelSprite();
+    schedulePetVisualTick(mode === 'smile' ? 300 : mode === 'half' ? 520 : 1200);
+  }
+
+  function beginPetDragVisual() {
+    PET_VISUAL_STATE.dragActive = true;
+    PET_VISUAL_STATE.mode = 'drag';
+    PET_VISUAL_STATE.until = 0;
+    PET_VISUAL_STATE.lastActiveAt = Date.now();
+    if (isMascotEnabled()) updateMascotSprite();
+    updatePetPanelSprite();
+    schedulePetVisualTick(180);
+  }
+
+  function endPetDragVisual(afterMode = 'smile', duration = PET_VISUAL_POST_DRAG_MS) {
+    PET_VISUAL_STATE.dragActive = false;
+    touchPetVisual(afterMode, duration);
+  }
+
+  function petImageHTML(src, mode = 'normal', size = 8) {
+    const displaySize = Number(size) <= 2 ? 52 : 112;
+    return `<span class="cigh-clean-pet-img-wrap cigh-clean-pet-img-${esc(mode)}" data-cigh-pet-mode="${esc(mode)}" style="--cigh-pet-img-size:${displaySize}px;" aria-hidden="true">
+      <img class="cigh-clean-pet-img" src="${esc(src)}" data-cigh-pet-src="${esc(src)}" alt="" draggable="false" referrerpolicy="no-referrer">
+    </span>`;
+  }
+
+  function renderPetSpriteInto(container, size = 8) {
+    if (!container) return;
+    const pet = getPet();
+    const stageObj = petStageFromLevel(pet.level);
+    const frames = stageObj.stage >= 3 ? getPetImageFrames(getPetDisplayFinalType(pet)) : null;
+
+    if (frames && frames.normal) {
+      const mode = getPetVisualMode(pet);
+      const src = pickPetImageFrame(frames, mode, pet, Date.now());
+      const displaySize = Number(size) <= 2 ? 52 : 112;
+      const wrap = container.querySelector?.('.cigh-clean-pet-img-wrap');
+      const img = wrap?.querySelector?.('.cigh-clean-pet-img');
+      container.dataset.cighPetMode = mode;
+      container.classList.toggle('is-sleep', mode === 'sleep');
+
+      if (wrap && img && src) {
+        wrap.className = `cigh-clean-pet-img-wrap cigh-clean-pet-img-${mode}`;
+        wrap.dataset.cighPetMode = mode;
+        wrap.style.setProperty('--cigh-pet-img-size', `${displaySize}px`);
+        if (img.getAttribute('data-cigh-pet-src') !== src) {
+          img.setAttribute('src', src);
+          img.setAttribute('data-cigh-pet-src', src);
+        }
+        return;
+      }
+      if (src) {
+        container.dataset.cighPetMode = mode;
+        container.classList.toggle('is-sleep', mode === 'sleep');
+        container.innerHTML = petImageHTML(src, mode, size);
+        return;
+      }
+    }
+
+    container.dataset.cighPetMode = 'dot';
+    container.classList.remove('is-sleep');
+    container.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, size);
+  }
+
+  function updatePetPanelSprite() {
+    if (activeTab !== 'pet') return;
+    const sprite = document.querySelector(`#${PANEL_ID} .cigh-clean-pet-sprite`);
+    renderPetSpriteInto(sprite, 8);
   }
 
   function petSpriteSVGWithAccessory(stageObj, mood, finalType, size = 8, accessory = null) {
@@ -3699,6 +4093,14 @@ RECENT_CONTEXT:
   }
 
   function petSpriteSVG(stageObj, mood, finalType, size = 8) {
+    // 완전체(stage>=3)이고 이미지 있으면 이미지로 표시
+    const frames = stageObj.stage >= 3 ? getPetImageFrames(finalType) : null;
+    if (frames && frames.normal) {
+      const pet = getPet();
+      const mode = getPetVisualMode(pet);
+      const src = pickPetImageFrame(frames, mode, pet, Date.now());
+      if (src) return petImageHTML(src, mode, size);
+    }
     return petSpriteSVGWithAccessory(stageObj, mood, finalType, size);
   }
 
@@ -3741,26 +4143,45 @@ RECENT_CONTEXT:
     const prevBondLevel = Number(pet.bondLevel || 0);
     const deltaSum = (merged.relationshipDeltas || []).reduce((sum, d) => sum + Math.abs(Number(d.delta) || 0), 0);
 
-    pet.exp = Math.max(0, (pet.exp || 0) + petExpGain(deltaSum));
+    const tokenExp = petTokenExpGain(merged?._usageTokens);
+    const achvMult = getAchvExpBonusMultiplier();
+    pet.exp = Math.max(0, (pet.exp || 0) + Math.round(petExpGain(deltaSum) * achvMult) + tokenExp);
     pet.feedCount = (pet.feedCount || 0) + 1;
     pet.level = petLevelFromExp(pet.exp);
     pet.stage = petStageFromLevel(pet.level).stage;
-    // AI가 판단한 petMood가 있으면 우선 사용, 없으면 로컬 정규식 fallback
-    const validMoods = ['love', 'happy', 'normal', 'sad', 'scared'];
-    const aiMood = String(merged?.petMood || '').trim().toLowerCase();
-    pet.mood = validMoods.includes(aiMood) ? aiMood : detectPetMood(latestReply, deltaSum);
+    pet.mood = detectPetMood(latestReply, deltaSum);
     pet.tally[petMoodBucket(pet.mood)] = Number(pet.tally[petMoodBucket(pet.mood)] || 0) + 1;
     pet.finalType = petFinalType(pet.tally);
+    if (prevStage < 3 && pet.stage >= 3 && !TENDENCY_KEYS.includes(String(pet.fixedFinalType || ''))) {
+      pet.fixedFinalType = weightedPetFinalType(pet.tally);
+    } else if (pet.stage >= 3 && !TENDENCY_KEYS.includes(String(pet.fixedFinalType || ''))) {
+      pet.fixedFinalType = pet.finalType;
+    }
     pet.bondLevel = petBondLevel(pet.feedCount);
     updatePetCharAffinity(pet, merged.relationshipDeltas || []);
     pet.lastFedAt = Date.now();
     room.pet = pet;
 
+    // [업적] 펫 성장 카운터
+    {
+      const st = petStageFromLevel(pet.level).stage;
+      const state = readAchvState();
+      let changed = false;
+      const setFlag = (k, cond) => { if (cond && !Number(state.counters[k])) { state.counters[k] = 1; changed = true; } };
+      setFlag('petBaby', st >= 1);
+      setFlag('petBondMax', Number(pet.bondLevel || 0) >= 4);
+      setFlag('petFinal', st >= 4);
+      if (changed) { evaluateAchvUnlocks(state); writeAchvState(state); }
+    }
+    if (petStageFromLevel(pet.level).stage >= 4) bumpAchvFinalForm(getPetDisplayFinalType(pet));
+
+    const displayFinalType = getPetDisplayFinalType(pet);
     const events = [];
-    if (pet.stage > prevStage) events.push({ type: 'evolve', stage: pet.stage, level: pet.level, finalType: pet.finalType });
-    if (pet.level > prevLevel) events.push({ type: 'level', level: pet.level, finalType: pet.finalType });
-    if (pet.finalType !== prevFinalType) events.push({ type: 'tendency', finalType: pet.finalType, prevFinalType });
-    if (pet.bondLevel > prevBondLevel) events.push({ type: 'bond', bondLevel: pet.bondLevel, finalType: pet.finalType });
+    if (pet.stage > prevStage) events.push({ type: 'evolve', stage: pet.stage, level: pet.level, finalType: displayFinalType });
+    if (pet.level > prevLevel) events.push({ type: 'level', level: pet.level, finalType: displayFinalType });
+    if (pet.stage < 3 && pet.finalType !== prevFinalType) events.push({ type: 'tendency', finalType: pet.finalType, prevFinalType });
+    if (pet.stage >= 3 && getPetDisplayFinalType({ ...pet, level: prevLevel }) !== displayFinalType) events.push({ type: 'tendency', finalType: displayFinalType, prevFinalType });
+    if (pet.bondLevel > prevBondLevel) events.push({ type: 'bond', bondLevel: pet.bondLevel, finalType: displayFinalType });
     return events.length ? events : null;
   }
 
@@ -3892,8 +4313,6 @@ RECENT_CONTEXT:
   }
 
   function getEffectiveMood(pet = getPet()) {
-    const lock = getMascotMoodLock();
-    if (lock) return lock;
     const last = Number(pet?.lastFedAt || 0);
     if (last && Date.now() - last < MOOD_WINDOW) return String(pet?.mood || 'normal');
     return 'normal';
@@ -3932,6 +4351,9 @@ RECENT_CONTEXT:
       p.lastLineAt = now;
       r.pet = p;
     });
+    bumpAchvCounter('petTouch', 1);
+    announceAchvUnlocks();
+    touchPetVisual('smile', 1800);
     playBeep('tab');
     renderContent();
   }
@@ -4371,10 +4793,8 @@ RECENT_CONTEXT:
   function updateMascotSprite() {
     const el = document.getElementById(MASCOT_ID);
     if (!el) return;
-    const pet = getPet();
-    const stageObj = petStageFromLevel(pet.level);
     const body = el.querySelector('.cigh-clean-mascot-body');
-    if (body) body.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, getMascotSize());
+    renderPetSpriteInto(body, getMascotSize());
   }
 
   function showMascotSpeech(text) {
@@ -4641,6 +5061,8 @@ RECENT_CONTEXT:
       triggerMascotMood(mood);
     })();
 
+    bumpAchvCounter('petTouch', 1);
+    announceAchvUnlocks();
     if (activeTab === 'pet') renderContent();
   }
 
@@ -4737,10 +5159,7 @@ RECENT_CONTEXT:
 
   function scheduleMascotWander() {
     clearTimeout(mascotWanderTimer);
-    const pet = getPet();
-    const mood = getEffectiveMood(pet);
-    const baseDelay = { love: 5000, happy: 6000, normal: 8000, sad: 11000, scared: 9000 }[mood] || 8000;
-    mascotWanderTimer = setTimeout(mascotWander, baseDelay + Math.random() * baseDelay * 0.6);
+    mascotWanderTimer = setTimeout(mascotWander, 4200 + Math.random() * 4200);
   }
 
   function mascotWander() {
@@ -4752,47 +5171,19 @@ RECENT_CONTEXT:
     const w = el.offsetWidth || 60;
     const h = el.offsetHeight || 70;
     const cur = el.getBoundingClientRect();
-    const pet = getPet();
-    const mood = getEffectiveMood(pet);
-
-    const range = {
-      love:   { x: 70,  y: 50  },
-      happy:  { x: 90,  y: 60  },
-      normal: { x: 55,  y: 38  },
-      sad:    { x: 25,  y: 18  },
-      scared: { x: 38,  y: 28  },
-    }[mood] || { x: 55, y: 38 };
-
-    // 5% 확률로 대이동 (love/happy만)
-    const bigJump = (mood === 'love' || mood === 'happy') && Math.random() < 0.05;
-    let targetLeft, targetTop;
-
-    if (bigJump) {
-      targetLeft = Math.round(Math.random() * (innerWidth - w - 16) + 8);
-      targetTop  = Math.round(Math.random() * (innerHeight - h - 16) + 8);
-    } else {
-      const dx = Math.round((Math.random() - 0.5) * 2 * range.x);
-      const dy = Math.round((Math.random() - 0.5) * 2 * range.y);
-      targetLeft = clamp(cur.left + dx, 8, innerWidth - w - 8);
-      targetTop  = clamp(cur.top  + dy, 8, innerHeight - h - 8);
-    }
-
-    const moveDist = Math.hypot(targetLeft - cur.left, targetTop - cur.top);
-    const duration = bigJump
-      ? (1400 + moveDist * 1.0).toFixed(0)
-      : clamp(700 + moveDist * 3.0, 700, 2000).toFixed(0);
+    const homeLeft = Number(el.dataset.homeLeft || cur.left);
+    const homeTop = Number(el.dataset.homeTop || cur.top);
+    const dx = Math.round((Math.random() - 0.5) * 28);
+    const dy = Math.round((Math.random() - 0.5) * 18);
+    const targetLeft = clamp(homeLeft + dx, 0, innerWidth - w);
+    const targetTop = clamp(homeTop + dy, 0, innerHeight - h);
 
     const body = el.querySelector('.cigh-clean-mascot-body');
-    if (body && Math.abs(targetLeft - cur.left) > 4) {
-      body.style.transform = targetLeft < cur.left ? 'scaleX(-1)' : 'scaleX(1)';
-    }
+    if (body && Math.abs(targetLeft - cur.left) > 2) body.style.transform = targetLeft < cur.left ? 'scaleX(-1)' : 'scaleX(1)';
 
-    el.style.transition = `left ${duration}ms ease-in-out, top ${duration}ms ease-in-out`;
+    el.style.transition = 'left 1.1s ease-in-out, top 1.1s ease-in-out';
     el.style.left = `${targetLeft}px`;
-    el.style.top  = `${targetTop}px`;
-
-    el.dataset.homeLeft = String(targetLeft);
-    el.dataset.homeTop  = String(targetTop);
+    el.style.top = `${targetTop}px`;
 
     scheduleMascotWander();
   }
@@ -4811,6 +5202,7 @@ RECENT_CONTEXT:
       clearTimeout(mascotIdleTimer); // 잡는 순간 idle 타이머 멈춤
       el.style.transition = 'none';
       try { el.setPointerCapture(e.pointerId); } catch {}
+      beginPetDragVisual();
 
       // 잡힌 순간 — 살짝 들리는 애니
       mascotAnimate('grabbed', 380);
@@ -4855,6 +5247,7 @@ RECENT_CONTEXT:
 
       if (wasMoved) {
         saveMascotPos(el);
+        endPetDragVisual('smile', PET_VISUAL_POST_DRAG_MS);
         // 착지 — 통통 바운스
         mascotAnimate('landed', 550);
         mascotSay(pickRandom({
@@ -4952,6 +5345,63 @@ RECENT_CONTEXT:
       return;
     }
 
+
+    if (activeTab === 'achv') {
+      const achvState = readAchvState();
+      const equippedId = readEquippedAchvId();
+      const unlockedCount = ACHV_DEFS.filter(def => achvState.unlocked[def.id]).length;
+      const bonusPct = (getAchvExpBonusMultiplier(achvState) - 1) * 100;
+      const equippedName = (equippedId && achvState.unlocked[equippedId])
+        ? ((ACHV_DEFS.find(d => d.id === equippedId) || {}).name || '없음')
+        : '없음';
+
+      const cards = ACHV_DEFS.map(def => {
+        const prog = getAchvProgress(def, achvState);
+        const meta = ACHV_RANK_META[def.rank] || ACHV_RANK_META.N;
+        const secret = def.hidden && !prog.unlocked && prog.cur <= 0;
+        const equipped = prog.unlocked && equippedId === def.id;
+        const icon = secret ? '？' : def.icon;
+        const name = secret ? '???' : def.name;
+        const tip = secret
+          ? '숨겨진 업적 · 조건 달성 시 공개'
+          : `${def.desc} · EXP +${(meta.bonus * 100).toFixed(1)}%${prog.unlocked ? ' (보유 중)' : ` · ${prog.cur}/${prog.target}`}`;
+        const stateClass = prog.unlocked ? 'unlocked' : (secret ? 'secret' : 'locked');
+        const footer = prog.unlocked
+          ? '<span class="cigh-clean-achv-done">달성</span>'
+          : (secret ? '' : `<span class="cigh-clean-achv-prog">${prog.cur}/${prog.target}</span>`);
+        return `
+          <div class="cigh-clean-achv-card ${stateClass} rank-${esc(def.rank)}${equipped ? ' equipped' : ''}" style="--achv-rank-color:${esc(meta.color)};" data-achv-id="${esc(def.id)}" title="${esc(tip)}">
+            <span class="cigh-clean-achv-shimmer" aria-hidden="true"></span>
+            <span class="cigh-clean-achv-rank">${esc(meta.label)}</span>
+            <span class="cigh-clean-achv-icon">${esc(icon)}</span>
+            <span class="cigh-clean-achv-name">${esc(name)}</span>
+            ${footer}
+          </div>`;
+      }).join('');
+
+      main.innerHTML = section('TITLES', `
+        <div class="cigh-clean-srow">
+          <span class="cigh-clean-slbl">달성</span>
+          <span class="cigh-clean-sval">${unlockedCount} / ${ACHV_DEFS.length}</span>
+        </div>
+        <div class="cigh-clean-srow">
+          <span class="cigh-clean-slbl">보유 효과</span>
+          <span class="cigh-clean-sval">EXP +${bonusPct.toFixed(1)}%</span>
+        </div>
+        <div class="cigh-clean-srow">
+          <span class="cigh-clean-slbl">장착</span>
+          <span class="cigh-clean-sval">${esc(equippedName)}</span>
+        </div>
+      `) + `<div class="cigh-clean-achv-grid">${cards}</div>`;
+
+      if (pendingAchvCelebrate) {
+        const celebrateId = pendingAchvCelebrate.id;
+        pendingAchvCelebrate = null;
+        const card = main.querySelector(`.cigh-clean-achv-card[data-achv-id="${CSS.escape(celebrateId)}"]`);
+        if (card) requestAnimationFrame(() => spawnPetParticles(card, 'evolve'));
+      }
+      return;
+    }
 
     if (activeTab === 'pet') {
       const pet = getPet();
@@ -5228,6 +5678,17 @@ RECENT_CONTEXT:
     });
 
     panel.querySelector('#cigh-clean-main').addEventListener('click', event => {
+      const achvCard = event.target.closest('.cigh-clean-achv-card');
+      if (achvCard) {
+        const id = achvCard.dataset.achvId || '';
+        const state = readAchvState();
+        if (!id || !state.unlocked[id]) { playBeep('error'); return; }
+        toggleEquippedAchv(id);
+        playBeep('save');
+        renderContent();
+        return;
+      }
+
       if (event.target.closest('.cigh-clean-pet-sprite')) petPet();
     });
 
@@ -5272,7 +5733,7 @@ RECENT_CONTEXT:
     const fab = document.createElement('button');
     fab.id = FAB_ID;
     fab.type = 'button';
-    fab.title = `유니챗 펫 키우기`;
+    fab.title = `INFO Game HUD v${VERSION}`;
     fab.textContent = '◆';
 
     let pressTimer = null;
@@ -5873,23 +6334,14 @@ RECENT_CONTEXT:
         return;
       }
 
-      const selectedProvider = providerInput?.value || 'ai-studio';
-      setGeminiProvider(selectedProvider);
-
-      // 각 provider 키: 입력값이 있으면 항상 저장 (선택 여부 무관하게 보존)
+      setGeminiProvider(providerInput?.value || 'ai-studio');
+      // password 필드는 브라우저 보안 정책에 따라 .value가 빈 문자열로 읽힐 수 있음.
+      // 입력값이 비어 있으면 기존 저장 키를 보존하고 덮어쓰지 않는다.
       const apiInputVal = String(apiInput?.value || '').trim();
-      const orKeyInputVal = String(orKeyInput?.value || '').trim();
       if (apiInputVal) setGeminiKey(apiInputVal);
+      // OR 키: 값이 있을 때만 저장 (clear 버튼은 별도 처리)
+      const orKeyInputVal = String(orKeyInput?.value || '').trim();
       if (orKeyInputVal) setOpenRouterKey(orKeyInputVal);
-
-      // 선택된 provider에 필요한 키가 없으면 경고
-      if (selectedProvider === 'ai-studio' && !hasGeminiKey()) {
-        if (!confirm('Gemini API Key가 없습니다. AI Studio를 사용하려면 키가 필요합니다.\n그래도 저장할까요?')) return;
-      } else if (selectedProvider === 'openrouter' && !hasOpenRouterKey()) {
-        if (!confirm('OpenRouter API Key가 없습니다. OpenRouter를 사용하려면 키가 필요합니다.\n그래도 저장할까요?')) return;
-      } else if (selectedProvider === 'firebase' && !hasFirebaseConfig()) {
-        if (!confirm('Firebase Config가 없습니다. Firebase AI Logic을 사용하려면 Config가 필요합니다.\n그래도 저장할까요?')) return;
-      }
       setOpenRouterModel(orModelInput?.value || DEFAULT_OPENROUTER_MODEL);
       setGeminiModel(modelInput?.value || DEFAULT_GEMINI_MODEL);
       setMascotOutline(box.querySelector('#cigh-clean-outline-input')?.value || 'outline');
@@ -6637,7 +7089,34 @@ RECENT_CONTEXT:
         cursor: pointer;
         animation: cigh-clean-float 2.4s ease-in-out infinite;
       }
-      .cigh-clean-pet-svg {
+      .cigh-clean-pet-sprite.egg-poke .cigh-clean-pet-img-wrap {
+        animation: cigh-clean-egg-wobble 0.42s ease;
+        transform-origin: center bottom;
+      }
+      .cigh-clean-pet-sprite.is-sleep .cigh-clean-pet-img-wrap,
+      .cigh-clean-pet-sprite.is-sleep .cigh-clean-pet-svg {
+        animation: cigh-clean-sleep-breathe 2.2s ease-in-out infinite;
+        transform-origin: center bottom;
+      }
+      .cigh-clean-pet-img-wrap {
+        display: grid;
+        place-items: center;
+        position: relative;
+        width: var(--cigh-pet-img-size, 112px);
+        height: var(--cigh-pet-img-size, 112px);
+        overflow: visible;
+      }
+      .cigh-clean-pet-img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        image-rendering: auto;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-drag: none;
+      }
+            .cigh-clean-pet-svg {
         image-rendering: pixelated;
       }
       .cigh-clean-pet-mood {
@@ -7650,9 +8129,17 @@ RECENT_CONTEXT:
         position: relative;
         z-index: 2;
       }
-      .cigh-clean-mascot-body .cigh-clean-pet-svg {
+      .cigh-clean-mascot-body .cigh-clean-pet-svg,
+      .cigh-clean-mascot-body .cigh-clean-pet-img-wrap {
         image-rendering: pixelated;
         animation: cigh-clean-float 2.4s ease-in-out infinite;
+        filter: drop-shadow(0 2px 3px rgba(0,0,0,.35));
+      }
+      .cigh-clean-mascot-body.is-sleep .cigh-clean-pet-svg,
+      .cigh-clean-mascot-body.is-sleep .cigh-clean-pet-img-wrap,
+      .cigh-clean-mascot-body [data-cigh-pet-mode="sleep"] {
+        animation: cigh-clean-sleep-breathe 2.2s ease-in-out infinite;
+        transform-origin: center bottom;
       }
 
       .cigh-clean-mascot-speech {
@@ -7777,6 +8264,107 @@ RECENT_CONTEXT:
         100% { opacity: 0; }
       }
 
+
+      /* ── 업적(ACHV) 카드 ── */
+      .cigh-clean-achv-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin-top: 2px;
+      }
+      .cigh-clean-achv-card {
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 8px 4px 7px;
+        min-height: 66px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--cigh-bg-2);
+        text-align: center;
+        cursor: default;
+      }
+      .cigh-clean-achv-card.locked,
+      .cigh-clean-achv-card.secret {
+        background: color-mix(in srgb, var(--cigh-bg-2) 70%, transparent);
+        opacity: .72;
+      }
+      .cigh-clean-achv-card.secret { filter: grayscale(.4); }
+      .cigh-clean-achv-rank {
+        font-family: "Courier New", Consolas, monospace;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        color: var(--achv-rank-color, var(--cigh-text-faint));
+      }
+      .cigh-clean-achv-icon { font-size: 18px; line-height: 1.1; }
+      .cigh-clean-achv-card.locked .cigh-clean-achv-icon,
+      .cigh-clean-achv-card.secret .cigh-clean-achv-icon { filter: grayscale(1); opacity: .55; }
+      .cigh-clean-achv-name {
+        font-size: 9px;
+        line-height: 1.25;
+        color: var(--cigh-text);
+        word-break: keep-all;
+      }
+      .cigh-clean-achv-card.locked .cigh-clean-achv-name,
+      .cigh-clean-achv-card.secret .cigh-clean-achv-name { color: var(--cigh-text-faint); }
+      .cigh-clean-achv-prog {
+        font-family: "Courier New", Consolas, monospace;
+        font-size: 8.5px;
+        color: var(--cigh-text-dim);
+      }
+      .cigh-clean-achv-done {
+        font-size: 8.5px;
+        letter-spacing: .08em;
+        color: var(--cigh-good);
+      }
+      .cigh-clean-achv-card.equipped {
+        box-shadow: inset 0 0 0 1px var(--cigh-accent), 0 0 8px var(--cigh-accent-soft);
+      }
+      .cigh-clean-achv-card.unlocked { cursor: pointer; }
+      .cigh-clean-achv-card.unlocked:hover {
+        box-shadow: inset 0 0 0 1px var(--cigh-accent-soft);
+      }
+      .cigh-clean-achv-card.unlocked.equipped:hover {
+        box-shadow: inset 0 0 0 1px var(--cigh-accent), 0 0 10px var(--cigh-accent-soft);
+      }
+      .cigh-clean-achv-shimmer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+        opacity: 0;
+        z-index: 1;
+      }
+      .cigh-clean-achv-card.unlocked .cigh-clean-achv-shimmer { opacity: 1; }
+      .cigh-clean-achv-shimmer::before {
+        content: '';
+        position: absolute;
+        top: -20%;
+        bottom: -20%;
+        left: -65%;
+        width: 45%;
+        background: linear-gradient(105deg, transparent 0%, var(--achv-shimmer-color, rgba(255,255,255,.1)) 50%, transparent 100%);
+        transform: skewX(-16deg);
+        animation: cigh-clean-achv-shimmer 3.8s ease-in-out infinite;
+      }
+      .cigh-clean-achv-card.rank-N   { --achv-shimmer-color: rgba(255,255,255,.10); }
+      .cigh-clean-achv-card.rank-R   { --achv-shimmer-color: rgba(120,180,255,.22); }
+      .cigh-clean-achv-card.rank-SR  { --achv-shimmer-color: rgba(200,140,255,.32); }
+      .cigh-clean-achv-card.rank-SSR { --achv-shimmer-color: rgba(255,200,90,.44); }
+      .cigh-clean-achv-rank,
+      .cigh-clean-achv-icon,
+      .cigh-clean-achv-name,
+      .cigh-clean-achv-prog,
+      .cigh-clean-achv-done { position: relative; z-index: 2; }
+      @keyframes cigh-clean-achv-shimmer {
+        0% { left: -65%; }
+        55%, 100% { left: 115%; }
+      }
+
       @media (max-width: 520px) {
         #${FAB_ID} { left: 12px; bottom: 76px; }
         #${PANEL_ID} {
@@ -7810,6 +8398,8 @@ RECENT_CONTEXT:
     loadRoomData();
     patchRoute();
     watchAutoAnalyze();
+    preloadPetImageFrames();
+    schedulePetVisualTick(1200);
     if (isMascotEnabled()) startMascot();
 
     const room = document.getElementById('cigh-clean-room');
