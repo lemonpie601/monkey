@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.8
+// @version      1.2.9
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -2329,6 +2329,34 @@
       if (ai) return ai;
     }
     return cleanOptionalValue(baseValue);
+  }
+
+  function explicitRemovalText(value) {
+    return normalize(value);
+  }
+
+  function isExplicitRemovalText(value) {
+    const t = explicitRemovalText(value);
+    if (!t) return false;
+    return /(삭제|제거|상실|분실|소모|소진|잃었|잃음|잃어버|없어졌|사라졌|해제|벗음|종료|끝남|떠남|이탈|사망|죽었|파기|버림|버렸|반납|빼앗|압수|해산|결별|손절|관계\s*종료|인연\s*종료|더\s*이상\s*없|보유\s*없|소지\s*없)/.test(t);
+  }
+
+  function removalEvidence(item) {
+    if (!item || typeof item !== 'object') return explicitRemovalText(item);
+    return explicitRemovalText([
+      item.sourceText, item.source, item.evidence,
+      item.detail, item.memo, item.desc, item.value,
+    ].filter(Boolean).join(' '));
+  }
+
+  function isExplicitRemovalItem(item) {
+    return isExplicitRemovalText(removalEvidence(item));
+  }
+
+  function isExplicitClearValue(value) {
+    const t = normalize(value);
+    if (!t) return false;
+    return /^(없음|없다|없어짐|사라짐|해제|벗음|미착용|종료|끝남|상실|분실|삭제|제거)$/i.test(t);
   }
 
   function mergeRelationsPartial(baseRelations, infoRelations, options = {}) {
@@ -5204,6 +5232,7 @@ BROKEN_JSON:
   let mascotSpeechTimer = null;
   let mascotMoodFxTimer = null;
   let lastMascotPoke = 0;
+  let lastMascotSleepFxAt = 0;
   let mascotPokeCount = 0;
   let mascotSayUntil = 0;
   let mascotSayPriority = 0;
@@ -5868,6 +5897,27 @@ BROKEN_JSON:
       blush.className = `cigh-clean-mascot-blush ${side}`;
       body.appendChild(blush);
       setTimeout(() => blush.remove(), 2500);
+    });
+  }
+
+  function triggerMascotSleepFx() {
+    if (!isMascotEnabled()) return;
+    const now = Date.now();
+    if (now - lastMascotSleepFxAt < 2100) return;
+    lastMascotSleepFxAt = now;
+    const el = ensureMascot();
+    if (!el) return;
+    const fx = ensureMascotFxLayer(el);
+    if (!fx) return;
+    addMascotFxDot(fx, {
+      className: 'zzz',
+      text: 'zzz',
+      left: 66,
+      top: 32,
+      dx: 8,
+      dy: -22,
+      duration: 1500,
+      color: '#86c8ff',
     });
   }
 
