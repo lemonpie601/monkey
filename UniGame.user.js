@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         유니챗용 펫 키우기 👾
 // @namespace    unichat-info-game-hud-clean
-// @version      1.2.7
+// @version      1.2.8
 // @description  유니챗 채팅의 INFO/정보 블록과 최신 답변을 읽어 게임식 로그, 관계도, 인벤토리, HUD 코멘트와 PET 탭/펫 대사를 표시합니다. 최신 로그 판별, HUD 한마디 반복 방지, 마스코트 반응/자아 연출, 설정 접기, 토큰 사용량/예상 비용 표시를 조정했습니다.
 // @author       https://gall.dcinside.com/mini/board/view/?id=wrtnw&no=216540
 // @match        https://www.univers.chat/*
@@ -53,6 +53,8 @@
   const ACHV_STORE = 'cigh_clean_achv_v1';
   const ACHV_EQUIPPED_STORE = 'cigh_clean_achv_equipped_v1';
 
+  const DECO_STORE = 'cigh_clean_deco_v1';
+  const DECO_LOGS_PER_TICKET = 50; // 로그 조사 50회 = 꾸밈티켓 1장
   const PET_TOKEN_EXP_INPUT_UNIT = 1000;
   const PET_TOKEN_EXP_MAX = 30;
   const MASCOT_SIZE_STORE = 'cigh_clean_mascot_size_v1';
@@ -147,6 +149,11 @@
   let autoCandidateKey = '';
   let analyzeBusy = false;
   let audioContext = null;
+  let decoEditMode = false;
+  let decoEditTab = 'wallpaper';
+  let decoDraft = null;
+  let decoDragState = null;
+  let decoPropUidSeq = 1;
 
   // ─────────────────────────────────────────────
   // Storage
@@ -203,11 +210,108 @@
     return room;
   }
 
+  function getRoomUserName(room = getRoom()) {
+    return String(room?.userName || '').trim().slice(0, 20);
+  }
+
+  function setRoomUserName(value) {
+    const userName = String(value || '').trim().slice(0, 20);
+    updateRoom(room => {
+      room.userName = userName;
+    });
+    return userName;
+  }
+
+  function commitRoomUserNameInput(input, options = {}) {
+    if (!(input instanceof HTMLInputElement)) return false;
+    const before = getRoomUserName();
+    const after = setRoomUserName(input.value);
+    input.value = after;
+
+    if (!options.silent || before !== after) {
+      setFooter(after ? `USER 저장: ${after}` : 'USER 이름 비움');
+      playBeep('save');
+    }
+
+    if (currentData && after) {
+      currentData = stripRoomUserFromData(currentData, after);
+      updateRoom(room => {
+        if (room.data) room.data = stripRoomUserFromData(room.data, after);
+      });
+    }
+
+    if (activeTab === 'info' && !options.noRender) renderContent();
+    return true;
+  }
+
+
   function loadRoomData() {
     const room = getRoom();
-    currentData = room.data ? sanitizeData(room.data) : null;
+    currentData = room.data ? stripRoomUserFromData(room.data, getRoomUserName(room)) : null;
     loadRoomLogLines(room);
     renderContent();
+    refreshPetSurfaces(getPet(room), { resetVisual: true });
+  }
+
+  function resetInfoState() {
+    updateRoom(room => {
+      room.data = null;
+      room.history = [];
+      room.lastAnalyzedKey = '';
+      room.lastAnalyzedContentKey = '';
+      room.analyzedContentKeys = [];
+    });
+    currentData = null;
+    activeTab = 'info';
+
+    const panel = document.getElementById(PANEL_ID);
+    panel?.querySelectorAll?.('.cigh-clean-tab')?.forEach(tab => tab.classList.toggle('on', tab.dataset.tab === activeTab));
+
+    setFooter('INFO RESET');
+    pushLog(['▷INFO 정보를 초기화했다!', '▷다음 분석은 처음 상태처럼 다시 읽는다!']);
+    showPopup(['▶INFO 초기화 완료!', '▷다시 로그를 읽으면 새로 정리한다!']);
+    renderContent();
+    playBeep('save');
+  }
+
+  function openInfoResetConfirm() {
+    document.getElementById('cigh-clean-info-reset-modal')?.remove();
+
+    const panel = document.getElementById(PANEL_ID);
+    const mountInsidePanel = panel instanceof HTMLElement && panel.classList.contains('open');
+    const host = mountInsidePanel ? panel : document.body;
+
+    const modal = document.createElement('div');
+    modal.id = 'cigh-clean-info-reset-modal';
+    modal.className = `cigh-clean-confirm-backdrop${mountInsidePanel ? ' in-panel' : ''}`;
+    modal.setAttribute('data-cigh-theme', detectThemeMode());
+    modal.setAttribute('data-cigh-font', getUiFontSize());
+    modal.innerHTML = `
+      <div class="cigh-clean-confirm-box rpg" role="dialog" aria-modal="true" aria-label="INFO 초기화 확인">
+        <div class="cigh-clean-confirm-title"><span class="cigh-clean-confirm-title-dot">◆</span><span>INFO RESET</span></div>
+        <div class="cigh-clean-confirm-panel">
+          <div class="cigh-clean-confirm-text">INFO 정보를 초기화할까요?</div>
+          <div class="cigh-clean-confirm-help">관계도 / 인벤토리 / 상태 정보와<br>분석 완료 표시가 비워져요.</div>
+          <div class="cigh-clean-confirm-help sub">다음 로그 분석을 처음처럼 다시 받을 수 있어요.</div>
+        </div>
+        <div class="cigh-clean-confirm-actions">
+          <button type="button" class="cigh-clean-confirm-btn yes" data-info-reset-answer="yes"><span>YES</span></button>
+          <button type="button" class="cigh-clean-confirm-btn no" data-info-reset-answer="no"><span>NO</span></button>
+        </div>
+      </div>
+    `;
+
+    modal.addEventListener('click', event => {
+      const answer = event.target?.closest?.('[data-info-reset-answer]')?.dataset?.infoResetAnswer;
+      if (!answer && event.target !== modal) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const yes = answer === 'yes';
+      modal.remove();
+      if (yes) resetInfoState();
+    });
+
+    host.appendChild(modal);
   }
 
   function defaultRoomLogLines() {
@@ -1085,9 +1189,505 @@
   }
 
 
+
+  // ─────────────────────────────────────────────
+  // 방 꾸미기 (DECO) 시스템
+  // ─────────────────────────────────────────────
+  const DECO_ITEMS = [
+    { id: 'wall_night_star', type: 'wallpaper', name: '밤하늘 별', icon: '✦', rank: 'R' },
+    { id: 'wall_sky', type: 'wallpaper', name: '푸른 하늘', icon: '☁', rank: 'R' },
+    { id: 'wall_plain_ivory', type: 'wallpaper', name: '단색벽지(아이보리)', icon: '□', rank: 'N' },
+    { id: 'wall_plain_pink', type: 'wallpaper', name: '단색벽지(연분홍)', icon: '□', rank: 'N' },
+    { id: 'wall_plain_plain_3', type: 'wallpaper', name: '단색벽지(3)', icon: '□', rank: 'N' },
+    { id: 'wall_muted_sage', type: 'wallpaper', name: '단색벽지(뮤트 세이지)', icon: '□', rank: 'N' },
+    { id: 'wall_muted_bluegrey', type: 'wallpaper', name: '단색벽지(뮤트 블루그레이)', icon: '□', rank: 'N' },
+    { id: 'wall_muted_mauve', type: 'wallpaper', name: '단색벽지(뮤트 모브)', icon: '□', rank: 'N' },
+    { id: 'wall_pastel_mint', type: 'wallpaper', name: '단색벽지(파스텔 민트)', icon: '□', rank: 'N' },
+    { id: 'wall_pastel_peach', type: 'wallpaper', name: '단색벽지(파스텔 피치)', icon: '□', rank: 'N' },
+    { id: 'wall_pastel_lilac', type: 'wallpaper', name: '단색벽지(파스텔 라일락)', icon: '□', rank: 'N' },
+    { id: 'floor_wood', type: 'floor', name: '나무 바닥', icon: '▤', rank: 'N' },
+    { id: 'floor_wood_piskel', type: 'floor', name: '나무바닥 도트', icon: '▥', rank: 'R' },
+    { id: 'floor_ash_wood', type: 'floor', name: '애쉬 원목', icon: '▤', rank: 'N' },
+    { id: 'floor_grass', type: 'floor', name: '잔디밭', icon: '✿', rank: 'R' },
+    { id: 'floor_deep_grass', type: 'floor', name: '숲빛 잔디', icon: '❀', rank: 'SR' },
+    { id: 'floor_star_grass', type: 'floor', name: '별밤 잔디', icon: '✦', rank: 'SR' },
+    { id: 'floor_cloud_soft', type: 'floor', name: '구름 바닥', icon: '☁', rank: 'R' },
+    { id: 'floor_muted_sand', type: 'floor', name: '단색바닥(뮤트 샌드)', icon: '▦', rank: 'N' },
+    { id: 'floor_muted_sage', type: 'floor', name: '단색바닥(뮤트 세이지)', icon: '▦', rank: 'N' },
+    { id: 'floor_muted_bluegrey', type: 'floor', name: '단색바닥(뮤트 블루그레이)', icon: '▦', rank: 'N' },
+    { id: 'floor_pastel_cream', type: 'floor', name: '단색바닥(파스텔 크림)', icon: '▦', rank: 'N' },
+    { id: 'floor_pastel_mint', type: 'floor', name: '단색바닥(파스텔 민트)', icon: '▦', rank: 'N' },
+    { id: 'floor_pastel_lilac', type: 'floor', name: '단색바닥(파스텔 라일락)', icon: '▦', rank: 'N' },
+    { id: 'prop_cushion', type: 'prop', name: '쿠션', icon: '▰', rank: 'N', x: 26, y: 80 },
+    { id: 'prop_plant', type: 'prop', name: '화분', icon: '♧', rank: 'N', x: 78, y: 58 },
+    { id: 'prop_flower_twin', type: 'prop', name: '겹꽃', icon: '✿', rank: 'R', x: 30, y: 74 },
+    { id: 'prop_flower_bell', type: 'prop', name: '종꽃', icon: '❀', rank: 'R', x: 42, y: 73 },
+    { id: 'prop_flower_blossom', type: 'prop', name: '들꽃', icon: '✾', rank: 'R', x: 54, y: 74 },
+    { id: 'prop_flower_white', type: 'prop', name: '흰꽃', icon: '✥', rank: 'R', x: 34, y: 75 },
+    { id: 'prop_flower_blue', type: 'prop', name: '파란꽃', icon: '✥', rank: 'R', x: 46, y: 75 },
+    { id: 'prop_flower_sun', type: 'prop', name: '해바라기', icon: '✺', rank: 'SR', x: 58, y: 74 },
+    { id: 'prop_bush_berry', type: 'prop', name: '열매덤불', icon: '❉', rank: 'SR', x: 68, y: 81 },
+    { id: 'prop_fence_wood', type: 'prop', name: '나무 울타리', icon: '╬', rank: 'SR', x: 50, y: 88 },
+    { id: 'prop_plush_bear', type: 'prop', name: '곰인형', icon: '🧸', rank: 'R', x: 32, y: 80 },
+    { id: 'prop_plush_dino', type: 'prop', name: '공룡인형', icon: '🦕', rank: 'R', x: 50, y: 80 },
+    { id: 'prop_plush_rabbit', type: 'prop', name: '토끼인형', icon: '🐇', rank: 'R', x: 68, y: 80 },
+    { id: 'prop_tree_sakura', type: 'prop', name: '벚꽃나무', icon: '✿', rank: 'SR', x: 22, y: 68 },
+    { id: 'prop_tree_willow', type: 'prop', name: '버드나무', icon: '♣', rank: 'SR', x: 78, y: 68 },
+    { id: 'prop_tree_maple', type: 'prop', name: '단풍나무', icon: '❋', rank: 'SR', x: 22, y: 68 },
+    { id: 'prop_tree_dream', type: 'prop', name: '몽환수', icon: '✦', rank: 'SR', x: 78, y: 68 },
+    { id: 'prop_moon_full', type: 'prop', name: '보름달', icon: '●', rank: 'R', x: 78, y: 24 },
+    { id: 'prop_books', type: 'prop', name: '책더미', icon: '▤', rank: 'N', x: 20, y: 88 },
+    { id: 'prop_lamp', type: 'prop', name: '램프', icon: '◉', rank: 'R', x: 82, y: 35 },
+    { id: 'prop_star', type: 'prop', name: '별장식', icon: '✦', rank: 'R', x: 24, y: 28 },
+    { id: 'prop_table', type: 'prop', name: '미니테이블', icon: '▱', rank: 'R', x: 70, y: 84 },
+    { id: 'prop_rug', type: 'prop', name: '러그', icon: '▭', rank: 'R', x: 50, y: 86 },
+    { id: 'prop_clock', type: 'prop', name: '벽시계', icon: '◷', rank: 'R', x: 50, y: 24 },
+    { id: 'prop_bed', type: 'prop', name: '침대', icon: '🛏', rank: 'SR', x: 50, y: 82 },
+    { id: 'prop_door', type: 'prop', name: '문', icon: '🚪', rank: 'R', x: 84, y: 60 },
+    { id: 'prop_frame_bouquet_iv', type: 'prop', name: '꽃다발 액자(아이보리)', icon: '🖼', rank: 'SR', x: 32, y: 30 },
+    { id: 'prop_frame_single_iv', type: 'prop', name: '꽃 액자(아이보리)', icon: '🖼', rank: 'R', x: 50, y: 30 },
+    { id: 'prop_frame_pot_iv', type: 'prop', name: '화분 액자(아이보리)', icon: '🖼', rank: 'R', x: 66, y: 30 },
+    { id: 'prop_frame_pressed_iv', type: 'prop', name: '압화 액자(아이보리)', icon: '🖼', rank: 'R', x: 80, y: 30 },
+    { id: 'prop_frame_bouquet_mt', type: 'prop', name: '꽃다발 액자(뮤트)', icon: '🖼', rank: 'SR', x: 32, y: 48 },
+    { id: 'prop_frame_single_mt', type: 'prop', name: '꽃 액자(뮤트)', icon: '🖼', rank: 'R', x: 50, y: 48 },
+    { id: 'prop_frame_pot_mt', type: 'prop', name: '화분 액자(뮤트)', icon: '🖼', rank: 'R', x: 66, y: 48 },
+    { id: 'prop_frame_pressed_mt', type: 'prop', name: '압화 액자(뮤트)', icon: '🖼', rank: 'R', x: 80, y: 48 },
+    { id: 'prop_swag', type: 'prop', name: '드라이플라워', icon: '💐', rank: 'SR', x: 50, y: 26 },
+    { id: 'prop_window_large', type: 'prop', name: '큰 창문', icon: '🪟', rank: 'SR', x: 38, y: 30 },
+    { id: 'prop_window_small', type: 'prop', name: '작은 창문', icon: '🪟', rank: 'R', x: 72, y: 30 },
+    { id: 'prop_window_curtain', type: 'prop', name: '커튼 창문', icon: '🪟', rank: 'SR', x: 50, y: 30 },
+  ];
+
+  const DECO_TYPE_LABEL = { wallpaper: '벽지', floor: '바닥', prop: '소품' };
+  const DECO_RANK_META = {
+    N:  { label: 'N',  color: '#8a8f98' },
+    R:  { label: 'R',  color: '#5a9be0' },
+    SR: { label: 'SR', color: '#c08ae0' },
+  };
+  const DECO_MULTI_OWN_MAX = { prop_bush_berry: 2, prop_fence_wood: 2 };
+
+  function getDecoOwnedMax(itemOrId) {
+    const id = typeof itemOrId === 'string' ? itemOrId : String(itemOrId?.id || '').trim();
+    return Math.max(1, Math.floor(Number(DECO_MULTI_OWN_MAX[id] || 1)));
+  }
+
+  function getDecoOwnedCount(state, itemOrId) {
+    const id = typeof itemOrId === 'string' ? itemOrId : String(itemOrId?.id || '').trim();
+    const raw = Number(state?.owned?.[id] || 0);
+    return raw > 0 ? Math.max(1, Math.floor(raw)) : 0;
+  }
+
+  function nextDecoPropUid() {
+    return `dp_${Date.now().toString(36)}_${(decoPropUidSeq++).toString(36)}`;
+  }
+
+  function defaultDecoState() {
+    return {
+      tickets: 0,
+      logCredit: 0,
+      owned: {},
+      equipped: { wallpaper: '', floor: '', props: [] },
+    };
+  }
+
+  function getDecoItem(id) {
+    const key = String(id || '').trim();
+    return DECO_ITEMS.find(item => item.id === key) || null;
+  }
+
+  function normalizeDecoState(source) {
+    const equipped = (source && typeof source.equipped === 'object') ? source.equipped : {};
+    const owned = {};
+
+    for (const item of DECO_ITEMS) {
+      const rawCount = Math.floor(Number(source?.owned?.[item.id] || 0));
+      if (rawCount > 0) owned[item.id] = clamp(rawCount, 1, getDecoOwnedMax(item));
+    }
+
+    const seenUids = new Set();
+    const propCounts = Object.create(null);
+    const props = Array.isArray(equipped.props)
+      ? equipped.props
+          .map((p, index) => {
+            const id = String(p?.id || '').trim();
+            let uid = String(p?.uid || `${id || 'prop'}_${index}` || '').trim();
+            if (!uid || seenUids.has(uid)) uid = nextDecoPropUid();
+            seenUids.add(uid);
+            return {
+              uid,
+              id,
+              x: clamp(Number(p?.x ?? 50), 4, 96),
+              y: clamp(Number(p?.y ?? 78), 4, 96),
+            };
+          })
+          .filter(p => getDecoItem(p.id)?.type === 'prop')
+          .filter(p => {
+            const item = getDecoItem(p.id);
+            const max = getDecoOwnedMax(item);
+            const count = Number(propCounts[p.id] || 0);
+            if (count >= max) return false;
+            propCounts[p.id] = count + 1;
+            return true;
+          })
+      : [];
+
+    return {
+      tickets: Math.max(0, Math.floor(Number(source?.tickets || 0))),
+      logCredit: Math.max(0, Math.floor(Number(source?.logCredit || 0))),
+      owned,
+      equipped: {
+        wallpaper: getDecoItem(equipped.wallpaper)?.type === 'wallpaper' ? String(equipped.wallpaper) : '',
+        floor: getDecoItem(equipped.floor)?.type === 'floor' ? String(equipped.floor) : '',
+        props,
+      },
+    };
+  }
+
+  function getDecoState() {
+    try {
+      return normalizeDecoState(JSON.parse(localStorage.getItem(DECO_STORE) || '{}'));
+    } catch {
+      return defaultDecoState();
+    }
+  }
+
+  function setDecoState(state) {
+    localStorage.setItem(DECO_STORE, JSON.stringify(normalizeDecoState(state)));
+  }
+
+  function cloneDecoState(state = getDecoState()) {
+    return normalizeDecoState(JSON.parse(JSON.stringify(state || defaultDecoState())));
+  }
+
+  function getDecoDraft() {
+    if (!decoDraft) decoDraft = cloneDecoState();
+    return decoDraft;
+  }
+
+  function awardDecoLogCredit(logCount = DECO_LOGS_PER_TICKET) {
+    const state = getDecoState();
+    state.logCredit += Math.max(0, Math.floor(Number(logCount || 0)));
+    const gain = Math.floor(state.logCredit / DECO_LOGS_PER_TICKET);
+    if (gain > 0) {
+      state.tickets += gain;
+      state.logCredit = state.logCredit % DECO_LOGS_PER_TICKET;
+      setDecoState(state);
+      return gain;
+    }
+    setDecoState(state);
+    return 0;
+  }
+
+  function rollDecoGacha() {
+    const state = getDecoState();
+    if (state.tickets <= 0) return { ok: false, reason: 'ticket' };
+
+    const pool = DECO_ITEMS.filter(item => getDecoOwnedCount(state, item) < getDecoOwnedMax(item));
+    if (!pool.length) return { ok: false, reason: 'complete' };
+
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    state.tickets -= 1;
+    state.owned[item.id] = getDecoOwnedCount(state, item) + 1;
+    setDecoState(state);
+
+    if (decoEditMode) decoDraft = cloneDecoState(state);
+    return { ok: true, item, count: state.owned[item.id] };
+  }
+
+  function playDecoGachaAnimation(item, count) {
+    document.getElementById('cigh-clean-gacha-modal')?.remove();
+    const meta = DECO_RANK_META[item.rank] || DECO_RANK_META.N;
+    const isNew = Number(count || 0) <= 1;
+    const fancy = item.rank === 'SR';
+
+    const modal = document.createElement('div');
+    modal.id = 'cigh-clean-gacha-modal';
+    modal.className = 'cigh-clean-gacha-backdrop';
+    modal.setAttribute('data-cigh-theme', detectThemeMode());
+    modal.innerHTML = `
+      <div class="cigh-clean-gacha-stage rank-${esc(item.rank)}" style="--gacha-color:${esc(meta.color)};">
+        <div class="cigh-clean-gacha-rays" aria-hidden="true"></div>
+        <div class="cigh-clean-gacha-capsule" aria-hidden="true">
+          <span class="cigh-clean-gacha-cap-top"></span>
+          <span class="cigh-clean-gacha-cap-bot"></span>
+          <span class="cigh-clean-gacha-cap-dot"></span>
+        </div>
+        <div class="cigh-clean-gacha-reveal">
+          <span class="cigh-clean-gacha-rank">${esc(meta.label)} RANK</span>
+          <span class="cigh-clean-gacha-icon">${esc(item.icon)}</span>
+          <span class="cigh-clean-gacha-name">${esc(item.name)}</span>
+          <span class="cigh-clean-gacha-tag">${isNew ? 'NEW!' : `보유 x${count}`}</span>
+        </div>
+        <div class="cigh-clean-gacha-hint">화면을 누르면 닫혀요</div>
+      </div>
+    `;
+
+    const stage = modal.querySelector('.cigh-clean-gacha-stage');
+    const panel = document.getElementById(PANEL_ID);
+    const mountInsidePanel = panel instanceof HTMLElement && panel.classList.contains('open');
+    const host = mountInsidePanel ? panel : document.body;
+    if (mountInsidePanel) modal.classList.add('in-panel');
+
+    let revealed = false;
+    let closed = false;
+
+    const reveal = () => {
+      if (revealed) return;
+      revealed = true;
+      stage.classList.add('revealed');
+      spawnPetParticles(stage, fancy ? 'evolve' : 'level');
+      playBeep(fancy ? 'evolve' : 'levelup');
+    };
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      modal.classList.add('closing');
+      setTimeout(() => {
+        modal.remove();
+        renderContent();
+      }, 190);
+    };
+
+    modal.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!revealed) reveal();
+      else close();
+    });
+
+    host.appendChild(modal);
+
+    requestAnimationFrame(() => stage.classList.add('shake'));
+    setTimeout(reveal, 760);
+    setTimeout(close, 4600);
+  }
+
+  function decoClass(id) {
+    return String(id || '').replace(/_/g, '-').replace(/[^a-z0-9-]/gi, '-');
+  }
+
+  function renderDecoBackdropHtml(state) {
+    const safe = normalizeDecoState(state);
+    const wall = getDecoItem(safe.equipped.wallpaper);
+    const floor = getDecoItem(safe.equipped.floor);
+    const wallClass = wall ? ` cigh-clean-deco-${esc(decoClass(wall.id))}` : '';
+    const floorClass = floor ? ` cigh-clean-deco-${esc(decoClass(floor.id))}` : '';
+    return `
+      <div class="cigh-clean-room-wall${wallClass}"></div>
+      <div class="cigh-clean-room-floor${floorClass}"></div>
+      <div class="cigh-clean-room-props">${renderDecoPropsHtml(safe, decoEditMode)}</div>`;
+  }
+
+  function renderDecoPropsHtml(state, edit = false) {
+    const props = normalizeDecoState(state).equipped.props || [];
+    return props.map((prop, index) => {
+      const item = getDecoItem(prop.id);
+      if (!item) return '';
+      const uid = String(prop.uid || `${item.id}_${index}`);
+      return `
+        <button type="button" class="cigh-clean-room-prop cigh-clean-deco-${esc(decoClass(item.id))}${edit ? ' editable' : ''}"
+          data-deco-prop-id="${esc(item.id)}"
+          data-deco-prop-uid="${esc(uid)}"
+          title="${esc(item.name)}${edit ? ' · 드래그로 이동' : ''}"
+          style="left:${clamp(prop.x, 4, 96)}%;top:${clamp(prop.y, 4, 96)}%;z-index:${2 + index};">
+          <span>${esc(item.icon)}</span>
+        </button>`;
+    }).join('');
+  }
+
+  function renderDecoEditorHtml() {
+    const state = getDecoDraft();
+    const tab = ['wallpaper', 'floor', 'prop'].includes(decoEditTab) ? decoEditTab : 'wallpaper';
+    const owned = DECO_ITEMS.filter(item => item.type === tab && getDecoOwnedCount(state, item) > 0);
+    const propCount = Array.isArray(state.equipped.props) ? state.equipped.props.length : 0;
+    const ticketLow = state.tickets <= 0;
+    const tabIcon = { wallpaper: '🖼', floor: '▦', prop: '✦' };
+
+    const tabs = ['wallpaper', 'floor', 'prop'].map(type => {
+      const itemsInTab = DECO_ITEMS.filter(it => it.type === type);
+      const ownedInTab = itemsInTab.filter(it => getDecoOwnedCount(state, it) > 0).length;
+      const totalInTab = itemsInTab.length;
+      return `
+        <button type="button" class="cigh-clean-deco-tab${tab === type ? ' on' : ''}" data-deco-tab="${esc(type)}" title="${esc(DECO_TYPE_LABEL[type])} 수집률 ${ownedInTab}/${totalInTab}">
+          <span class="cigh-clean-deco-tab-icon">${esc(tabIcon[type] || '')}</span>${esc(DECO_TYPE_LABEL[type])}
+          <span class="cigh-clean-deco-tab-count">${ownedInTab}/${totalInTab}</span>
+        </button>`;
+    }).join('');
+
+    const itemButtons = owned.length
+      ? owned.map(item => {
+        const ownedCount = getDecoOwnedCount(state, item);
+        const placedCount = item.type === 'prop' ? state.equipped.props.filter(p => p.id === item.id).length : 0;
+        const selected = tab === 'wallpaper'
+          ? state.equipped.wallpaper === item.id
+          : tab === 'floor'
+            ? state.equipped.floor === item.id
+            : placedCount > 0;
+        const rankColor = (DECO_RANK_META[item.rank] || DECO_RANK_META.N).color;
+        const qtyBadge = ownedCount > 1 ? `<span class="cigh-clean-deco-item-qty">x${ownedCount}</span>` : '';
+        return `
+          <button type="button" class="cigh-clean-deco-item rank-${esc(item.rank)}${selected ? ' on' : ''} cigh-clean-deco-${esc(decoClass(item.id))}"
+            data-deco-item="${esc(item.id)}"
+            style="--deco-rank-color:${esc(rankColor)};"
+            title="${esc(item.name)} · ${esc(item.rank)}${item.type === 'prop' ? ` · 배치 ${placedCount}/${ownedCount}` : ''}">
+            <span class="cigh-clean-deco-rank-dot" aria-hidden="true"></span>
+            ${qtyBadge}
+            <span class="cigh-clean-deco-icon">${esc(item.icon)}</span>
+            <span class="cigh-clean-deco-name">${esc(item.name)}</span>
+            ${selected ? '<span class="cigh-clean-deco-on-mark" aria-hidden="true">✓</span>' : ''}
+          </button>`;
+      }).join('')
+      : `<div class="cigh-clean-deco-empty">보유한 ${esc(DECO_TYPE_LABEL[tab])}가 없어요 · 뽑기로 모아보자</div>`;
+
+    const creditNow = clamp(Math.floor(Number(state.logCredit || 0)), 0, DECO_LOGS_PER_TICKET - 1);
+    const creditRemain = Math.max(0, DECO_LOGS_PER_TICKET - creditNow);
+    const ticketProgressTitle = creditNow > 0
+      ? `다음 🎟️까지 로그 ${creditRemain}개 남음`
+      : `다음 🎟️까지 로그 ${DECO_LOGS_PER_TICKET}개 남음`;
+
+    const clearLabel = tab === 'prop' ? '소품 비우기' : `${DECO_TYPE_LABEL[tab]} 비우기`;
+    return `
+      <div class="cigh-clean-deco-editor">
+        <div class="cigh-clean-deco-head">
+          <span class="cigh-clean-deco-ticket" title="${esc(ticketProgressTitle)}"><b>🎟️</b>${state.tickets}<i>장</i><em>${creditNow}/${DECO_LOGS_PER_TICKET}</em></span>
+          ${tab === 'prop' ? `<span class="cigh-clean-deco-count">소품 ${propCount}</span>` : ''}
+          <button type="button" class="cigh-clean-deco-mini-btn ghost" data-deco-action="clear-current">${esc(clearLabel)}</button>
+          <button type="button" class="cigh-clean-deco-mini-btn gacha${ticketLow ? ' off' : ''}" data-deco-action="gacha">🎲 뽑기</button>
+        </div>
+        <div class="cigh-clean-deco-tabs">${tabs}</div>
+        <div class="cigh-clean-deco-shelf">${itemButtons}</div>
+        <div class="cigh-clean-deco-help">소품 배치 제한 없음 · 수풀/울타리만 x2 · 최근 만진 소품이 위로</div>
+      </div>`;
+  }
+
+  function toggleDecoItem(id) {
+    const item = getDecoItem(id);
+    if (!item) return false;
+    const state = getDecoDraft();
+    if (getDecoOwnedCount(state, item) <= 0) return false;
+
+    if (item.type === 'wallpaper') {
+      state.equipped.wallpaper = state.equipped.wallpaper === item.id ? '' : item.id;
+    } else if (item.type === 'floor') {
+      state.equipped.floor = state.equipped.floor === item.id ? '' : item.id;
+    } else if (item.type === 'prop') {
+      const ownedCount = getDecoOwnedCount(state, item);
+      const placedCount = state.equipped.props.filter(p => p.id === item.id).length;
+      if (ownedCount <= 1) {
+        const index = state.equipped.props.findIndex(p => p.id === item.id);
+        if (index >= 0) state.equipped.props.splice(index, 1);
+        else {
+          const placed = state.equipped.props.length;
+          state.equipped.props.push({
+            uid: nextDecoPropUid(),
+            id: item.id,
+            x: clamp(Number(item.x ?? (22 + placed * 14)), 8, 92),
+            y: clamp(Number(item.y ?? 78), 8, 92),
+          });
+        }
+      } else {
+        if (placedCount < ownedCount) {
+          const placed = state.equipped.props.length;
+          state.equipped.props.push({
+            uid: nextDecoPropUid(),
+            id: item.id,
+            x: clamp(Number(item.x ?? (22 + placed * 14)), 8, 92),
+            y: clamp(Number(item.y ?? 78), 8, 92),
+          });
+        } else {
+          state.equipped.props = state.equipped.props.filter(p => p.id !== item.id);
+        }
+      }
+    }
+
+    decoDraft = normalizeDecoState(state);
+    return true;
+  }
+
+  function clearCurrentDecoTab() {
+    const state = getDecoDraft();
+    if (decoEditTab === 'wallpaper') state.equipped.wallpaper = '';
+    else if (decoEditTab === 'floor') state.equipped.floor = '';
+    else state.equipped.props = [];
+    decoDraft = normalizeDecoState(state);
+  }
+
+  function bringDecoPropToFront(uid, room = null) {
+    const draft = getDecoDraft();
+    const index = draft.equipped.props.findIndex(p => p.uid === uid);
+    if (index < 0) return false;
+
+    const [prop] = draft.equipped.props.splice(index, 1);
+    draft.equipped.props.push(prop);
+    decoDraft = normalizeDecoState(draft);
+
+    if (room) {
+      const ordered = decoDraft.equipped.props || [];
+      ordered.forEach((p, orderIndex) => {
+        const el = room.querySelector(`[data-deco-prop-uid="${CSS.escape(p.uid)}"]`);
+        if (el) el.style.zIndex = String(2 + orderIndex);
+      });
+    }
+    return true;
+  }
+
+  function startDecoPropDrag(event, propEl) {
+    if (!decoEditMode || !propEl) return false;
+    const room = propEl.closest('.cigh-clean-pet-wrap');
+    if (!room) return false;
+
+    const uid = propEl.dataset.decoPropUid || '';
+    const draft = getDecoDraft();
+    if (!draft.equipped.props.find(p => p.uid === uid)) return false;
+
+    bringDecoPropToFront(uid, room);
+
+    decoDragState = { uid, room, pointerId: event.pointerId };
+    propEl.classList.add('dragging');
+    try { propEl.setPointerCapture(event.pointerId); } catch {}
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function moveDecoPropDrag(event) {
+    if (!decoDragState || decoDragState.pointerId !== event.pointerId) return;
+    const rect = decoDragState.room.getBoundingClientRect();
+    const x = clamp(((event.clientX - rect.left) / Math.max(1, rect.width)) * 100, 4, 96);
+    const y = clamp(((event.clientY - rect.top) / Math.max(1, rect.height)) * 100, 4, 96);
+    const draft = getDecoDraft();
+    const prop = draft.equipped.props.find(p => p.uid === decoDragState.uid);
+    if (prop) {
+      prop.x = Math.round(x);
+      prop.y = Math.round(y);
+    }
+
+    const el = decoDragState.room.querySelector(`[data-deco-prop-uid="${CSS.escape(decoDragState.uid)}"]`);
+    if (el) {
+      el.style.left = `${Math.round(x)}%`;
+      el.style.top = `${Math.round(y)}%`;
+    }
+
+    event.preventDefault();
+  }
+
+  function endDecoPropDrag(event) {
+    if (!decoDragState || decoDragState.pointerId !== event.pointerId) return;
+    const el = decoDragState.room.querySelector(`[data-deco-prop-uid="${CSS.escape(decoDragState.uid)}"]`);
+    if (el) {
+      el.classList.remove('dragging');
+      try { el.releasePointerCapture(event.pointerId); } catch {}
+    }
+    decoDragState = null;
+    event.preventDefault();
+  }
+
   // ─────────────────────────────────────────────
   // 업적 (Achievement) 시스템
   // ─────────────────────────────────────────────
+  const PET_PANEL_SPRITE_SIZE = 5;
+
   const ACHV_RANK_EXP_BONUS = { N: 0.002, R: 0.005, SR: 0.01, SSR: 0.015 };
 
   const ACHV_DEFS = [
@@ -1119,11 +1719,33 @@
     { id: 'dawn_to_dusk', name: '하루의 시작과 끝',icon: '🌗', rank: 'R',   counter: 'dawnNightSameDay',target: 1,     hidden: false, desc: '같은 날 새벽+심야 분석' },
     { id: 'bond_collect', name: '인연 수집가',     icon: '🌈', rank: 'R',   counter: 'relations5',      target: 1,     hidden: false, desc: '동시에 관계 5명 이상' },
     { id: 'beloved',      name: '만인의 연인',     icon: '🌟', rank: 'SR',  counter: 'relations10',     target: 1,     hidden: false, desc: '동시에 관계 10명 이상' },
-    { id: 'home_cook',    name: '집밥의 힘',       icon: '🍙', rank: 'SR',  counter: 'feedTotal',       target: 500,   hidden: false, desc: '누적 분석(먹이기) 500회' },
+    { id: 'home_cook',    name: '집밥의 힘',       icon: '🍙', rank: 'SR',  counter: 'feedTotal',      target: 500, hidden: false, desc: '누적 분석(먹이기) 500회' },
+    // ── 추가분 ──
+    { id: 'single_bond', name: '외길 인생',     icon: '💟', rank: 'SR',  counter: 'singleBond',  target: 1,       hidden: false, desc: '한 인물 펫 애정도 60 이상' },
+    { id: 'pet_named',   name: '이름을 불러줘', icon: '🏷️', rank: 'N',   counter: 'petNamed',    target: 1,       hidden: false, desc: '펫 이름 지정' },
+    { id: 'token_glutton', name: '토큰 대식가', icon: '🪙', rank: 'SR',  counter: 'tokenK',      target: 1000000, hidden: false, desc: '누적 입력 토큰 100만' },
+    { id: 'day_streak',  name: '꾸준한 집사',   icon: '📅', rank: 'SR',  counter: 'dayStreak',   target: 7,       hidden: false, desc: '7일 연속 분석' },
+    { id: 'binge',       name: '몰아보기 장인', icon: '⚡', rank: 'R',   counter: 'comboStreak', target: 10,      hidden: false, desc: '60초 내 연속 10회 분석' },
+    { id: 'packed',      name: '한 짐 챙긴 모험가', icon: '🎒', rank: 'R', counter: 'invRich',  target: 1,       hidden: false, desc: '한 장면 인벤토리 5개 이상' },
+    { id: 'my_room',     name: '마이룸 입주',   icon: '🏠', rank: 'N',   counter: 'decoEdit',    target: 1,       hidden: false, desc: '방 꾸미기 EDIT 진입' },
+    // ── 히든 ──
+    { id: 'farewell',    name: '이별의 순간',   icon: '🥀', rank: 'R',   counter: 'bigNegDelta', target: 1,       hidden: true,  desc: 'delta -8 이하 1회' },
+    { id: 'soulmate',    name: '천생연분',      icon: '💍', rank: 'SSR', counter: 'soulmate',    target: 1,       hidden: true,  desc: '유대 최고 + 완전체 + 미터 100' },
+    { id: 'fickle',      name: '변심',          icon: '🔀', rank: 'R',   counter: 'favChange',   target: 1,       hidden: true,  desc: '최애가 바뀜' },
+    { id: 'midnight',    name: '자정의 방문자', icon: '🕛', rank: 'R',   counter: 'midnight',    target: 1,       hidden: true,  desc: '0시대 분석' },
+    { id: 'rename',      name: '개명',          icon: '✏️', rank: 'N',   counter: 'renameCount', target: 2,       hidden: true,  desc: '펫 이름 2번 변경' },
   ];
 
   function defaultAchvState() {
-    return { counters: {}, unlocked: {}, finalFormsSeen: [], stormStamps: [], dayPhase: null };
+    return {
+      counters: {},
+      unlocked: {},
+      finalFormsSeen: [],
+      stormStamps: [],
+      dayPhase: null,
+      visitStreak: null,   // { date, streak }
+      comboRun: 0,         // 60초 내 연속 분석 진행 수
+    };
   }
 
   function readAchvState() {
@@ -1136,6 +1758,8 @@
         finalFormsSeen: Array.isArray(raw?.finalFormsSeen) ? raw.finalFormsSeen.slice(0, 8) : base.finalFormsSeen,
         stormStamps: Array.isArray(raw?.stormStamps) ? raw.stormStamps.slice(-STORM_NEED) : [],
         dayPhase: (raw?.dayPhase && typeof raw.dayPhase === 'object') ? raw.dayPhase : base.dayPhase,
+        visitStreak: (raw?.visitStreak && typeof raw.visitStreak === 'object') ? raw.visitStreak : base.visitStreak,
+        comboRun: Number(raw?.comboRun || 0),
       };
     } catch { return defaultAchvState(); }
   }
@@ -1188,6 +1812,35 @@
     writeAchvState(state);
   }
 
+  function registerVisitStreak() {
+    const now = new Date();
+    const today = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    const yd = new Date(now.getTime() - 86400000);
+    const yesterday = `${yd.getFullYear()}-${yd.getMonth() + 1}-${yd.getDate()}`;
+
+    const state = readAchvState();
+    const prev = (state.visitStreak && typeof state.visitStreak === 'object') ? state.visitStreak : null;
+    if (prev?.date === today) return;
+
+    const streak = prev?.date === yesterday ? Number(prev.streak || 0) + 1 : 1;
+    state.visitStreak = { date: today, streak };
+    state.counters.dayStreak = Math.max(Number(state.counters.dayStreak || 0), streak);
+
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
+  // 직전 분석과 60초 이내면 연속 누적, 아니면 1로 리셋. 최고 연속을 카운터로.
+  function registerComboStreak(prevFedAt) {
+    const gap = prevFedAt ? Date.now() - Number(prevFedAt) : Infinity;
+    const state = readAchvState();
+    const run = gap < 60 * 1000 ? Number(state.comboRun || 0) + 1 : 1;
+    state.comboRun = run;
+    state.counters.comboStreak = Math.max(Number(state.counters.comboStreak || 0), run);
+    evaluateAchvUnlocks(state);
+    writeAchvState(state);
+  }
+
   function bumpAchvFinalForm(finalType) {
     const key = String(finalType || '').trim();
     if (!key) return;
@@ -1205,6 +1858,10 @@
     if (!Number(state.counters.moodAllFull)
         && ['moodHeart','moodBloom','moodPeace','moodTear','moodBlade'].every(k => Number(state.counters[k] || 0) >= 100)) {
       state.counters.moodAllFull = 1;
+    }
+    if (!Number(state.counters.soulmate)
+        && ['petBondMax','petFinal','meterMax'].every(k => Number(state.counters[k] || 0) >= 1)) {
+      state.counters.soulmate = 1;
     }
     for (const def of ACHV_DEFS) {
       if (state.unlocked[def.id]) continue;
@@ -1566,6 +2223,37 @@
     };
   }
 
+
+  function isRoomUserRelationName(name, userName = getRoomUserName()) {
+    const userKey = relationKey(userName);
+    const key = relationKey(name);
+    if (!userKey || !key) return false;
+    return key === userKey
+      || key.startsWith(`${userKey} `)
+      || key.endsWith(` ${userKey}`)
+      || key.includes(` ${userKey} `);
+  }
+
+  function stripRoomUserFromData(data, userName = getRoomUserName()) {
+    const d = sanitizeData(data || makeEmptyData());
+    const user = String(userName || '').trim().slice(0, 20);
+    if (!user) return d;
+
+    const keepRelation = rel => !isRoomUserRelationName(normalizeRelation(rel).name, user);
+    const keepMeter = meter => !isRoomUserRelationName(normalizeMeter(meter, 50).name, user);
+    const keepDelta = delta => !isRoomUserRelationName(delta?.name || '', user);
+
+    d.character = user;
+    d.inferredPlayerName = user;
+    d.possiblePlayerNames = [];
+    d.relations = (d.relations || []).filter(keepRelation);
+    d.affection = (d.affection || []).filter(keepMeter);
+    d.relationshipMeters = d.affection;
+    d.relationshipDeltas = (d.relationshipDeltas || []).filter(keepDelta);
+
+    return d;
+  }
+
   function sanitizeData(data) {
     const d = { ...makeEmptyData(), ...(data || {}) };
 
@@ -1629,6 +2317,156 @@
     };
 
     return d;
+  }
+
+  function mergeStatusField(baseValue, infoValue, aiValue, useAiStatus = false) {
+    const info = cleanOptionalValue(infoValue);
+    if (isExplicitClearValue(infoValue)) return '';
+    if (info) return info;
+    if (useAiStatus) {
+      const ai = cleanOptionalValue(aiValue);
+      if (isExplicitClearValue(aiValue)) return '';
+      if (ai) return ai;
+    }
+    return cleanOptionalValue(baseValue);
+  }
+
+  function mergeRelationsPartial(baseRelations, infoRelations, options = {}) {
+    const removeForcedUserRelation = options.removeForcedUserRelation || (() => true);
+    const map = new Map();
+
+    for (const raw of baseRelations || []) {
+      const rel = normalizeRelation(raw);
+      const key = relationKey(rel.name);
+      if (!isValidRelationName(key) || !removeForcedUserRelation(rel)) continue;
+      map.set(key, rel);
+    }
+
+    for (const raw of infoRelations || []) {
+      const rel = normalizeRelation(raw);
+      const key = relationKey(rel.name);
+      if (!isValidRelationName(key) || !removeForcedUserRelation(rel)) continue;
+
+      if (isExplicitRemovalItem(rel) || isExplicitRemovalItem(raw)) {
+        map.delete(key);
+        continue;
+      }
+
+      const prev = map.get(key);
+      map.set(key, {
+        ...prev,
+        ...rel,
+        name: rel.name || prev?.name || key,
+        moodEmoji: rel.moodEmoji || prev?.moodEmoji || '',
+        type: rel.type || prev?.type || '관계',
+        detail: rel.detail || prev?.detail || '',
+        value: rel.value || prev?.value || '',
+        sourceText: rel.sourceText || prev?.sourceText || '',
+      });
+    }
+
+    return Array.from(map.values());
+  }
+
+  function mergeInventoryPartial(baseItems, infoItems) {
+    const map = new Map();
+
+    for (const raw of baseItems || []) {
+      const item = normalizeInventoryItem(raw);
+      const key = relationKey(item.name);
+      if (!key) continue;
+      map.set(key, item);
+    }
+
+    for (const raw of infoItems || []) {
+      const item = normalizeInventoryItem(raw);
+      const key = relationKey(item.name);
+      if (!key) continue;
+
+      if (isExplicitRemovalItem(item) || isExplicitRemovalItem(raw)) {
+        map.delete(key);
+        continue;
+      }
+
+      const prev = map.get(key);
+      map.set(key, {
+        ...prev,
+        ...item,
+        name: item.name || prev?.name || key,
+        icon: normalizeIcon(item.icon || prev?.icon, item.name || prev?.name || key),
+        detail: item.detail || prev?.detail || '',
+        sourceText: item.sourceText || prev?.sourceText || '',
+      });
+    }
+
+    return Array.from(map.values()).slice(0, 24);
+  }
+
+  function mergeStatsPartial(baseStats, infoStats) {
+    const map = new Map();
+
+    for (const raw of baseStats || []) {
+      const stat = {
+        name: cleanOptionalValue(raw?.name || raw?.label || ''),
+        value: cleanOptionalValue(raw?.value || ''),
+      };
+      const key = relationKey(stat.name || stat.value);
+      if (!key) continue;
+      map.set(key, stat);
+    }
+
+    for (const raw of infoStats || []) {
+      const stat = {
+        name: cleanOptionalValue(raw?.name || raw?.label || ''),
+        value: cleanOptionalValue(raw?.value || ''),
+      };
+      const key = relationKey(stat.name || stat.value);
+      if (!key) continue;
+
+      if (isExplicitRemovalItem(raw) || isExplicitClearValue(stat.value)) {
+        map.delete(key);
+        continue;
+      }
+
+      const prev = map.get(key);
+      map.set(key, {
+        name: stat.name || prev?.name || '',
+        value: stat.value || prev?.value || '',
+      });
+    }
+
+    return Array.from(map.values());
+  }
+
+  function questKey(value) {
+    return normalize(value).replace(/[\s\p{P}\p{S}]+/gu, '').slice(0, 36);
+  }
+
+  function mergeQuestsPartial(baseQuests, infoQuests) {
+    const map = new Map();
+
+    for (const raw of baseQuests || []) {
+      const q = shortText(raw, 80);
+      const key = questKey(q);
+      if (key) map.set(key, q);
+    }
+
+    for (const raw of infoQuests || []) {
+      const q = shortText(raw, 80);
+      const key = questKey(q);
+      if (!key) continue;
+
+      if (isExplicitRemovalText(q)) {
+        for (const prevKey of Array.from(map.keys())) {
+          if (key.includes(prevKey) || prevKey.includes(key)) map.delete(prevKey);
+        }
+        continue;
+      }
+
+      map.set(key, q);
+    }
+
+    return Array.from(map.values());
   }
 
   function mergeMeters(baseMeters, deltas, currentRelations) {
@@ -1704,54 +2542,69 @@
     const base = sanitizeData(baseRaw || makeEmptyData());
     const info = sanitizeData(infoRaw || makeEmptyData());
     const ai = sanitizeData(aiRaw || makeEmptyData());
+    const forcedUserName = getRoomUserName();
+    const forcedUserKey = relationKey(forcedUserName);
+
+    const removeForcedUserRelation = item => !forcedUserKey || !isRoomUserRelationName(normalizeRelation(item).name, forcedUserName);
+    const removeForcedUserMeter = item => !forcedUserKey || !isRoomUserRelationName(normalizeMeter(item, 50).name, forcedUserName);
+    const removeForcedUserDelta = item => !forcedUserKey || !isRoomUserRelationName(item?.name || '', forcedUserName);
 
     const infoHasAny =
       !!(info.time || info.location || info.character || info.situation || info.goal || info.clothing ||
          info._seen.relations || info._seen.inventory || info.stats.length || info.quests.length);
 
-    const currentRelations = info._seen.relations ? info.relations : base.relations;
-    const mergedMeters = mergeMeters(base.affection, ai.relationshipDeltas, currentRelations);
+    const currentRelations = mergeRelationsPartial(base.relations, info._seen.relations ? info.relations : [], { removeForcedUserRelation });
+    const filteredDeltas = (ai.relationshipDeltas || []).filter(removeForcedUserDelta);
+    const baseMeters = (base.affection || base.relationshipMeters || []).filter(removeForcedUserMeter);
+    const mergedMeters = mergeMeters(baseMeters, filteredDeltas, currentRelations).filter(removeForcedUserMeter);
 
     const inferredPlayerName =
+      forcedUserName ||
       ai.inferredPlayerName ||
       info.character ||
       base.inferredPlayerName ||
       '';
 
-    const possiblePlayerNames = [
-      ...new Set([
-        ...(info.possiblePlayerNames || []),
-        ...(base.possiblePlayerNames || []),
-      ])
-    ].filter(isPossiblePlayerName).slice(0, 8);
+    const possiblePlayerNames = forcedUserName
+      ? []
+      : [
+        ...new Set([
+          ...(info.possiblePlayerNames || []),
+          ...(base.possiblePlayerNames || []),
+        ])
+      ].filter(isPossiblePlayerName).slice(0, 8);
 
     const useAiStatus = !infoHasAny && ai._inferredStatus;
 
     const merged = sanitizeData({
       ...base,
-      time: info.time || (useAiStatus ? ai.time : base.time) || '',
-      location: info.location || (useAiStatus ? ai.location : base.location) || '',
-      character: info.character || (useAiStatus ? ai.character : '') || inferredPlayerName || base.character || '',
+      time: mergeStatusField(base.time, info.time, ai.time, useAiStatus),
+      location: mergeStatusField(base.location, info.location, ai.location, useAiStatus),
+      character: forcedUserName || mergeStatusField(base.character, info.character, ai.character, useAiStatus) || inferredPlayerName || '',
       inferredPlayerName,
       possiblePlayerNames,
-      situation: info.situation || (useAiStatus ? ai.situation : base.situation) || '',
-      goal: info.goal || (useAiStatus ? ai.goal : base.goal) || '',
-      clothing: info.clothing || (infoHasAny ? '' : base.clothing) || '',
+      situation: mergeStatusField(base.situation, info.situation, ai.situation, useAiStatus),
+      goal: mergeStatusField(base.goal, info.goal, ai.goal, useAiStatus),
+      clothing: mergeStatusField(base.clothing, info.clothing, '', false),
       relations: currentRelations,
       relationshipMeters: mergedMeters,
       affection: mergedMeters,
-      relationshipDeltas: ai.relationshipDeltas || [],
-      inventory: info._seen.inventory ? info.inventory : base.inventory,
-      stats: info.stats.length ? info.stats : (infoHasAny ? [] : base.stats),
-      quests: info.quests.length ? info.quests : (infoHasAny ? [] : base.quests),
+      relationshipDeltas: filteredDeltas,
+      inventory: mergeInventoryPartial(base.inventory, info._seen.inventory ? info.inventory : []),
+      stats: mergeStatsPartial(base.stats, info.stats),
+      quests: mergeQuestsPartial(base.quests, info.quests),
       narrativeLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       pokemonLogs: ai.narrativeLogs.length ? ai.narrativeLogs : base.narrativeLogs,
       hudComments: ai.hudComments.length ? ai.hudComments : [],
       _inferredStatus: useAiStatus,
-      _seen: info._seen,
+      _seen: {
+        relations: !!(base._seen?.relations || info._seen?.relations),
+        inventory: !!(base._seen?.inventory || info._seen?.inventory),
+        status: !!(base._seen?.status || info._seen?.status),
+      },
     });
 
-    return merged;
+    return forcedUserName ? stripRoomUserFromData(merged, forcedUserName) : merged;
   }
 
   // ─────────────────────────────────────────────
@@ -2474,20 +3327,102 @@ RECENT_CONTEXT:
 {{RECENT_CONTEXT}}
 `;
 
-  function parseGeminiJson(raw) {
-    const text = String(raw || '').trim()
+  function stripJsonFence(raw) {
+    return String(raw || '').trim()
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/i, '')
       .replace(/```$/i, '')
       .trim();
+  }
 
+  function parseGeminiJson(raw) {
+    const text = stripJsonFence(raw);
     try {
       return JSON.parse(text);
-    } catch {
+    } catch (err) {
       const first = text.indexOf('{');
       const last = text.lastIndexOf('}');
-      if (first >= 0 && last > first) return JSON.parse(text.slice(first, last + 1));
-      throw new Error('JSON parse failed');
+      if (first >= 0 && last > first) {
+        try {
+          return JSON.parse(text.slice(first, last + 1));
+        } catch (_) {}
+      }
+      throw err instanceof Error ? err : new Error('JSON parse failed');
+    }
+  }
+
+  const GEMINI_LAST_RAW_STORE = 'cigh_clean_last_gemini_raw_v1';
+
+  function saveLastGeminiRaw(raw, meta = {}) {
+    try {
+      localStorage.setItem(GEMINI_LAST_RAW_STORE, JSON.stringify({
+        at: Date.now(),
+        version: VERSION,
+        meta,
+        raw: String(raw || '').slice(0, 16000),
+      }));
+    } catch (_) {}
+  }
+
+  function buildGeminiJsonRepairPrompt(brokenJson) {
+    return `아래 텍스트는 JSON 문법이 깨진 응답이다.
+내용을 새로 쓰거나 요약하지 말고, 문법만 고쳐서 유효한 JSON 객체 하나만 출력해라.
+설명, 마크다운, 코드블록 금지. JSON 외의 글자 금지.
+누락된 쉼표/괄호/따옴표만 보정하고, 확실하지 않은 깨진 마지막 항목은 안전하게 제거해도 된다.
+
+BROKEN_JSON:
+\${String(brokenJson || '').slice(0, 14000)}`;
+  }
+
+  function buildGeminiJsonRepairGenerationConfig(model) {
+    const normalized = normalizeGeminiModelId(model);
+    const config = {
+      temperature: 0,
+      maxOutputTokens: 4096,
+      responseMimeType: 'application/json',
+    };
+    // 2.5 Flash 계열은 thinking을 꺼서 형식 안정성 우선
+    if (normalized === 'gemini-2.5-flash' || normalized === 'gemini-2.5-flash-lite') {
+      config.thinkingConfig = { thinkingBudget: 0 };
+    }
+    return config;
+  }
+
+  async function repairGeminiJsonResponse(geminiRequest, rawText, parseError) {
+    saveLastGeminiRaw(rawText, {
+      phase: 'parse_failed_before_repair',
+      message: String(parseError?.message || parseError || ''),
+    });
+
+    const repairPayload = {
+      contents: [{ role: 'user', parts: [{ text: buildGeminiJsonRepairPrompt(rawText) }] }],
+      generationConfig: buildGeminiJsonRepairGenerationConfig(geminiRequest.model),
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
+    };
+
+    const repairBody = await requestGeminiGenerateContent(geminiRequest, repairPayload);
+    const repairUsageTokens = extractUsageTokens(repairBody);
+    if (repairUsageTokens) addUsage(geminiRequest.model, repairUsageTokens.input, repairUsageTokens.output);
+
+    const repairText = extractTextFromGeminiResponseData(repairBody);
+    if (!repairText) throw new Error(`JSON 복구 실패: \${repairBody?.candidates?.[0]?.finishReason || 'EMPTY'}`);
+
+    try {
+      const parsed = parseGeminiJson(repairText);
+      saveLastGeminiRaw(repairText, { phase: 'repair_success' });
+      return parsed;
+    } catch (repairErr) {
+      saveLastGeminiRaw(repairText, {
+        phase: 'repair_failed',
+        originalError: String(parseError?.message || parseError || ''),
+        repairError: String(repairErr?.message || repairErr || ''),
+      });
+      throw new Error(`JSON 파싱 실패: \${String(parseError?.message || parseError || '응답 JSON이 깨졌어요.')}`);
     }
   }
 
@@ -2549,7 +3484,16 @@ RECENT_CONTEXT:
       const rawText = extractTextFromGeminiResponseData(body);
       if (!rawText) throw new Error(body?.candidates?.[0]?.finishReason || 'EMPTY');
 
-      return sanitizeAi(parseGeminiJson(rawText));
+      let parsedRaw;
+      try {
+        parsedRaw = parseGeminiJson(rawText);
+      } catch (parseErr) {
+        console.warn('[UniChat INFO Game HUD] Gemini JSON parse failed. Trying one-shot repair.', parseErr);
+        parsedRaw = await repairGeminiJsonResponse(geminiRequest, rawText, parseErr);
+      }
+      const parsed = sanitizeAi(parsedRaw);
+      parsed._usageTokens = extractUsageTokens(body) || null;
+      return parsed;
     } catch (err) {
       const message = String(err?.message || err || '알 수 없는 오류').replace(/\s+/g, ' ').trim();
       console.warn('[UniChat INFO Game HUD] Gemini/Firebase call failed:', err);
@@ -2822,6 +3766,7 @@ RECENT_CONTEXT:
       let petEvent = null;
       let petLineForMascot = '';
       let petMilestoneLineForMascot = '';
+      let favChangedForAchv = false;
       updateRoom(next => {
         next.data = merged;
         next.lastAnalyzedKey = found.key;
@@ -2847,7 +3792,10 @@ RECENT_CONTEXT:
           comments: merged.hudComments,
         });
         next.history = next.history.slice(-80);
+        const prevFavForAchv = getFavoriteCharacter(getPet(next));
         petEvent = growPet(next, merged, found.latestReply);
+        const newFavForAchv = getFavoriteCharacter(next.pet);
+        favChangedForAchv = !!(prevFavForAchv && newFavForAchv && prevFavForAchv !== newFavForAchv);
         petMilestoneLineForMascot = milestoneMascotLine(next.pet);
         const line = String(aiData.petLine || '').trim() || petSpeakLocal(next.pet);
         if (line) {
@@ -2865,12 +3813,16 @@ RECENT_CONTEXT:
         const deltas = merged.relationshipDeltas || [];
         const bigPos = deltas.filter(d => Number(d.delta) >= 6).length;
         const neg = deltas.filter(d => Number(d.delta) <= -5).length;
+        const bigNeg = deltas.filter(d => Number(d.delta) <= -8).length;
         if (bigPos) bumpAchvCounter('bigPosDelta', bigPos);
         if (neg) bumpAchvCounter('negDelta', neg);
+        if (bigNeg) bumpAchvCounter('bigNegDelta', 1, true);
         const meterMaxHit = (merged.affection || []).some(m => clamp(normalizeMeter(m, 50).value, 0, 100) >= 100);
         if (meterMaxHit) bumpAchvCounter('meterMax', 1);
       }
       registerStormWindow();
+      const decoTicketGain = awardDecoLogCredit(1);
+      if (decoTicketGain) pushLog([`▷꾸밈티켓 +${decoTicketGain}!`]);
       bumpAchvCounter('feedTotal', 1);
       {
         const moodCounterKey = {
@@ -2888,6 +3840,16 @@ RECENT_CONTEXT:
         if (meterZeroHit) bumpAchvCounter('meterZero', 1, true);
       }
       registerDayPhase();
+      // [업적 추가] 자정/인벤/외길/변심/streak
+      if (new Date().getHours() === 0) bumpAchvCounter('midnight', 1, true);
+      if ((merged.inventory || []).length >= 5) bumpAchvCounter('invRich', 1, true);
+      {
+        const maxAff = Math.max(0, ...Object.values(getPet().charAffinity || {}).map(v => Number(v) || 0));
+        if (maxAff >= 60) bumpAchvCounter('singleBond', 1, true);
+      }
+      if (favChangedForAchv) bumpAchvCounter('favChange', 1, true);
+      registerVisitStreak();
+      registerComboStreak(previousPetLastFedAt);
       announceAchvUnlocks();
 
       announcePetEvent(petEvent);
@@ -3848,6 +4810,8 @@ RECENT_CONTEXT:
   let petVisualTickTimer = null;
   const PET_VISUAL_IDLE_SLEEP_MS = 80000;
   const PET_VISUAL_POST_DRAG_MS = 1200;
+  const PET_VISUAL_SMILE_MS = 2200;
+  const PET_VISUAL_HALF_MS = 1800;
   const PET_VISUAL_STATE = {
     mode: 'normal',
     until: 0,
@@ -3936,48 +4900,67 @@ RECENT_CONTEXT:
     </span>`;
   }
 
-  function renderPetSpriteInto(container, size = 8) {
-    if (!container) return;
-    const pet = getPet();
+  function renderPetSpriteHTML(pet = getPet(), size = PET_PANEL_SPRITE_SIZE) {
     const stageObj = petStageFromLevel(pet.level);
-    const frames = stageObj.stage >= 3 ? getPetImageFrames(getPetDisplayFinalType(pet)) : null;
+    const mood = getEffectiveMood(pet);
+    const finalType = getPetDisplayFinalType(pet);
 
-    if (frames && frames.normal) {
-      const mode = getPetVisualMode(pet);
-      const src = pickPetImageFrame(frames, mode, pet, Date.now());
-      const displaySize = Number(size) <= 2 ? 52 : 112;
-      const wrap = container.querySelector?.('.cigh-clean-pet-img-wrap');
-      const img = wrap?.querySelector?.('.cigh-clean-pet-img');
-      container.dataset.cighPetMode = mode;
-      container.classList.toggle('is-sleep', mode === 'sleep');
-
-      if (wrap && img && src) {
-        wrap.className = `cigh-clean-pet-img-wrap cigh-clean-pet-img-${mode}`;
-        wrap.dataset.cighPetMode = mode;
-        wrap.style.setProperty('--cigh-pet-img-size', `${displaySize}px`);
-        if (img.getAttribute('data-cigh-pet-src') !== src) {
-          img.setAttribute('src', src);
-          img.setAttribute('data-cigh-pet-src', src);
-        }
-        return;
-      }
-      if (src) {
-        container.dataset.cighPetMode = mode;
-        container.classList.toggle('is-sleep', mode === 'sleep');
-        container.innerHTML = petImageHTML(src, mode, size);
-        return;
-      }
+    // 성숙기/완전체 이미지 펫은 실제 표시 시점에 해당 성향 프레임만 지연 선로딩한다.
+    if (stageObj.stage >= 3 && hasPetImageFrames(finalType)) {
+      preloadPetImageFrames(finalType);
     }
 
-    container.dataset.cighPetMode = 'dot';
-    container.classList.remove('is-sleep');
-    container.innerHTML = petSpriteSVG(stageObj, getEffectiveMood(pet), pet.finalType, size);
+    return petSpriteSVG(stageObj, mood, finalType, size, pet);
   }
 
-  function updatePetPanelSprite() {
+  function renderPetSpriteInto(container, size = PET_PANEL_SPRITE_SIZE, pet = getPet()) {
+    if (!container) return;
+    const mode = getPetVisualMode(pet);
+    const html = renderPetSpriteHTML(pet, size);
+    const signature = `${mode}|${size}|${html}`;
+    container.dataset.cighPetMode = mode;
+    container.classList.toggle('is-sleep', mode === 'sleep');
+    if (container.dataset.cighPetRenderSig === signature) return;
+    container.dataset.cighPetRenderSig = signature;
+    container.innerHTML = html;
+  }
+
+  function updatePetPanelSprite(pet = getPet()) {
     if (activeTab !== 'pet') return;
     const sprite = document.querySelector(`#${PANEL_ID} .cigh-clean-pet-sprite`);
-    renderPetSpriteInto(sprite, 8);
+    renderPetSpriteInto(sprite, PET_PANEL_SPRITE_SIZE, pet);
+  }
+
+  function updatePetPanelSpeech(pet = getPet()) {
+    if (activeTab !== 'pet') return;
+    const speech = document.querySelector(`#${PANEL_ID} .cigh-clean-pet-speech`);
+    if (!speech) return;
+    speech.textContent = isEggStagePet(pet) ? (pet?.lastLine || '') : (pet?.lastLine || '쓰다듬어줘!');
+  }
+
+  function updatePetPanelMoodLabel(pet = getPet()) {
+    if (activeTab !== 'pet') return;
+    const mood = document.querySelector(`#${PANEL_ID} .cigh-clean-pet-mood`);
+    if (!mood) return;
+    const label = PET_MOOD_LABEL[getEffectiveMood(pet)] || PET_MOOD_LABEL.normal;
+    mood.textContent = label;
+  }
+
+  function resetPetVisualState() {
+    PET_VISUAL_STATE.mode = 'normal';
+    PET_VISUAL_STATE.until = 0;
+    PET_VISUAL_STATE.dragActive = false;
+    PET_VISUAL_STATE.lastActiveAt = Date.now();
+  }
+
+  function refreshPetSurfaces(pet = getPet(), options = {}) {
+    if (options.resetVisual) resetPetVisualState();
+    if (activeTab === 'pet') {
+      updatePetPanelSpeech(pet);
+      updatePetPanelMoodLabel(pet);
+      updatePetPanelSprite(pet);
+    }
+    if (isMascotEnabled()) updateMascotSprite(pet);
   }
 
   function petSpriteSVGWithAccessory(stageObj, mood, finalType, size = 8, accessory = null) {
@@ -4092,11 +5075,10 @@ RECENT_CONTEXT:
     return `<svg class="cigh-clean-pet-svg" viewBox="${viewBox}" width="${totalW}" height="${totalH}" aria-hidden="true"${shadowFilter}>${outlineRects}${headRects}${bodyRects}${neckRects}${faceRects}</svg>`;
   }
 
-  function petSpriteSVG(stageObj, mood, finalType, size = 8) {
+  function petSpriteSVG(stageObj, mood, finalType, size = 8, pet = getPet()) {
     // 완전체(stage>=3)이고 이미지 있으면 이미지로 표시
     const frames = stageObj.stage >= 3 ? getPetImageFrames(finalType) : null;
     if (frames && frames.normal) {
-      const pet = getPet();
       const mode = getPetVisualMode(pet);
       const src = pickPetImageFrame(frames, mode, pet, Date.now());
       if (src) return petImageHTML(src, mode, size);
@@ -4341,21 +5323,54 @@ RECENT_CONTEXT:
     ), pet);
   }
 
+  function isEggStagePet(pet = getPet()) {
+    return petStageFromLevel(Number(pet?.level || 1)).stage === 0;
+  }
+
+  function triggerEggTapFeedback() {
+    const mascot = document.getElementById(MASCOT_ID);
+    if (mascot) {
+      mascot.classList.remove('egg-poke');
+      void mascot.offsetWidth;
+      mascot.classList.add('egg-poke');
+      setTimeout(() => mascot.classList.remove('egg-poke'), 420);
+    }
+    const sprite = document.querySelector(`#${PANEL_ID} .cigh-clean-pet-sprite`);
+    if (sprite) {
+      sprite.classList.remove('egg-poke');
+      void sprite.offsetWidth;
+      sprite.classList.add('egg-poke');
+      setTimeout(() => sprite.classList.remove('egg-poke'), 420);
+    }
+  }
+
   function petPet() {
     const now = Date.now();
     if (now - lastPetTouch < 1200) return;
     lastPetTouch = now;
+
+    const currentPet = getPet();
+    if (isEggStagePet(currentPet)) {
+      triggerEggTapFeedback();
+      playBeep('tab');
+      return;
+    }
+
+    let nextPet = null;
     updateRoom(r => {
       const p = getPet(r);
       p.lastLine = petPetLineLocal(p);
       p.lastLineAt = now;
       r.pet = p;
+      nextPet = p;
     });
+
+    touchPetVisual('smile', PET_VISUAL_SMILE_MS);
+    updatePetPanelSpeech(nextPet);
+    updatePetPanelMoodLabel(nextPet);
     bumpAchvCounter('petTouch', 1);
     announceAchvUnlocks();
-    touchPetVisual('smile', 1800);
     playBeep('tab');
-    renderContent();
   }
 
   function mascotSay(text, priority = 0) {
@@ -4976,7 +5991,7 @@ RECENT_CONTEXT:
     const el = document.getElementById(MASCOT_ID);
     if (!el) return;
     // 기존 애니 클래스 + 액세서리 bounce 클래스 전부 제거
-    ['poke','spin','bounce','tilt','nod','wiggle','tada','analyzing','done-pop',
+    ['poke','spin','bounce','tilt','nod','wiggle','tada','analyzing','done-pop','grabbed','carried','landed',
      ...ACC_ANIM_CLASSES]
       .forEach(c => el.classList.remove(c));
     void el.offsetWidth; // reflow
@@ -5447,14 +6462,43 @@ RECENT_CONTEXT:
           </div>`;
       }).join('');
 
-      main.innerHTML = `
-        <div class="cigh-clean-pet-wrap">
-          <div class="cigh-clean-pet-speech">${esc(pet.lastLine || '쓰다듬어줘!')}</div>
-          <div class="cigh-clean-pet-stage">${petName ? `${esc(petName)} · ` : ''}${esc(displayName)} · Lv.${pet.level}</div>
-          <div class="cigh-clean-pet-sprite" title="쓰다듬기">${petSpriteSVG(stageObj, getEffectiveMood(pet), getPetDisplayFinalType(pet))}</div>
-          <div class="cigh-clean-pet-mood">${esc(moodLabel)}</div>
+      const decoState = decoEditMode ? getDecoDraft() : getDecoState();
+      const decoBackdrop = renderDecoBackdropHtml(decoState);
+      const decoEditor = decoEditMode ? renderDecoEditorHtml() : '';
+
+      const equippedAchv = getEquippedAchvDef();
+      const titleText = equippedAchv ? `${equippedAchv.icon} ${equippedAchv.name}` : '';
+      const petDisplayName = petName || '이름 없음';
+      const nameStrip = decoEditMode ? '' : `
+        <div class="cigh-clean-pet-id">
+          ${titleText ? `<span class="cigh-clean-pet-title">${esc(titleText)}</span>` : ''}
+          <span class="cigh-clean-pet-name">${esc(petDisplayName)}</span>
         </div>
-      ` + section('♥ BPM', `
+      `;
+      const roomPositionSpacer = decoEditMode ? '' : `<div class="cigh-clean-pet-room-spacer${titleText ? ' has-title' : ''}" aria-hidden="true"></div>`;
+
+      const petRoomHtml = `
+        <div class="cigh-clean-pet-wrap${decoEditMode ? ' is-edit' : ''}">
+          ${decoBackdrop}
+          <button type="button" class="cigh-clean-info-reset-btn cigh-clean-pet-edit-btn${decoEditMode ? ' save' : ''}" data-deco-action="toggle-edit">${decoEditMode ? 'SAVE' : 'EDIT'}</button>
+          ${decoEditMode ? '' : `<div class="cigh-clean-pet-speech">${esc(pet.lastLine || '쓰다듬어줘!')}</div>`}
+          ${roomPositionSpacer}
+          ${decoEditMode ? '' : `<div class="cigh-clean-pet-sprite" title="쓰다듬기">${renderPetSpriteHTML(pet, PET_PANEL_SPRITE_SIZE)}</div>`}
+        </div>
+      `;
+
+      if (decoEditMode) {
+        main.innerHTML = petRoomHtml + decoEditor;
+        if (pendingPetCelebrate) {
+          const kind = pendingPetCelebrate;
+          pendingPetCelebrate = null;
+          const host = main.querySelector('.cigh-clean-pet-wrap');
+          requestAnimationFrame(() => spawnPetParticles(host, kind));
+        }
+        return;
+      }
+
+      main.innerHTML = petRoomHtml + nameStrip + section('♥ BPM', `
         <div class="cigh-clean-bpm-card cigh-clean-bpm-${esc(effectiveMood)}" style="--cigh-bpm-color:${esc(bpmTone)};--bpm-dur:${esc(bpmDur)};">
           <div class="cigh-clean-bpm-head">
             <span class="cigh-clean-bpm-heart" aria-hidden="true">♥</span>
@@ -5518,15 +6562,27 @@ RECENT_CONTEXT:
     }
 
     if (activeTab === 'info') {
+      const roomUserName = getRoomUserName();
+      const infoResetBar = `
+        <div class="cigh-clean-info-tools">
+          <label class="cigh-clean-user-name-box" title="이 방의 USER 캐릭터 이름">
+            <span>USER</span>
+            <input type="text" class="cigh-clean-user-name-input" data-user-name-input="1" maxlength="20" autocomplete="off" spellcheck="false" value="${esc(roomUserName)}" placeholder="이 방의 USER 캐릭터 이름">
+          </label>
+          <button type="button" class="cigh-clean-info-reset-btn" data-action="user-name-save" title="USER 이름 저장">Save</button>
+          <button type="button" class="cigh-clean-info-reset-btn" data-action="info-reset" title="INFO 정보 초기화">Reset</button>
+        </div>
+      `;
+
       if (!data) {
-        main.innerHTML = empty('NO INFO');
+        main.innerHTML = infoResetBar + empty('NO INFO');
         return;
       }
 
       const rows = [
         ['TIME', data.time],
         ['LOC', data.location],
-        ['CHAR', data.character],
+        ['USER', data.character],
         ['GOAL', data.goal],
         ['OUTFIT', data.clothing],
       ].map(([label, value]) => [label, cleanOptionalValue(value)]).filter(([, value]) => value);
@@ -5600,7 +6656,7 @@ RECENT_CONTEXT:
         </div>
       `);
 
-      main.innerHTML = infoBlock + situationBlock + meterBlock + inventoryBlock + statBlock + questBlock + analysisBlock || empty('NO INFO / LOG ONLY');
+      main.innerHTML = infoResetBar + (infoBlock + situationBlock + meterBlock + inventoryBlock + statBlock + questBlock + analysisBlock || empty('NO INFO / LOG ONLY'));
     }
   }
 
@@ -5678,6 +6734,108 @@ RECENT_CONTEXT:
     });
 
     panel.querySelector('#cigh-clean-main').addEventListener('click', event => {
+      const infoReset = event.target.closest('[data-action="info-reset"]');
+      if (infoReset) {
+        event.preventDefault();
+        event.stopPropagation();
+        openInfoResetConfirm();
+        return;
+      }
+
+      const userNameSave = event.target.closest('[data-action="user-name-save"]');
+      if (userNameSave) {
+        event.preventDefault();
+        event.stopPropagation();
+        const input = panel.querySelector('[data-user-name-input="1"]');
+        commitRoomUserNameInput(input);
+        return;
+      }
+
+      const petSpeech = event.target.closest('.cigh-clean-pet-speech');
+      if (petSpeech && activeTab === 'pet') {
+        event.preventDefault();
+        event.stopPropagation();
+        petSpeech.classList.add('is-hidden');
+        playBeep('tab');
+        return;
+      }
+
+      const decoAction = event.target.closest('[data-deco-action]');
+      if (decoAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = decoAction.dataset.decoAction || '';
+
+        if (action === 'toggle-edit') {
+          if (decoEditMode) {
+            setDecoState(getDecoDraft());
+            decoEditMode = false;
+            decoDraft = null;
+            setFooter('ROOM SAVED');
+            playBeep('save');
+          } else {
+            decoEditMode = true;
+            decoDraft = cloneDecoState();
+            setFooter('ROOM EDIT');
+            playBeep('tab');
+            bumpAchvCounter('decoEdit', 1, true);
+            announceAchvUnlocks();
+          }
+          renderContent();
+          return;
+        }
+
+        if (action === 'gacha') {
+          const result = rollDecoGacha();
+          if (!result.ok) {
+            playBeep('error');
+            setFooter(result.reason === 'ticket' ? '티켓 부족' : '전부 보유 중');
+            renderContent();
+          } else {
+            setFooter(`획득: ${result.item.name}`);
+            playDecoGachaAnimation(result.item, result.count);
+          }
+          return;
+        }
+
+        if (action === 'clear-current') {
+          clearCurrentDecoTab();
+          playBeep('tab');
+          renderContent();
+          return;
+        }
+      }
+
+      const decoTab = event.target.closest('[data-deco-tab]');
+      if (decoTab) {
+        event.preventDefault();
+        event.stopPropagation();
+        decoEditTab = decoTab.dataset.decoTab || 'wallpaper';
+        renderContent();
+        playBeep('tab');
+        return;
+      }
+
+      const decoItem = event.target.closest('[data-deco-item]');
+      if (decoItem) {
+        event.preventDefault();
+        event.stopPropagation();
+        const shelf = decoItem.closest('.cigh-clean-deco-shelf');
+        const keepScroll = shelf ? shelf.scrollLeft : 0;
+        if (toggleDecoItem(decoItem.dataset.decoItem || '')) {
+          renderContent();
+          requestAnimationFrame(() => {
+            const nextShelf = panel.querySelector('#cigh-clean-main .cigh-clean-deco-shelf');
+            if (nextShelf) nextShelf.scrollLeft = keepScroll;
+          });
+          playBeep('tab');
+        } else {
+          playBeep('error');
+          setFooter('더 배치할 보유 수가 없음');
+        }
+        return;
+      }
+
       const achvCard = event.target.closest('.cigh-clean-achv-card');
       if (achvCard) {
         const id = achvCard.dataset.achvId || '';
@@ -5690,6 +6848,37 @@ RECENT_CONTEXT:
       }
 
       if (event.target.closest('.cigh-clean-pet-sprite')) petPet();
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('keydown', event => {
+      const input = event.target?.closest?.('[data-user-name-input="1"]');
+      if (!input || event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      commitRoomUserNameInput(input);
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('focusout', event => {
+      const input = event.target?.closest?.('[data-user-name-input="1"]');
+      if (!input) return;
+      commitRoomUserNameInput(input, { silent: true });
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('pointerdown', event => {
+      const prop = event.target?.closest?.('.cigh-clean-room-prop.editable');
+      if (prop) startDecoPropDrag(event, prop);
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('pointermove', event => {
+      moveDecoPropDrag(event);
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('pointerup', event => {
+      endDecoPropDrag(event);
+    });
+
+    panel.querySelector('#cigh-clean-main').addEventListener('pointercancel', event => {
+      endDecoPropDrag(event);
     });
 
     setupDrag(panel);
@@ -7055,22 +8244,65 @@ RECENT_CONTEXT:
         flex-direction: column;
         align-items: center;
         gap: 6px;
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        min-height: 0;
         padding: 10px 0 12px;
-        margin-bottom: 6px;
+        margin: -1px -1px 6px;
         border-bottom: 1px solid var(--cigh-fill);
+        overflow: hidden;
+        image-rendering: pixelated;
+        box-sizing: border-box;
+        flex: 0 0 auto;
+      }
+      .cigh-clean-pet-wrap.is-edit {
+        outline: 1px dashed color-mix(in srgb, var(--cigh-accent) 42%, transparent);
+        outline-offset: -3px;
+        justify-content: flex-start;
+      }
+      .cigh-clean-pet-wrap > .cigh-clean-pet-speech,
+      .cigh-clean-pet-wrap > .cigh-clean-pet-room-spacer,
+      .cigh-clean-pet-wrap > .cigh-clean-deco-editor,
+      .cigh-clean-pet-wrap > .cigh-clean-pet-edit-btn {
+        position: relative;
+        z-index: 5;
+      }
+      .cigh-clean-pet-wrap > .cigh-clean-pet-sprite {
+        position: relative;
+        z-index: 4;
       }
       .cigh-clean-pet-speech {
         max-width: 90%;
+        /* EDIT 버튼과 겹치지 않게 말풍선만 살짝 아래로 */
+        margin-top: calc(7px * var(--cigh-ui-font-scale, 1));
+        margin-bottom: calc(-7px * var(--cigh-ui-font-scale, 1));
         background: var(--cigh-fill);
         border: 1px solid var(--cigh-border-soft);
         border-radius: 8px;
         padding: 5px 9px;
-        font-size: 10.5px;
+        font-size: calc(10.5px * var(--cigh-ui-font-scale, 1));
         color: var(--cigh-text);
         text-align: center;
         line-height: 1.4;
         word-break: keep-all;
         animation: cigh-clean-pop 0.28s ease;
+        cursor: pointer;
+      }
+      .cigh-clean-pet-speech.is-hidden {
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .cigh-clean-pet-room-spacer {
+        flex: 0 0 auto;
+        width: 1px;
+        /* 칭호 착용 여부와 무관하게 같은 높이 유지 + 펫 위치 추가 하향 */
+        height: calc(65px * var(--cigh-ui-font-scale, 1));
+        pointer-events: none;
+        opacity: 0;
+      }
+      .cigh-clean-pet-room-spacer.has-title {
+        height: calc(65px * var(--cigh-ui-font-scale, 1));
       }
       @keyframes cigh-clean-pop {
         0% { opacity: 0; transform: scale(0.9) translateY(4px); }
@@ -7078,17 +8310,22 @@ RECENT_CONTEXT:
       }
       .cigh-clean-pet-stage {
         color: var(--cigh-accent);
-        font-size: 11px;
+        font-size: calc(11px * var(--cigh-ui-font-scale, 1));
         font-weight: 700;
         letter-spacing: .1em;
       }
       .cigh-clean-pet-sprite {
         display: grid;
         place-items: center;
+        min-height: 102px;
         padding: 4px;
         cursor: pointer;
         animation: cigh-clean-float 2.4s ease-in-out infinite;
       }
+      .cigh-clean-pet-sprite.is-sleep {
+        animation: none;
+      }
+      .cigh-clean-pet-sprite.egg-poke .cigh-clean-pet-svg,
       .cigh-clean-pet-sprite.egg-poke .cigh-clean-pet-img-wrap {
         animation: cigh-clean-egg-wobble 0.42s ease;
         transform-origin: center bottom;
@@ -7098,6 +8335,9 @@ RECENT_CONTEXT:
         animation: cigh-clean-sleep-breathe 2.2s ease-in-out infinite;
         transform-origin: center bottom;
       }
+      .cigh-clean-pet-svg {
+        image-rendering: pixelated;
+      }
       .cigh-clean-pet-img-wrap {
         display: grid;
         place-items: center;
@@ -7105,6 +8345,629 @@ RECENT_CONTEXT:
         width: var(--cigh-pet-img-size, 112px);
         height: var(--cigh-pet-img-size, 112px);
         overflow: visible;
+      }
+      #cigh-clean-panel{--cigh-deco-scale:1;--cigh-ui-font-scale:1;}
+      #cigh-clean-panel[data-cigh-font="small"]{--cigh-deco-scale:.92;--cigh-ui-font-scale:.92;}
+      #cigh-clean-panel[data-cigh-font="large"]{--cigh-deco-scale:1.1;--cigh-ui-font-scale:1.12;}
+
+      .cigh-clean-pet-edit-btn {
+        position: absolute !important;
+        right: 6px;
+        top: 5px;
+        z-index: 8 !important;
+      }
+      .cigh-clean-pet-edit-btn.save {
+        color: var(--cigh-good);
+        border-color: color-mix(in srgb, var(--cigh-good) 45%, var(--cigh-border-soft));
+      }
+      .cigh-clean-room-wall,
+      .cigh-clean-room-floor {
+        position: absolute;
+        left: 0;
+        right: 0;
+        pointer-events: none;
+        z-index: 0;
+      }
+      .cigh-clean-room-wall {
+        top: 0;
+        height: 50%;
+        background: transparent;
+      }
+      .cigh-clean-room-floor {
+        bottom: 0;
+        height: calc(50% + 1px);
+        background: transparent;
+        border-top: none;
+      }
+      .cigh-clean-room-floor::before,
+      .cigh-clean-room-floor::after {
+        content: none !important;
+      }
+      .cigh-clean-room-props {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+      }
+      .cigh-clean-room-prop {
+        position: absolute;
+        z-index: 2;
+        transform: translate(-50%, -50%);
+        min-width: 20px;
+        min-height: 18px;
+        padding: 1px 3px;
+        border: 1px solid color-mix(in srgb, var(--cigh-border-soft) 75%, transparent);
+        background: color-mix(in srgb, var(--cigh-fill) 80%, transparent);
+        color: var(--cigh-text-soft);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1;
+        display: grid;
+        place-items: center;
+        cursor: default;
+        image-rendering: pixelated;
+        box-shadow: 2px 2px 0 color-mix(in srgb, #000 18%, transparent);
+        pointer-events: auto;
+      }
+      .cigh-clean-room-prop.editable { cursor: grab; }
+      .cigh-clean-room-prop.dragging {
+        cursor: grabbing;
+        z-index: 7;
+        filter: brightness(1.12);
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-night-star { background: radial-gradient(circle at 22% 28%, rgba(255,230,120,.9) 0 1px, transparent 2px), radial-gradient(circle at 72% 44%, rgba(255,230,120,.75) 0 1px, transparent 2px), linear-gradient(#0c1024, #141125); }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-wood { background: repeating-linear-gradient(90deg, #3b271e 0 18px, #4a3024 18px 20px, #2b1c17 20px 38px); }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-wood-piskel {
+        background:#9b9186 url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%239b9186'/><rect x='0' y='0' width='8' height='32' fill='%2393887d'/><rect x='8' y='0' width='8' height='32' fill='%23a0968b'/><rect x='16' y='0' width='8' height='32' fill='%238f8478'/><rect x='24' y='0' width='8' height='32' fill='%23a59a90'/><rect x='7' y='0' width='1' height='32' fill='%23706760'/><rect x='15' y='0' width='1' height='32' fill='%236a615a'/><rect x='23' y='0' width='1' height='32' fill='%23706760'/><rect x='2' y='4' width='3' height='1' fill='%23b7aca0'/><rect x='10' y='7' width='4' height='1' fill='%23b2a79c'/><rect x='18' y='5' width='3' height='1' fill='%23877c73'/><rect x='26' y='8' width='3' height='1' fill='%23bbb1a6'/><rect x='3' y='13' width='2' height='1' fill='%23857b72'/><rect x='11' y='15' width='3' height='1' fill='%23b8aea3'/><rect x='19' y='12' width='4' height='1' fill='%23867c73'/><rect x='27' y='16' width='2' height='1' fill='%23b3a89d'/><rect x='1' y='22' width='4' height='1' fill='%23b9afa4'/><rect x='9' y='24' width='3' height='1' fill='%238b8077'/><rect x='18' y='21' width='2' height='1' fill='%23b5aba0'/><rect x='25' y='25' width='4' height='1' fill='%23877c73'/></svg>") repeat;
+        background-size: 32px 32px;
+        image-rendering: pixelated;
+      }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-ash-wood {
+        background-color: #bab29d;
+        background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAWElEQVR4AezXMQqAMBBE0WF6Faz08F7C0gtpJWgOkBwh5UD4gd+HBwu7vs6jJrPCjw8ggIDL/yqZn/tTMm/7omSe5lXJmAIEEEAAAQTYB9gHmILxBXrHdwMAAP//gF1LwAAAAAZJREFUAwD5XOFQBKR2zgAAAABJRU5ErkJggg==");
+        background-repeat: repeat;
+        background-size: 64px 64px;
+        image-rendering: pixelated;
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-sky{
+        background-color:#79b6e6;
+        background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2NCA0MCc+PHJlY3QgeD0nOScgeT0nNycgd2lkdGg9JzcnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzcnIHk9JzgnIHdpZHRoPScxMScgaGVpZ2h0PScxJyBmaWxsPScjZmZmZmZmJy8+PHJlY3QgeD0nNicgeT0nOScgd2lkdGg9JzEzJyBoZWlnaHQ9JzEnIGZpbGw9JyNmZmZmZmYnLz48cmVjdCB4PSc1JyB5PScxMCcgd2lkdGg9JzE1JyBoZWlnaHQ9JzEnIGZpbGw9JyNlZWY0ZmEnLz48cmVjdCB4PSc2JyB5PScxMScgd2lkdGg9JzEzJyBoZWlnaHQ9JzEnIGZpbGw9JyNjNWQzZTAnLz48cmVjdCB4PSc5JyB5PScxMicgd2lkdGg9JzcnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjxyZWN0IHg9JzQxJyB5PScxMCcgd2lkdGg9JzUnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzM5JyB5PScxMScgd2lkdGg9JzknIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzM5JyB5PScxMicgd2lkdGg9JzknIGhlaWdodD0nMScgZmlsbD0nI2VlZjRmYScvPjxyZWN0IHg9JzQwJyB5PScxMycgd2lkdGg9JzcnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjxyZWN0IHg9JzQyJyB5PScxNCcgd2lkdGg9JzQnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjxyZWN0IHg9JzI3JyB5PScyNicgd2lkdGg9JzUnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzI1JyB5PScyNycgd2lkdGg9JzknIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzI2JyB5PScyOCcgd2lkdGg9JzcnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjxyZWN0IHg9JzUyJyB5PScyOCcgd2lkdGg9JzQnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzUxJyB5PScyOScgd2lkdGg9JzYnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzUyJyB5PSczMCcgd2lkdGg9JzQnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjxyZWN0IHg9JzExJyB5PSczMCcgd2lkdGg9JzUnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzEwJyB5PSczMScgd2lkdGg9JzcnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzEyJyB5PSczMicgd2lkdGg9JzMnIGhlaWdodD0nMScgZmlsbD0nI2M1ZDNlMCcvPjwvc3ZnPg=="),linear-gradient(#4a93d4 0%,#79b6e6 55%,#bfe0f4 100%);
+        background-repeat:repeat,no-repeat;
+        background-position:top left,center;
+        background-size:64px 40px,100% 100%;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-plain-ivory{
+        background:#f0eae3;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-plain-pink{
+        background-color:#846d55;
+        background-image:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAO0lEQVR4AezXwQkAMAgDwOKOHaNbdG8dwacgF8g/3C/x383JxhmOAQQIECBAgAABAgQIECBAYL9Ad74LAAD//6nu6zMAAAAGSURBVAMAGg1I4W6zWCUAAAAASUVORK5CYII=");
+        background-repeat:repeat;
+        background-size:64px 64px;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-plain-plain-3{
+        background-color:#949b8d;
+        background-image:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAOklEQVR4AezXMQoAMAgDwOL/u3XrY/UJjoJcIHu4LfH+zcnGGY4BBAgQIECAAAECBAgQIEBgv0B3vgsAAP//ZkcOWwAAAAZJREFUAwBKw1ehhQmjwwAAAABJRU5ErkJggg==");
+        background-repeat:repeat;
+        background-size:64px 64px;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-muted-sage{ background:#b8c2b0; image-rendering:pixelated; }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-muted-bluegrey{ background:#b4bcc7; image-rendering:pixelated; }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-muted-mauve{ background:#c4b6bf; image-rendering:pixelated; }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-pastel-mint{ background:#d9efe3; image-rendering:pixelated; }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-pastel-peach{ background:#f4ddd2; image-rendering:pixelated; }
+      .cigh-clean-room-wall.cigh-clean-deco-wall-pastel-lilac{ background:#e7def6; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-grass{
+        background-color:#78bc54;
+        background-image:url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyBmaWxsPScjNzhiYzU0Jy8+PHJlY3QgeD0nMycgeT0nNScgd2lkdGg9JzEnIGhlaWdodD0nMycgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzUnIHk9JzQnIHdpZHRoPScxJyBoZWlnaHQ9JzQnIGZpbGw9JyMzNDdmM2YnLz48cmVjdCB4PSc0JyB5PSc2JyB3aWR0aD0nMScgaGVpZ2h0PScyJyBmaWxsPScjOWJkODc3Jy8+PHJlY3QgeD0nMjAnIHk9JzMnIHdpZHRoPScxJyBoZWlnaHQ9JzMnIGZpbGw9JyMzNDdmM2YnLz48cmVjdCB4PScyMicgeT0nNCcgd2lkdGg9JzEnIGhlaWdodD0nMycgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzE0JyB5PScxNCcgd2lkdGg9JzEnIGhlaWdodD0nMycgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzE2JyB5PScxMycgd2lkdGg9JzEnIGhlaWdodD0nNCcgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzE1JyB5PScxNScgd2lkdGg9JzEnIGhlaWdodD0nMicgZmlsbD0nIzliZDg3NycvPjxyZWN0IHg9JzI2JyB5PScxOCcgd2lkdGg9JzEnIGhlaWdodD0nMycgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzI4JyB5PScxOScgd2lkdGg9JzEnIGhlaWdodD0nMycgZmlsbD0nIzM0N2YzZicvPjxyZWN0IHg9JzYnIHk9JzIyJyB3aWR0aD0nMScgaGVpZ2h0PSczJyBmaWxsPScjMzQ3ZjNmJy8+PHJlY3QgeD0nOCcgeT0nMjEnIHdpZHRoPScxJyBoZWlnaHQ9JzQnIGZpbGw9JyMzNDdmM2YnLz48cmVjdCB4PSc3JyB5PScyMycgd2lkdGg9JzEnIGhlaWdodD0nMicgZmlsbD0nIzliZDg3NycvPjxyZWN0IHg9JzEwJyB5PSc5JyB3aWR0aD0nMScgaGVpZ2h0PScxJyBmaWxsPScjOGFjODY2Jy8+PHJlY3QgeD0nMjQnIHk9JzI3JyB3aWR0aD0nMScgaGVpZ2h0PScxJyBmaWxsPScjOGFjODY2Jy8+PHJlY3QgeD0nMTgnIHk9JzI1JyB3aWR0aD0nMScgaGVpZ2h0PScxJyBmaWxsPScjNjJhNDQ0Jy8+PHJlY3QgeD0nMicgeT0nMTYnIHdpZHRoPScxJyBoZWlnaHQ9JzEnIGZpbGw9JyM2MmE0NDQnLz48cmVjdCB4PScyOScgeT0nOScgd2lkdGg9JzInIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzI4JyB5PSc4JyB3aWR0aD0nMScgaGVpZ2h0PScxJyBmaWxsPScjZmZmZmZmJy8+PHJlY3QgeD0nMzAnIHk9JzgnIHdpZHRoPScxJyBoZWlnaHQ9JzEnIGZpbGw9JyNmZmZmZmYnLz48cmVjdCB4PScyOScgeT0nOCcgd2lkdGg9JzEnIGhlaWdodD0nMScgZmlsbD0nI2ZmZTE0ZCcvPjxyZWN0IHg9JzEyJyB5PScyOCcgd2lkdGg9JzEnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzExJyB5PScyOScgd2lkdGg9JzMnIGhlaWdodD0nMScgZmlsbD0nI2ZmZmZmZicvPjxyZWN0IHg9JzEyJyB5PScyOScgd2lkdGg9JzEnIGhlaWdodD0nMScgZmlsbD0nI2ZmZTE0ZCcvPjwvc3ZnPg==");
+        background-repeat:repeat;
+        background-size:32px 32px;
+        image-rendering:pixelated;
+      }      .cigh-clean-room-floor.cigh-clean-deco-floor-deep-grass{
+        background:#3f7f3f url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%233f7f3f'/><rect x='3' y='4' width='1' height='4' fill='%23224f23'/><rect x='5' y='5' width='1' height='4' fill='%23224f23'/><rect x='4' y='6' width='1' height='2' fill='%2368a84f'/><rect x='12' y='12' width='1' height='4' fill='%23224f23'/><rect x='14' y='11' width='1' height='5' fill='%23224f23'/><rect x='13' y='13' width='1' height='2' fill='%2368a84f'/><rect x='22' y='3' width='1' height='4' fill='%23224f23'/><rect x='24' y='4' width='1' height='4' fill='%23224f23'/><rect x='23' y='5' width='1' height='2' fill='%2368a84f'/><rect x='26' y='18' width='1' height='4' fill='%23224f23'/><rect x='28' y='19' width='1' height='4' fill='%23224f23'/><rect x='27' y='20' width='1' height='2' fill='%2368a84f'/><rect x='7' y='23' width='1' height='4' fill='%23224f23'/><rect x='9' y='22' width='1' height='5' fill='%23224f23'/><rect x='8' y='24' width='1' height='2' fill='%2368a84f'/><rect x='16' y='24' width='1' height='1' fill='%23599646'/><rect x='2' y='16' width='1' height='1' fill='%23599646'/><rect x='18' y='28' width='1' height='1' fill='%23599646'/><rect x='29' y='9' width='1' height='1' fill='%23f0f6ff'/><rect x='30' y='9' width='1' height='1' fill='%23f0f6ff'/><rect x='29' y='10' width='1' height='1' fill='%23ffd767'/><rect x='12' y='29' width='1' height='1' fill='%23f0f6ff'/><rect x='11' y='30' width='3' height='1' fill='%23f0f6ff'/><rect x='12' y='30' width='1' height='1' fill='%23ffd767'/></svg>") repeat;background-size:32px 32px;image-rendering:pixelated;}
+      .cigh-clean-room-floor.cigh-clean-deco-floor-star-grass{
+        background:#2f5b30 url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%232f5b30'/><rect x='3' y='5' width='1' height='4' fill='%231a331b'/><rect x='5' y='4' width='1' height='5' fill='%231a331b'/><rect x='4' y='6' width='1' height='2' fill='%235b8e53'/><rect x='11' y='12' width='1' height='4' fill='%231a331b'/><rect x='13' y='11' width='1' height='5' fill='%231a331b'/><rect x='12' y='13' width='1' height='2' fill='%235b8e53'/><rect x='22' y='3' width='1' height='4' fill='%231a331b'/><rect x='24' y='4' width='1' height='4' fill='%231a331b'/><rect x='23' y='5' width='1' height='2' fill='%235b8e53'/><rect x='27' y='17' width='1' height='4' fill='%231a331b'/><rect x='29' y='18' width='1' height='4' fill='%231a331b'/><rect x='28' y='19' width='1' height='2' fill='%235b8e53'/><rect x='7' y='22' width='1' height='4' fill='%231a331b'/><rect x='9' y='21' width='1' height='5' fill='%231a331b'/><rect x='8' y='23' width='1' height='2' fill='%235b8e53'/><rect x='16' y='25' width='1' height='1' fill='%23447640'/><rect x='2' y='15' width='1' height='1' fill='%23447640'/><rect x='18' y='28' width='1' height='1' fill='%23447640'/><rect x='6' y='10' width='1' height='1' fill='%23f4f8ff'/><rect x='7' y='10' width='1' height='1' fill='%23f4f8ff'/><rect x='6' y='11' width='1' height='1' fill='%23ffe07c'/><rect x='20' y='8' width='1' height='1' fill='%23f4f8ff'/><rect x='21' y='8' width='1' height='1' fill='%23f4f8ff'/><rect x='20' y='9' width='1' height='1' fill='%23ffe07c'/><rect x='25' y='26' width='1' height='1' fill='%23f4f8ff'/><rect x='26' y='26' width='1' height='1' fill='%23f4f8ff'/><rect x='25' y='27' width='1' height='1' fill='%23ffe07c'/><rect x='12' y='28' width='1' height='1' fill='%23f4f8ff'/><rect x='13' y='28' width='1' height='1' fill='%23f4f8ff'/><rect x='12' y='29' width='1' height='1' fill='%23ffe07c'/></svg>") repeat;
+        background-size:32px 32px;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-cloud-soft{
+        background:#cfe5f6 url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23cfe5f6'/><rect x='3' y='6' width='7' height='1' fill='%23ffffff'/><rect x='2' y='7' width='10' height='1' fill='%23ffffff'/><rect x='2' y='8' width='10' height='1' fill='%23eef7ff'/><rect x='3' y='9' width='8' height='1' fill='%23d9e8f4'/><rect x='4' y='10' width='5' height='1' fill='%23d9e8f4'/><rect x='18' y='4' width='5' height='1' fill='%23ffffff'/><rect x='17' y='5' width='8' height='1' fill='%23ffffff'/><rect x='17' y='6' width='8' height='1' fill='%23eef7ff'/><rect x='18' y='7' width='6' height='1' fill='%23d9e8f4'/><rect x='21' y='8' width='2' height='1' fill='%23d9e8f4'/><rect x='11' y='18' width='7' height='1' fill='%23ffffff'/><rect x='10' y='19' width='10' height='1' fill='%23ffffff'/><rect x='10' y='20' width='10' height='1' fill='%23eef7ff'/><rect x='11' y='21' width='8' height='1' fill='%23d9e8f4'/><rect x='12' y='22' width='5' height='1' fill='%23d9e8f4'/><rect x='23' y='22' width='5' height='1' fill='%23ffffff'/><rect x='22' y='23' width='8' height='1' fill='%23ffffff'/><rect x='22' y='24' width='8' height='1' fill='%23eef7ff'/><rect x='23' y='25' width='6' height='1' fill='%23d9e8f4'/><rect x='5' y='24' width='5' height='1' fill='%23ffffff'/><rect x='4' y='25' width='8' height='1' fill='%23ffffff'/><rect x='4' y='26' width='8' height='1' fill='%23eef7ff'/><rect x='5' y='27' width='6' height='1' fill='%23d9e8f4'/></svg>") repeat;
+        background-size:32px 32px;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-muted-sand{ background:#b7ab9b; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-muted-sage{ background:#a7b39f; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-muted-bluegrey{ background:#9ea9b6; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-pastel-cream{ background:#f1e8d7; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-pastel-mint{ background:#d1e6db; image-rendering:pixelated; }
+      .cigh-clean-room-floor.cigh-clean-deco-floor-pastel-lilac{ background:#d8d0ea; image-rendering:pixelated; }
+
+      .cigh-clean-room-prop.cigh-clean-deco-prop-cushion,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plant,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-books,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-lamp,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-star,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-table,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-rug,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-clock,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bed,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-door,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-twin,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-bell,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blossom,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-white,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blue,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-sun,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bush-berry,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-fence-wood,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-sakura,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-willow,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-maple,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-dream,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-moon-full,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-iv,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-iv,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-iv,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-iv,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-mt,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-mt,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-mt,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-mt,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-swag,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-large,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-small,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-curtain
+{
+        background-color:transparent;border-color:transparent;box-shadow:none;
+        padding:0;min-width:0;min-height:0;
+        font-size:calc(2px * var(--cigh-deco-scale,1));
+        background-repeat:no-repeat;background-position:center;background-size:contain;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-prop.cigh-clean-deco-prop-cushion>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plant>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-books>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-lamp>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-star>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-table>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-rug>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-clock>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bed>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-door>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-twin>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-bell>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blossom>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-white>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blue>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-sun>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bush-berry>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-fence-wood>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-sakura>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-willow>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-maple>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-dream>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-moon-full>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-iv>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-iv>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-iv>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-iv>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-mt>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-mt>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-mt>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-mt>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-swag>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-large>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-small>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-curtain>span{font-size:0;line-height:0;}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-cushion{width:30em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 20'><rect x='4' y='4' width='20' height='12' fill='%23f0c97a'/><rect x='3' y='6' width='22' height='8' fill='%23f0c97a'/><rect x='4' y='3' width='20' height='2' fill='%23ffe0a0'/><rect x='4' y='14' width='20' height='2' fill='%23cf9f4a'/><rect x='2' y='4' width='2' height='3' fill='%23fff0c8'/><rect x='24' y='4' width='2' height='3' fill='%23fff0c8'/><rect x='2' y='13' width='2' height='3' fill='%23fff0c8'/><rect x='24' y='13' width='2' height='3' fill='%23fff0c8'/><rect x='13' y='9' width='2' height='2' fill='%23cf9f4a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plant{width:20em;height:25em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='5' y='20' width='12' height='7' fill='%23c2724a'/><rect x='4' y='18' width='14' height='3' fill='%23d98a5e'/><rect x='6' y='24' width='10' height='1' fill='%23a85d38'/><rect x='10' y='9' width='2' height='11' fill='%233f8f55'/><rect x='5' y='10' width='5' height='3' fill='%235cb878'/><rect x='3' y='12' width='4' height='2' fill='%234ea568'/><rect x='12' y='8' width='5' height='3' fill='%235cb878'/><rect x='15' y='10' width='4' height='2' fill='%234ea568'/><rect x='8' y='5' width='6' height='3' fill='%236cc888'/><rect x='9' y='3' width='4' height='2' fill='%237ad497'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-books{width:24em;height:19em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 22'><rect x='2' y='15' width='22' height='5' fill='%237d6bd8'/><rect x='2' y='15' width='22' height='1' fill='%239a8bf0'/><rect x='2' y='19' width='22' height='1' fill='%235e4eb0'/><rect x='3' y='16' width='1' height='3' fill='%23f0ecff'/><rect x='4' y='10' width='20' height='5' fill='%23e46b96'/><rect x='4' y='10' width='20' height='1' fill='%23ff8db8'/><rect x='5' y='11' width='1' height='3' fill='%23ffe3ee'/><rect x='3' y='5' width='18' height='5' fill='%234ea568'/><rect x='3' y='5' width='18' height='1' fill='%236cc888'/><rect x='4' y='6' width='1' height='3' fill='%23e8ffee'/><rect x='17' y='3' width='2' height='4' fill='%23ffd166'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-lamp{width:23em;height:39em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 48'><rect x='10' y='4' width='8' height='1' fill='%23ffe7a8'/><rect x='9' y='5' width='10' height='1' fill='%23ffdf8a'/><rect x='8' y='6' width='12' height='1' fill='%23ffd166'/><rect x='7' y='7' width='14' height='1' fill='%23ffd166'/><rect x='6' y='8' width='16' height='1' fill='%23f0c050'/><rect x='6' y='9' width='16' height='1' fill='%23e8b84a'/><rect x='7' y='10' width='14' height='1' fill='%23d8a83e'/><rect x='12' y='11' width='4' height='1' fill='%235c4a38'/><rect x='13' y='12' width='2' height='30' fill='%237a6650'/><rect x='13' y='12' width='1' height='30' fill='%238c785f'/><rect x='9' y='42' width='10' height='1' fill='%236b5642'/><rect x='8' y='43' width='12' height='1' fill='%236b5642'/><rect x='6' y='44' width='16' height='2' fill='%235c4a38'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-star{width:19em;height:19em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='11' y='3' width='2' height='5' fill='%23ffd84a'/><rect x='8' y='8' width='8' height='3' fill='%23ffd84a'/><rect x='4' y='10' width='16' height='3' fill='%23ffd84a'/><rect x='7' y='13' width='10' height='3' fill='%23ffcf2e'/><rect x='8' y='16' width='3' height='4' fill='%23e8b62a'/><rect x='13' y='16' width='3' height='4' fill='%23e8b62a'/><rect x='10' y='9' width='3' height='2' fill='%23fff4c2'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-table{width:38em;height:26em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 20'><rect x='2' y='5' width='24' height='4' fill='%23a8794f'/><rect x='2' y='5' width='24' height='1' fill='%23c2916a'/><rect x='2' y='8' width='24' height='1' fill='%23825d3a'/><rect x='5' y='9' width='3' height='9' fill='%238a6342'/><rect x='20' y='9' width='3' height='9' fill='%238a6342'/><rect x='12' y='2' width='4' height='3' fill='%23e46b96'/><rect x='12' y='2' width='4' height='1' fill='%23ff8db8'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-rug{width:60em;height:37em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 30'><rect x='0' y='4' width='2' height='1' fill='%23ece0c4'/><rect x='0' y='8' width='2' height='1' fill='%23ece0c4'/><rect x='0' y='12' width='2' height='1' fill='%23ece0c4'/><rect x='0' y='16' width='2' height='1' fill='%23ece0c4'/><rect x='0' y='20' width='2' height='1' fill='%23ece0c4'/><rect x='0' y='24' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='4' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='8' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='12' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='16' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='20' width='2' height='1' fill='%23ece0c4'/><rect x='46' y='24' width='2' height='1' fill='%23ece0c4'/><rect x='2' y='1' width='44' height='28' fill='%23e7d3aa'/><rect x='3' y='2' width='42' height='26' fill='%238a6342'/><rect x='5' y='4' width='38' height='22' fill='%23b5895a'/><rect x='7' y='6' width='34' height='18' fill='%23cda878'/><rect x='9' y='8' width='30' height='14' fill='%238a6342'/><rect x='11' y='10' width='26' height='10' fill='%23ddc096'/><rect x='11' y='10' width='26' height='1' fill='%23ebd3a6'/><rect x='11' y='19' width='26' height='1' fill='%23c8a06a'/><rect x='18' y='13' width='12' height='4' fill='%23cda878'/><rect x='18' y='13' width='12' height='1' fill='%23e7d3aa'/><rect x='23' y='14' width='2' height='2' fill='%238a6342'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-clock{width:20em;height:20em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='11' y='4' width='10' height='1' fill='%236b4a30'/><rect x='9' y='5' width='14' height='1' fill='%236b4a30'/><rect x='8' y='6' width='16' height='1' fill='%236b4a30'/><rect x='7' y='7' width='18' height='1' fill='%236b4a30'/><rect x='6' y='8' width='20' height='1' fill='%236b4a30'/><rect x='5' y='9' width='22' height='2' fill='%236b4a30'/><rect x='4' y='11' width='24' height='10' fill='%236b4a30'/><rect x='5' y='21' width='22' height='2' fill='%236b4a30'/><rect x='6' y='23' width='20' height='1' fill='%236b4a30'/><rect x='7' y='24' width='18' height='1' fill='%236b4a30'/><rect x='8' y='25' width='16' height='1' fill='%236b4a30'/><rect x='9' y='26' width='14' height='1' fill='%236b4a30'/><rect x='11' y='27' width='10' height='1' fill='%236b4a30'/><rect x='10' y='6' width='12' height='1' fill='%23f3e7cf'/><rect x='9' y='7' width='14' height='1' fill='%23f3e7cf'/><rect x='8' y='8' width='16' height='1' fill='%23f3e7cf'/><rect x='7' y='9' width='18' height='2' fill='%23f3e7cf'/><rect x='6' y='11' width='20' height='10' fill='%23f3e7cf'/><rect x='7' y='21' width='18' height='2' fill='%23f3e7cf'/><rect x='8' y='23' width='16' height='1' fill='%23f3e7cf'/><rect x='9' y='24' width='14' height='1' fill='%23f3e7cf'/><rect x='10' y='25' width='12' height='1' fill='%23f3e7cf'/><rect x='15' y='8' width='2' height='1' fill='%236b4a30'/><rect x='15' y='23' width='2' height='1' fill='%236b4a30'/><rect x='23' y='15' width='1' height='2' fill='%236b4a30'/><rect x='8' y='15' width='1' height='2' fill='%236b4a30'/><rect x='15' y='9' width='1' height='6' fill='%233a2a1c'/><rect x='16' y='15' width='5' height='1' fill='%233a2a1c'/><rect x='15' y='15' width='2' height='2' fill='%23c0392b'/><rect x='15' y='2' width='2' height='2' fill='%236b4a30'/><rect x='14' y='4' width='4' height='1' fill='%236b4a30'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bed{width:46em;height:32em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 28'><rect x='4' y='19' width='2' height='5' fill='%236b4a30'/><rect x='34' y='19' width='2' height='5' fill='%236b4a30'/><rect x='2' y='3' width='4' height='17' fill='%238a6342'/><rect x='2' y='3' width='4' height='1' fill='%23a87a52'/><rect x='34' y='9' width='4' height='10' fill='%238a6342'/><rect x='34' y='9' width='4' height='1' fill='%23a87a52'/><rect x='4' y='13' width='32' height='6' fill='%23efe6d2'/><rect x='4' y='18' width='32' height='1' fill='%23d2c6ac'/><rect x='15' y='11' width='20' height='7' fill='%237fb0d8'/><rect x='15' y='11' width='20' height='1' fill='%23a8cdea'/><rect x='15' y='17' width='20' height='1' fill='%235f90b8'/><rect x='5' y='10' width='9' height='4' fill='%23fff6e6'/><rect x='5' y='13' width='9' height='1' fill='%23e6dac2'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-door{width:26em;height:44em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 48'><rect x='2' y='2' width='24' height='44' fill='%23533a27'/><rect x='3' y='3' width='22' height='42' fill='%2362432b'/><rect x='4' y='4' width='20' height='40' fill='%23966b45'/><rect x='4' y='4' width='1' height='40' fill='%23b78b62'/><rect x='23' y='4' width='1' height='40' fill='%2369472d'/><rect x='5' y='5' width='18' height='1' fill='%23c99b70'/><rect x='5' y='43' width='18' height='1' fill='%23735237'/><rect x='6' y='7' width='14' height='1' fill='%23674128'/><rect x='6' y='7' width='1' height='15' fill='%23674128'/><rect x='7' y='8' width='12' height='13' fill='%23895c38'/><rect x='7' y='8' width='12' height='1' fill='%23b88c60'/><rect x='7' y='20' width='12' height='1' fill='%237b5031'/><rect x='19' y='8' width='1' height='13' fill='%23b88c60'/><rect x='8' y='10' width='10' height='9' fill='%23a27249'/><rect x='6' y='25' width='14' height='1' fill='%23674128'/><rect x='6' y='25' width='1' height='15' fill='%23674128'/><rect x='7' y='26' width='12' height='13' fill='%23895c38'/><rect x='7' y='26' width='12' height='1' fill='%23b88c60'/><rect x='7' y='38' width='12' height='1' fill='%237b5031'/><rect x='19' y='26' width='1' height='13' fill='%23b88c60'/><rect x='8' y='28' width='10' height='9' fill='%23a27249'/><rect x='20' y='23' width='2' height='2' fill='%23d1a94a'/><rect x='19' y='22' width='3' height='3' fill='%23b98e2f'/><rect x='20' y='23' width='1' height='1' fill='%23f6df94'/><rect x='21' y='23' width='1' height='8' fill='%23714d31'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-bear,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-dino,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-rabbit{
+        background-color:transparent;border-color:transparent;box-shadow:none;
+        padding:0;min-width:0;min-height:0;
+        font-size:calc(2px * var(--cigh-deco-scale,1));
+        background-repeat:no-repeat;background-position:center;background-size:contain;
+        image-rendering:pixelated;
+      }
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-bear>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-dino>span,
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-rabbit>span{font-size:0;line-height:0;}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-bear{width:18em;height:20em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 22'><rect x='4' y='1' width='3' height='3' fill='%23755343'/><rect x='13' y='1' width='3' height='3' fill='%23755343'/><rect x='5' y='2' width='2' height='2' fill='%23d9b49a'/><rect x='13' y='2' width='2' height='2' fill='%23d9b49a'/><rect x='3' y='4' width='14' height='10' fill='%238d6a55'/><rect x='4' y='5' width='12' height='8' fill='%23b9957c'/><rect x='7' y='8' width='6' height='4' fill='%23efd9bf'/><rect x='6' y='6' width='2' height='2' fill='%234a332a'/><rect x='12' y='6' width='2' height='2' fill='%234a332a'/><rect x='9' y='8' width='2' height='2' fill='%2367463a'/><rect x='8' y='10' width='4' height='1' fill='%23d88895'/><rect x='5' y='14' width='10' height='6' fill='%23b9957c'/><rect x='3' y='15' width='3' height='4' fill='%23b9957c'/><rect x='14' y='15' width='3' height='4' fill='%23b9957c'/><rect x='4' y='20' width='3' height='2' fill='%238d6a55'/><rect x='13' y='20' width='3' height='2' fill='%238d6a55'/><rect x='1' y='15' width='2' height='4' fill='%238d6a55'/><rect x='17' y='15' width='2' height='4' fill='%238d6a55'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-dino{width:19em;height:20em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'><rect x='10' y='1' width='4' height='3' fill='%23527c44'/><rect x='9' y='3' width='6' height='3' fill='%23699658'/><rect x='7' y='5' width='9' height='7' fill='%237fb269'/><rect x='5' y='8' width='11' height='6' fill='%2391c27b'/><rect x='4' y='10' width='10' height='6' fill='%2391c27b'/><rect x='12' y='9' width='5' height='6' fill='%237fb269'/><rect x='16' y='10' width='3' height='3' fill='%237fb269'/><rect x='18' y='11' width='2' height='2' fill='%237fb269'/><rect x='11' y='6' width='2' height='2' fill='%2338522f'/><rect x='9' y='9' width='5' height='3' fill='%23cfe6b7'/><rect x='7' y='14' width='8' height='4' fill='%2391c27b'/><rect x='5' y='15' width='2' height='5' fill='%23527c44'/><rect x='11' y='15' width='2' height='5' fill='%23527c44'/><rect x='3' y='15' width='3' height='2' fill='%23527c44'/><rect x='2' y='16' width='2' height='2' fill='%23527c44'/><rect x='13' y='7' width='1' height='1' fill='%23e595a8'/><rect x='8' y='5' width='1' height='3' fill='%23527c44'/><rect x='6' y='6' width='1' height='3' fill='%23527c44'/><rect x='15' y='7' width='1' height='3' fill='%23527c44'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-plush-rabbit{width:18em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 24'><rect x='5' y='1' width='3' height='8' fill='%23eadcc8'/><rect x='12' y='1' width='3' height='8' fill='%23eadcc8'/><rect x='6' y='2' width='1' height='6' fill='%23efb5c8'/><rect x='13' y='2' width='1' height='6' fill='%23efb5c8'/><rect x='4' y='8' width='12' height='8' fill='%23efe4d4'/><rect x='5' y='9' width='10' height='6' fill='%23fbf6ee'/><rect x='6' y='10' width='2' height='2' fill='%23473a35'/><rect x='12' y='10' width='2' height='2' fill='%23473a35'/><rect x='9' y='11' width='2' height='2' fill='%23c98595'/><rect x='8' y='13' width='4' height='1' fill='%23e7b0bd'/><rect x='6' y='16' width='8' height='6' fill='%23efe4d4'/><rect x='4' y='17' width='3' height='4' fill='%23efe4d4'/><rect x='13' y='17' width='3' height='4' fill='%23efe4d4'/><rect x='5' y='22' width='3' height='2' fill='%23d7c5b0'/><rect x='12' y='22' width='3' height='2' fill='%23d7c5b0'/><rect x='8' y='18' width='4' height='3' fill='%23ffffff'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-twin{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='6' y='16' width='2' height='10' fill='%232f6d3c'/><rect x='14' y='15' width='2' height='11' fill='%232f6d3c'/><rect x='8' y='19' width='4' height='2' fill='%233a8146'/><rect x='12' y='20' width='4' height='2' fill='%233a8146'/><rect x='5' y='20' width='3' height='3' fill='%2355984e'/><rect x='14' y='21' width='4' height='3' fill='%2355984e'/><rect x='3' y='5' width='8' height='1' fill='%237d394a'/><rect x='2' y='6' width='10' height='2' fill='%237d394a'/><rect x='1' y='8' width='2' height='5' fill='%237d394a'/><rect x='3' y='8' width='8' height='1' fill='%237d394a'/><rect x='3' y='12' width='8' height='1' fill='%237d394a'/><rect x='11' y='8' width='1' height='4' fill='%237d394a'/><rect x='4' y='6' width='6' height='2' fill='%23a74e63'/><rect x='3' y='8' width='8' height='5' fill='%23d8798d'/><rect x='4' y='8' width='6' height='1' fill='%23efadbb'/><rect x='2' y='10' width='2' height='2' fill='%23b95f73'/><rect x='10' y='10' width='2' height='2' fill='%23b95f73'/><rect x='5' y='9' width='4' height='3' fill='%23f092a5'/><rect x='6' y='10' width='2' height='2' fill='%23f2d06e'/><rect x='11' y='3' width='8' height='1' fill='%237d394a'/><rect x='10' y='4' width='10' height='2' fill='%237d394a'/><rect x='9' y='6' width='2' height='5' fill='%237d394a'/><rect x='11' y='6' width='8' height='1' fill='%237d394a'/><rect x='11' y='10' width='8' height='1' fill='%237d394a'/><rect x='19' y='6' width='1' height='4' fill='%237d394a'/><rect x='12' y='4' width='6' height='2' fill='%23a74e63'/><rect x='11' y='6' width='8' height='5' fill='%23d8798d'/><rect x='12' y='6' width='6' height='1' fill='%23efadbb'/><rect x='10' y='8' width='2' height='2' fill='%23b95f73'/><rect x='18' y='8' width='2' height='2' fill='%23b95f73'/><rect x='13' y='7' width='4' height='3' fill='%23f092a5'/><rect x='14' y='8' width='2' height='2' fill='%23f2d06e'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-bell{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='10' y='6' width='2' height='20' fill='%23386d28'/><rect x='6' y='18' width='4' height='2' fill='%2344872f'/><rect x='12' y='14' width='4' height='2' fill='%2344872f'/><rect x='5' y='19' width='4' height='5' fill='%234d8e33'/><rect x='13' y='15' width='4' height='5' fill='%234d8e33'/><rect x='9' y='7' width='2' height='4' fill='%2344872f'/><rect x='11' y='8' width='3' height='2' fill='%2344872f'/><rect x='3' y='5' width='7' height='1' fill='%237a6c3d'/><rect x='2' y='6' width='9' height='1' fill='%237a6c3d'/><rect x='1' y='7' width='10' height='1' fill='%237a6c3d'/><rect x='1' y='8' width='1' height='5' fill='%237a6c3d'/><rect x='2' y='13' width='1' height='1' fill='%237a6c3d'/><rect x='9' y='13' width='1' height='1' fill='%237a6c3d'/><rect x='4' y='6' width='5' height='1' fill='%23987842'/><rect x='3' y='7' width='7' height='1' fill='%23b89f6a'/><rect x='2' y='8' width='8' height='5' fill='%23e7d7aa'/><rect x='3' y='8' width='6' height='1' fill='%23f3ead1'/><rect x='3' y='12' width='6' height='1' fill='%23cab884'/><rect x='2' y='13' width='2' height='1' fill='%23b89f6a'/><rect x='7' y='13' width='2' height='1' fill='%23b89f6a'/><rect x='11' y='3' width='7' height='1' fill='%237a6c3d'/><rect x='10' y='4' width='9' height='1' fill='%237a6c3d'/><rect x='10' y='5' width='9' height='1' fill='%237a6c3d'/><rect x='10' y='6' width='1' height='5' fill='%237a6c3d'/><rect x='18' y='6' width='1' height='5' fill='%237a6c3d'/><rect x='11' y='11' width='1' height='1' fill='%237a6c3d'/><rect x='17' y='11' width='1' height='1' fill='%237a6c3d'/><rect x='12' y='4' width='5' height='1' fill='%23987842'/><rect x='11' y='5' width='7' height='1' fill='%23b89f6a'/><rect x='11' y='6' width='8' height='5' fill='%23e7d7aa'/><rect x='12' y='6' width='6' height='1' fill='%23f3ead1'/><rect x='12' y='10' width='6' height='1' fill='%23cab884'/><rect x='11' y='11' width='2' height='1' fill='%23b89f6a'/><rect x='16' y='11' width='2' height='1' fill='%23b89f6a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blossom{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='10' y='11' width='2' height='15' fill='%233b7434'/><rect x='6' y='18' width='4' height='2' fill='%234d8d42'/><rect x='12' y='20' width='4' height='2' fill='%234d8d42'/><rect x='5' y='19' width='4' height='5' fill='%235aa150'/><rect x='13' y='21' width='4' height='4' fill='%235aa150'/><rect x='10' y='3' width='2' height='1' fill='%23774e85'/><rect x='9' y='4' width='4' height='1' fill='%23774e85'/><rect x='7' y='5' width='2' height='1' fill='%23774e85'/><rect x='13' y='5' width='2' height='1' fill='%23774e85'/><rect x='6' y='7' width='1' height='4' fill='%23774e85'/><rect x='7' y='6' width='3' height='1' fill='%23774e85'/><rect x='12' y='6' width='3' height='1' fill='%23774e85'/><rect x='15' y='7' width='1' height='4' fill='%23774e85'/><rect x='8' y='9' width='1' height='2' fill='%23774e85'/><rect x='13' y='9' width='1' height='2' fill='%23774e85'/><rect x='9' y='10' width='4' height='1' fill='%23774e85'/><rect x='10' y='4' width='2' height='3' fill='%23b16fbe'/><rect x='7' y='7' width='2' height='4' fill='%23c48bd0'/><rect x='13' y='7' width='2' height='4' fill='%23c48bd0'/><rect x='9' y='9' width='4' height='2' fill='%23d6a3de'/><rect x='8' y='6' width='2' height='2' fill='%23d6a3de'/><rect x='12' y='6' width='2' height='2' fill='%23d6a3de'/><rect x='9' y='5' width='4' height='1' fill='%23edd5f2'/><rect x='10' y='7' width='2' height='2' fill='%23f0df85'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-white{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='10' y='11' width='2' height='15' fill='%233a743a'/><rect x='6' y='19' width='4' height='2' fill='%234e8a43'/><rect x='12' y='18' width='4' height='2' fill='%234e8a43'/><rect x='5' y='20' width='4' height='4' fill='%235a9a50'/><rect x='13' y='19' width='4' height='4' fill='%235a9a50'/><rect x='10' y='3' width='2' height='1' fill='%23b9b7ae'/><rect x='9' y='4' width='4' height='1' fill='%23b9b7ae'/><rect x='7' y='5' width='2' height='1' fill='%23b9b7ae'/><rect x='13' y='5' width='2' height='1' fill='%23b9b7ae'/><rect x='6' y='7' width='1' height='3' fill='%23b9b7ae'/><rect x='7' y='6' width='3' height='1' fill='%23b9b7ae'/><rect x='12' y='6' width='3' height='1' fill='%23b9b7ae'/><rect x='15' y='7' width='1' height='3' fill='%23b9b7ae'/><rect x='8' y='10' width='1' height='2' fill='%23b9b7ae'/><rect x='13' y='10' width='1' height='2' fill='%23b9b7ae'/><rect x='9' y='11' width='4' height='1' fill='%23b9b7ae'/><rect x='10' y='4' width='2' height='3' fill='%23d8d8d0'/><rect x='7' y='7' width='3' height='3' fill='%23f2f1e8'/><rect x='12' y='7' width='3' height='3' fill='%23f2f1e8'/><rect x='9' y='10' width='4' height='2' fill='%23ffffff'/><rect x='8' y='6' width='2' height='2' fill='%23ffffff'/><rect x='12' y='6' width='2' height='2' fill='%23ffffff'/><rect x='9' y='5' width='4' height='1' fill='%23ffffff'/><rect x='10' y='8' width='2' height='2' fill='%23f0d96a'/><rect x='10' y='9' width='2' height='1' fill='%23c9a74a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-blue{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='10' y='10' width='2' height='16' fill='%23346f42'/><rect x='6' y='18' width='4' height='2' fill='%23488452'/><rect x='12' y='20' width='4' height='2' fill='%23488452'/><rect x='5' y='19' width='4' height='4' fill='%235a9a61'/><rect x='13' y='21' width='4' height='4' fill='%235a9a61'/><rect x='10' y='3' width='2' height='1' fill='%234466b0'/><rect x='9' y='4' width='4' height='1' fill='%234466b0'/><rect x='7' y='5' width='2' height='1' fill='%234466b0'/><rect x='13' y='5' width='2' height='1' fill='%234466b0'/><rect x='6' y='7' width='1' height='4' fill='%234466b0'/><rect x='7' y='6' width='3' height='1' fill='%234466b0'/><rect x='12' y='6' width='3' height='1' fill='%234466b0'/><rect x='15' y='7' width='1' height='4' fill='%234466b0'/><rect x='8' y='9' width='1' height='3' fill='%234466b0'/><rect x='13' y='9' width='1' height='3' fill='%234466b0'/><rect x='9' y='11' width='4' height='1' fill='%234466b0'/><rect x='10' y='4' width='2' height='3' fill='%235786d8'/><rect x='7' y='7' width='3' height='4' fill='%236fa2ee'/><rect x='12' y='7' width='3' height='4' fill='%236fa2ee'/><rect x='9' y='9' width='4' height='3' fill='%238bbcff'/><rect x='8' y='6' width='2' height='2' fill='%238bbcff'/><rect x='12' y='6' width='2' height='2' fill='%238bbcff'/><rect x='9' y='5' width='4' height='1' fill='%23cfe4ff'/><rect x='10' y='8' width='2' height='2' fill='%23ffe28a'/><rect x='10' y='9' width='2' height='1' fill='%23caa64a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-flower-sun{width:17em;height:21em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 28'><rect x='10' y='12' width='2' height='14' fill='%233b7434'/><rect x='6' y='19' width='4' height='2' fill='%234d8d42'/><rect x='12' y='20' width='4' height='2' fill='%234d8d42'/><rect x='5' y='20' width='4' height='4' fill='%235aa150'/><rect x='13' y='21' width='4' height='4' fill='%235aa150'/><rect x='10' y='2' width='2' height='1' fill='%23b57f2e'/><rect x='9' y='3' width='4' height='1' fill='%23b57f2e'/><rect x='7' y='4' width='2' height='1' fill='%23b57f2e'/><rect x='13' y='4' width='2' height='1' fill='%23b57f2e'/><rect x='5' y='7' width='4' height='1' fill='%23b57f2e'/><rect x='13' y='7' width='4' height='1' fill='%23b57f2e'/><rect x='6' y='11' width='3' height='3' fill='%23b57f2e'/><rect x='13' y='11' width='3' height='3' fill='%23b57f2e'/><rect x='10' y='3' width='2' height='4' fill='%23f5c84b'/><rect x='7' y='5' width='2' height='3' fill='%23f0b83e'/><rect x='13' y='5' width='2' height='3' fill='%23f0b83e'/><rect x='5' y='8' width='4' height='2' fill='%23f5c84b'/><rect x='13' y='8' width='4' height='2' fill='%23f5c84b'/><rect x='7' y='11' width='2' height='3' fill='%23d99532'/><rect x='13' y='11' width='2' height='3' fill='%23d99532'/><rect x='9' y='7' width='4' height='5' fill='%23805a2f'/><rect x='10' y='8' width='2' height='3' fill='%23a6783a'/><rect x='9' y='7' width='4' height='1' fill='%23c08b42'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-bush-berry{width:60em;height:26em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 28'><rect x='4' y='18' width='56' height='6' fill='%23264f24'/><rect x='2' y='15' width='60' height='8' fill='%2332642d'/><rect x='1' y='14' width='10' height='6' fill='%233b7335'/><rect x='8' y='11' width='12' height='8' fill='%2344813d'/><rect x='17' y='10' width='12' height='9' fill='%234d8d45'/><rect x='26' y='9' width='12' height='10' fill='%2357994f'/><rect x='35' y='10' width='12' height='9' fill='%234d8d45'/><rect x='44' y='11' width='12' height='8' fill='%2344813d'/><rect x='53' y='14' width='10' height='6' fill='%233b7335'/><rect x='10' y='9' width='8' height='3' fill='%2364aa57'/><rect x='18' y='8' width='8' height='3' fill='%236cb45f'/><rect x='27' y='7' width='10' height='3' fill='%2374be67'/><rect x='38' y='8' width='8' height='3' fill='%236cb45f'/><rect x='46' y='9' width='8' height='3' fill='%2364aa57'/><rect x='11' y='16' width='2' height='2' fill='%23e54848'/><rect x='12' y='15' width='1' height='1' fill='%23ffd0d0'/><rect x='20' y='13' width='2' height='2' fill='%23d83f3f'/><rect x='21' y='12' width='1' height='1' fill='%23ffd0d0'/><rect x='29' y='16' width='2' height='2' fill='%23e54848'/><rect x='30' y='15' width='1' height='1' fill='%23ffd0d0'/><rect x='38' y='14' width='2' height='2' fill='%23d83f3f'/><rect x='39' y='13' width='1' height='1' fill='%23ffd0d0'/><rect x='47' y='16' width='2' height='2' fill='%23e54848'/><rect x='48' y='15' width='1' height='1' fill='%23ffd0d0'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-fence-wood{width:72em;height:18em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 18'><rect x='3' y='4' width='4' height='12' fill='%238b613e'/><rect x='15' y='4' width='4' height='12' fill='%238b613e'/><rect x='27' y='4' width='4' height='12' fill='%238b613e'/><rect x='39' y='4' width='4' height='12' fill='%238b613e'/><rect x='51' y='4' width='4' height='12' fill='%238b613e'/><rect x='63' y='4' width='4' height='12' fill='%238b613e'/><rect x='2' y='3' width='6' height='1' fill='%23b78658'/><rect x='14' y='3' width='6' height='1' fill='%23b78658'/><rect x='26' y='3' width='6' height='1' fill='%23b78658'/><rect x='38' y='3' width='6' height='1' fill='%23b78658'/><rect x='50' y='3' width='6' height='1' fill='%23b78658'/><rect x='62' y='3' width='6' height='1' fill='%23b78658'/><rect x='4' y='7' width='60' height='3' fill='%239d6f47'/><rect x='4' y='11' width='60' height='3' fill='%239d6f47'/><rect x='4' y='7' width='60' height='1' fill='%23c18f62'/><rect x='4' y='11' width='60' height='1' fill='%23c18f62'/><rect x='4' y='9' width='60' height='1' fill='%23724d31'/><rect x='4' y='13' width='60' height='1' fill='%23724d31'/></svg>");}
+
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-iv{width:40em;height:34em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 34'><rect x='0' y='0' width='40' height='34' fill='%23c9bfb0'/><rect x='1' y='1' width='38' height='32' fill='%23e8e0cf'/><rect x='1' y='1' width='38' height='1' fill='%23f5efe2'/><rect x='1' y='1' width='1' height='32' fill='%23f5efe2'/><rect x='38' y='1' width='1' height='32' fill='%23d3c7b3'/><rect x='1' y='32' width='38' height='1' fill='%23d3c7b3'/><rect x='4' y='4' width='32' height='26' fill='%23bdb1a0'/><rect x='5' y='5' width='30' height='24' fill='%23f6f1e6'/><rect x='5' y='5' width='30' height='1' fill='%23fdfaf2'/><rect x='5' y='5' width='1' height='24' fill='%23fdfaf2'/><rect x='17' y='22' width='6' height='5' fill='%23b8946a'/><rect x='18' y='23' width='4' height='1' fill='%23cda87c'/><rect x='15' y='16' width='2' height='7' fill='%23839a6e'/><rect x='19' y='15' width='2' height='8' fill='%23839a6e'/><rect x='23' y='16' width='2' height='7' fill='%23839a6e'/><rect x='13' y='13' width='4' height='4' fill='%23cf9aaa'/><rect x='13' y='13' width='4' height='1' fill='%23e0b8c2'/><rect x='14' y='14' width='2' height='2' fill='%23e8cf86'/><rect x='18' y='10' width='4' height='4' fill='%23b8a6cf'/><rect x='18' y='10' width='4' height='1' fill='%23ccc0e0'/><rect x='19' y='11' width='2' height='2' fill='%23e8cf86'/><rect x='23' y='12' width='4' height='4' fill='%23dca878'/><rect x='23' y='12' width='4' height='1' fill='%23e8c49a'/><rect x='24' y='13' width='2' height='2' fill='%23e8cf86'/><rect x='10' y='15' width='3' height='3' fill='%23c2d0a0'/><rect x='27' y='14' width='3' height='3' fill='%23c2d0a0'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-iv{width:30em;height:32em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 32'><rect width='30' height='32' fill='%23c9bfb0'/><rect x='1' y='1' width='28' height='30' fill='%23e8e0cf'/><rect x='1' y='1' width='28' height='1' fill='%23f5efe2'/><rect x='1' y='1' width='1' height='30' fill='%23f5efe2'/><rect x='1' y='30' width='28' height='1' fill='%23d3c7b3'/><rect x='4' y='4' width='22' height='24' fill='%23bdb1a0'/><rect x='5' y='5' width='20' height='22' fill='%23f6f1e6'/><rect x='5' y='5' width='20' height='1' fill='%23fdfaf2'/><rect x='5' y='5' width='1' height='22' fill='%23fdfaf2'/><rect x='5' y='26' width='20' height='1' fill='%23ece5d8'/><rect x='14' y='17' width='2' height='8' fill='%23839a6e'/><rect x='14' y='17' width='1' height='8' fill='%2396b088'/><rect x='10' y='20' width='4' height='1' fill='%23839a6e'/><rect x='16' y='19' width='4' height='1' fill='%23839a6e'/><rect x='9' y='19' width='2' height='2' fill='%2396b088'/><rect x='19' y='18' width='2' height='2' fill='%2396b088'/><rect x='11' y='9' width='8' height='8' fill='%23d49aae'/><rect x='11' y='9' width='8' height='2' fill='%23e6b8c6'/><rect x='12' y='8' width='6' height='1' fill='%23e6b8c6'/><rect x='12' y='16' width='6' height='1' fill='%23b87e8e'/><rect x='13' y='11' width='4' height='4' fill='%23ecd28a'/><rect x='14' y='12' width='2' height='2' fill='%23f2e2a4'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-iv{width:28em;height:34em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 34'><rect x='0' y='0' width='28' height='34' fill='%23c9bfb0'/><rect x='1' y='1' width='26' height='32' fill='%23e8e0cf'/><rect x='1' y='1' width='26' height='1' fill='%23f5efe2'/><rect x='1' y='1' width='1' height='32' fill='%23f5efe2'/><rect x='1' y='32' width='26' height='1' fill='%23d3c7b3'/><rect x='4' y='4' width='20' height='26' fill='%23bdb1a0'/><rect x='5' y='5' width='18' height='24' fill='%23f6f1e6'/><rect x='5' y='5' width='18' height='1' fill='%23fdfaf2'/><rect x='5' y='5' width='1' height='24' fill='%23fdfaf2'/><rect x='22' y='5' width='1' height='24' fill='%23f6f1e6'/><rect x='9' y='20' width='10' height='7' fill='%23c08a5e'/><rect x='9' y='20' width='10' height='1' fill='%23d4a074'/><rect x='8' y='19' width='12' height='2' fill='%23cf9868'/><rect x='13' y='13' width='2' height='7' fill='%23839a6e'/><rect x='10' y='14' width='3' height='2' fill='%2396b088'/><rect x='15' y='13' width='3' height='2' fill='%2396b088'/><rect x='11' y='10' width='3' height='3' fill='%23d49aae'/><rect x='11' y='10' width='3' height='1' fill='%23e6b8c6'/><rect x='15' y='11' width='3' height='3' fill='%23b8a6cf'/><rect x='15' y='11' width='3' height='1' fill='%23ccc0e0'/><rect x='13' y='8' width='2' height='2' fill='%23ecd28a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-iv{width:28em;height:32em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 32'><rect x='0' y='0' width='28' height='32' fill='%23c9bfb0'/><rect x='1' y='1' width='26' height='30' fill='%23e8e0cf'/><rect x='1' y='1' width='26' height='1' fill='%23f5efe2'/><rect x='1' y='1' width='1' height='30' fill='%23f5efe2'/><rect x='4' y='4' width='20' height='24' fill='%23bdb1a0'/><rect x='5' y='5' width='18' height='22' fill='%23faf6ee'/><rect x='5' y='5' width='18' height='1' fill='%23fdfaf2'/><rect x='9' y='8' width='1' height='14' fill='%23a8b87e'/><rect x='9' y='10' width='4' height='1' fill='%23a8b87e'/><rect x='6' y='13' width='4' height='1' fill='%23a8b87e'/><rect x='9' y='16' width='4' height='1' fill='%23a8b87e'/><rect x='8' y='8' width='3' height='2' fill='%23c98a9e'/><rect x='7' y='12' width='2' height='2' fill='%23c0a0d0'/><rect x='11' y='15' width='2' height='2' fill='%23d6b074'/><rect x='17' y='9' width='1' height='13' fill='%23a8b87e'/><rect x='17' y='11' width='4' height='1' fill='%23a8b87e'/><rect x='14' y='14' width='4' height='1' fill='%23a8b87e'/><rect x='16' y='8' width='3' height='2' fill='%23c0a0d0'/><rect x='19' y='12' width='2' height='2' fill='%23c98a9e'/><rect x='14' y='16' width='2' height='2' fill='%23d6b074'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-bouquet-mt{width:40em;height:34em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 34'><rect x='0' y='0' width='40' height='34' fill='%236e6258'/><rect x='1' y='1' width='38' height='32' fill='%239a8c7e'/><rect x='1' y='1' width='38' height='1' fill='%23b3a596'/><rect x='1' y='1' width='1' height='32' fill='%23b3a596'/><rect x='38' y='1' width='1' height='32' fill='%237e7064'/><rect x='1' y='32' width='38' height='1' fill='%237e7064'/><rect x='4' y='4' width='32' height='26' fill='%23857668'/><rect x='5' y='5' width='30' height='24' fill='%23ece4d6'/><rect x='5' y='5' width='30' height='1' fill='%23f6f1e6'/><rect x='5' y='5' width='1' height='24' fill='%23f6f1e6'/><rect x='17' y='22' width='6' height='5' fill='%23a88a64'/><rect x='18' y='23' width='4' height='1' fill='%23bf9c72'/><rect x='15' y='16' width='2' height='7' fill='%237e9270'/><rect x='19' y='15' width='2' height='8' fill='%237e9270'/><rect x='23' y='16' width='2' height='7' fill='%237e9270'/><rect x='13' y='13' width='4' height='4' fill='%23bf95a2'/><rect x='13' y='13' width='4' height='1' fill='%23d2adb8'/><rect x='14' y='14' width='2' height='2' fill='%23d9c182'/><rect x='18' y='10' width='4' height='4' fill='%23ad9ec2'/><rect x='18' y='10' width='4' height='1' fill='%23c2b6d8'/><rect x='19' y='11' width='2' height='2' fill='%23d9c182'/><rect x='23' y='12' width='4' height='4' fill='%23cf9f78'/><rect x='23' y='12' width='4' height='1' fill='%23dcb594'/><rect x='24' y='13' width='2' height='2' fill='%23d9c182'/><rect x='10' y='15' width='3' height='3' fill='%23aab487'/><rect x='27' y='14' width='3' height='3' fill='%23aab487'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-single-mt{width:30em;height:32em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 32'><rect x='0' y='0' width='30' height='32' fill='%236e6258'/><rect x='1' y='1' width='28' height='30' fill='%23968a7d'/><rect x='1' y='1' width='28' height='1' fill='%23b3a596'/><rect x='1' y='1' width='1' height='30' fill='%23b3a596'/><rect x='1' y='30' width='28' height='1' fill='%237e7064'/><rect x='4' y='4' width='22' height='24' fill='%23857668'/><rect x='5' y='5' width='20' height='22' fill='%23ece4d6'/><rect x='5' y='5' width='20' height='1' fill='%23f6f1e6'/><rect x='5' y='5' width='1' height='22' fill='%23f6f1e6'/><rect x='24' y='5' width='1' height='22' fill='%23ece4d6'/><rect x='14' y='17' width='2' height='8' fill='%237e9270'/><rect x='14' y='17' width='1' height='8' fill='%2396a888'/><rect x='10' y='20' width='4' height='1' fill='%237e9270'/><rect x='16' y='19' width='4' height='1' fill='%237e9270'/><rect x='9' y='19' width='2' height='2' fill='%2396a888'/><rect x='19' y='18' width='2' height='2' fill='%2396a888'/><rect x='11' y='9' width='8' height='8' fill='%23bf95a2'/><rect x='11' y='9' width='8' height='2' fill='%23d2adb8'/><rect x='12' y='8' width='6' height='1' fill='%23d2adb8'/><rect x='12' y='16' width='6' height='1' fill='%23a37e8a'/><rect x='13' y='11' width='4' height='4' fill='%23d9c182'/><rect x='14' y='12' width='2' height='2' fill='%23e6d29a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pot-mt{width:28em;height:34em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 34'><rect width='28' height='34' fill='%236e6258'/><rect x='1' y='1' width='26' height='32' fill='%239a8c7e'/><rect x='1' y='1' width='26' height='1' fill='%23b3a596'/><rect x='1' y='1' width='1' height='32' fill='%23b3a596'/><rect x='1' y='32' width='26' height='1' fill='%237e7064'/><rect x='4' y='4' width='20' height='26' fill='%23857668'/><rect x='5' y='5' width='18' height='24' fill='%23ece4d6'/><rect x='5' y='5' width='18' height='1' fill='%23f6f1e6'/><rect x='5' y='5' width='1' height='24' fill='%23f6f1e6'/><rect x='5' y='28' width='18' height='1' fill='%23ddd3c2'/><rect x='9' y='20' width='10' height='7' fill='%23b08560'/><rect x='8' y='19' width='12' height='2' fill='%23bd9069'/><rect x='9' y='20' width='10' height='1' fill='%23c49c75'/><rect x='13' y='13' width='2' height='7' fill='%237e9270'/><rect x='10' y='14' width='3' height='2' fill='%2396a888'/><rect x='15' y='13' width='3' height='2' fill='%2396a888'/><rect x='11' y='10' width='3' height='3' fill='%23bf95a2'/><rect x='11' y='10' width='3' height='1' fill='%23d2adb8'/><rect x='15' y='11' width='3' height='3' fill='%23ad9ec2'/><rect x='15' y='11' width='3' height='1' fill='%23c2b6d8'/><rect x='13' y='8' width='2' height='2' fill='%23d9c182'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-frame-pressed-mt{width:28em;height:32em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 32'><rect x='0' y='0' width='28' height='32' fill='%236e6258'/><rect x='1' y='1' width='26' height='30' fill='%239a8c7e'/><rect x='1' y='1' width='26' height='1' fill='%23b3a596'/><rect x='1' y='1' width='1' height='30' fill='%23b3a596'/><rect x='4' y='4' width='20' height='24' fill='%23857668'/><rect x='5' y='5' width='18' height='22' fill='%23f0ebe0'/><rect x='5' y='5' width='18' height='1' fill='%23f6f1e6'/><rect x='9' y='8' width='1' height='14' fill='%2398a878'/><rect x='9' y='10' width='4' height='1' fill='%2398a878'/><rect x='6' y='13' width='4' height='1' fill='%2398a878'/><rect x='9' y='16' width='4' height='1' fill='%2398a878'/><rect x='8' y='8' width='3' height='2' fill='%23b8899a'/><rect x='7' y='12' width='2' height='2' fill='%23a795c0'/><rect x='11' y='15' width='2' height='2' fill='%23c8a46e'/><rect x='17' y='9' width='1' height='13' fill='%2398a878'/><rect x='17' y='11' width='4' height='1' fill='%2398a878'/><rect x='14' y='14' width='4' height='1' fill='%2398a878'/><rect x='16' y='8' width='3' height='2' fill='%23a795c0'/><rect x='19' y='12' width='2' height='2' fill='%23b8899a'/><rect x='14' y='16' width='2' height='2' fill='%23c8a46e'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-swag{width:28em;height:40em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 40'><rect x='13' y='2' width='2' height='2' fill='%238a7a5c'/><rect x='10' y='4' width='8' height='1' fill='%23b8a07a'/><rect x='12' y='5' width='4' height='2' fill='%23a8946e'/><rect x='13' y='7' width='2' height='6' fill='%237a6a4c'/><rect x='11' y='8' width='2' height='8' fill='%238a7656'/><rect x='15' y='8' width='2' height='8' fill='%238a7656'/><rect x='9' y='10' width='2' height='9' fill='%237a6a4c'/><rect x='17' y='10' width='2' height='9' fill='%237a6a4c'/><rect x='7' y='13' width='2' height='8' fill='%23857448'/><rect x='19' y='13' width='2' height='8' fill='%23857448'/><rect x='12' y='13' width='4' height='5' fill='%23c98a9a'/><rect x='12' y='13' width='4' height='2' fill='%23dba6b2'/><rect x='9' y='16' width='3' height='4' fill='%23b08a6a'/><rect x='16' y='16' width='3' height='4' fill='%23b08a6a'/><rect x='10' y='19' width='3' height='5' fill='%23c7a6c0'/><rect x='10' y='19' width='3' height='2' fill='%23d8bcd2'/><rect x='15' y='19' width='3' height='5' fill='%23a89a6a'/><rect x='7' y='20' width='2' height='6' fill='%23967c4e'/><rect x='19' y='20' width='2' height='6' fill='%23967c4e'/><rect x='12' y='22' width='4' height='6' fill='%23bb6f7e'/><rect x='12' y='22' width='4' height='2' fill='%23cf8a98'/><rect x='9' y='24' width='3' height='6' fill='%23867044'/><rect x='16' y='24' width='3' height='6' fill='%23867044'/><rect x='11' y='27' width='2' height='6' fill='%237a6a4c'/><rect x='15' y='27' width='2' height='6' fill='%237a6a4c'/><rect x='13' y='29' width='2' height='7' fill='%238a7656'/><rect x='10' y='5' width='1' height='30' fill='%23c9b896'/><rect x='17' y='5' width='1' height='30' fill='%23c9b896'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-large{width:44em;height:38em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 40'><rect x='0' y='0' width='48' height='36' fill='%235a3c24'/><rect x='1' y='1' width='46' height='34' fill='%238a6342'/><rect x='1' y='1' width='46' height='1' fill='%23a87a52'/><rect x='3' y='3' width='42' height='28' fill='%23a9d4ea'/><rect x='3' y='3' width='42' height='7' fill='%23c0e3f2'/><rect x='5' y='5' width='5' height='1' fill='%23dcf0f8'/><rect x='30' y='4' width='6' height='1' fill='%23dcf0f8'/><rect x='3' y='10' width='42' height='6' fill='%235f8f4a'/><rect x='3' y='10' width='6' height='3' fill='%236fa055'/><rect x='10' y='9' width='7' height='4' fill='%236fa055'/><rect x='18' y='10' width='6' height='3' fill='%23567f42'/><rect x='25' y='9' width='7' height='4' fill='%236fa055'/><rect x='33' y='10' width='6' height='3' fill='%23567f42'/><rect x='39' y='9' width='6' height='4' fill='%236fa055'/><rect x='6' y='9' width='2' height='1' fill='%2382b568'/><rect x='13' y='8' width='2' height='1' fill='%2382b568'/><rect x='28' y='8' width='2' height='1' fill='%2382b568'/><rect x='3' y='15' width='42' height='16' fill='%237cb356'/><rect x='3' y='15' width='42' height='2' fill='%238cc266'/><rect x='3' y='26' width='42' height='5' fill='%236aa048'/><rect x='7' y='19' width='1' height='1' fill='%23f0e85a'/><rect x='14' y='21' width='1' height='1' fill='%23e87aa8'/><rect x='21' y='18' width='1' height='1' fill='%23ffffff'/><rect x='28' y='22' width='1' height='1' fill='%23c89af0'/><rect x='35' y='20' width='1' height='1' fill='%23f0e85a'/><rect x='41' y='19' width='1' height='1' fill='%23e87aa8'/><rect x='11' y='27' width='1' height='1' fill='%23ffffff'/><rect x='25' y='28' width='1' height='1' fill='%23e87aa8'/><rect x='18' y='25' width='1' height='1' fill='%23f0e85a'/><rect x='38' y='27' width='1' height='1' fill='%23ffffff'/><rect x='15' y='3' width='2' height='28' fill='%238a6342'/><rect x='15' y='3' width='1' height='28' fill='%23a87a52'/><rect x='31' y='3' width='2' height='28' fill='%238a6342'/><rect x='31' y='3' width='1' height='28' fill='%23a87a52'/><rect x='3' y='16' width='42' height='2' fill='%238a6342'/><rect x='3' y='16' width='42' height='1' fill='%23a87a52'/><rect x='0' y='31' width='48' height='2' fill='%236b4a30'/><rect x='0' y='33' width='48' height='4' fill='%239a6b42'/><rect x='0' y='33' width='48' height='1' fill='%23b08254'/><rect x='0' y='37' width='48' height='1' fill='%235a3c24'/><rect x='6' y='33' width='4' height='4' fill='%23c2607a'/><rect x='6' y='32' width='4' height='1' fill='%235f8f4a'/><rect x='38' y='32' width='2' height='5' fill='%23cfa0d8'/><rect x='38' y='32' width='2' height='1' fill='%23e0c0e8'/><rect x='20' y='34' width='3' height='3' fill='%23d8c49a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-small{width:30em;height:33em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 40'><rect x='0' y='0' width='36' height='36' fill='%235a3c24'/><rect x='1' y='1' width='34' height='34' fill='%238a6342'/><rect x='1' y='1' width='34' height='1' fill='%23a87a52'/><rect x='3' y='3' width='30' height='28' fill='%23a9d4ea'/><rect x='3' y='3' width='30' height='7' fill='%23c0e3f2'/><rect x='5' y='5' width='4' height='1' fill='%23dcf0f8'/><rect x='23' y='4' width='5' height='1' fill='%23dcf0f8'/><rect x='3' y='10' width='30' height='6' fill='%235f8f4a'/><rect x='3' y='10' width='5' height='3' fill='%236fa055'/><rect x='9' y='9' width='6' height='4' fill='%236fa055'/><rect x='16' y='10' width='5' height='3' fill='%23567f42'/><rect x='22' y='9' width='6' height='4' fill='%236fa055'/><rect x='28' y='10' width='5' height='3' fill='%23567f42'/><rect x='3' y='15' width='30' height='16' fill='%237cb356'/><rect x='3' y='15' width='30' height='2' fill='%238cc266'/><rect x='3' y='26' width='30' height='5' fill='%236aa048'/><rect x='6' y='19' width='1' height='1' fill='%23f0e85a'/><rect x='12' y='21' width='1' height='1' fill='%23e87aa8'/><rect x='18' y='18' width='1' height='1' fill='%23ffffff'/><rect x='24' y='22' width='1' height='1' fill='%23c89af0'/><rect x='29' y='20' width='1' height='1' fill='%23f0e85a'/><rect x='9' y='27' width='1' height='1' fill='%23ffffff'/><rect x='22' y='28' width='1' height='1' fill='%23e87aa8'/><rect x='15' y='25' width='1' height='1' fill='%23f0e85a'/><rect x='17' y='3' width='2' height='28' fill='%238a6342'/><rect x='17' y='3' width='1' height='28' fill='%23a87a52'/><rect x='3' y='16' width='30' height='2' fill='%238a6342'/><rect x='3' y='16' width='30' height='1' fill='%23a87a52'/><rect x='0' y='31' width='36' height='2' fill='%236b4a30'/><rect x='0' y='33' width='36' height='4' fill='%239a6b42'/><rect x='0' y='33' width='36' height='1' fill='%23b08254'/><rect x='0' y='37' width='36' height='1' fill='%235a3c24'/><rect x='5' y='33' width='4' height='4' fill='%23c2607a'/><rect x='5' y='32' width='4' height='1' fill='%235f8f4a'/><rect x='27' y='32' width='2' height='5' fill='%23cfa0d8'/><rect x='27' y='32' width='2' height='1' fill='%23e0c0e8'/><rect x='11' y='34' width='2' height='3' fill='%23d8c49a'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-window-curtain{width:44em;height:38em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 40'><rect x='10' y='2' width='28' height='34' fill='%235a3c24'/><rect x='11' y='3' width='26' height='33' fill='%238a6342'/><rect x='11' y='3' width='26' height='1' fill='%23a87a52'/><rect x='13' y='5' width='22' height='26' fill='%23a9d4ea'/><rect x='13' y='5' width='22' height='7' fill='%23c0e3f2'/><rect x='13' y='12' width='22' height='5' fill='%235f8f4a'/><rect x='13' y='12' width='6' height='3' fill='%236fa055'/><rect x='21' y='11' width='6' height='4' fill='%236fa055'/><rect x='29' y='12' width='6' height='3' fill='%23567f42'/><rect x='13' y='16' width='22' height='15' fill='%237cb356'/><rect x='13' y='16' width='22' height='2' fill='%238cc266'/><rect x='13' y='26' width='22' height='5' fill='%236aa048'/><rect x='17' y='20' width='1' height='1' fill='%23f0e85a'/><rect x='24' y='22' width='1' height='1' fill='%23e87aa8'/><rect x='30' y='19' width='1' height='1' fill='%23ffffff'/><rect x='20' y='27' width='1' height='1' fill='%23f0e85a'/><rect x='28' y='28' width='1' height='1' fill='%23c89af0'/><rect x='23' y='5' width='2' height='26' fill='%238a6342'/><rect x='23' y='5' width='1' height='26' fill='%23a87a52'/><rect x='13' y='17' width='22' height='2' fill='%238a6342'/><rect x='13' y='17' width='22' height='1' fill='%23a87a52'/><rect x='10' y='31' width='28' height='2' fill='%236b4a30'/><rect x='10' y='33' width='28' height='3' fill='%239a6b42'/><rect x='10' y='33' width='28' height='1' fill='%23b08254'/><rect x='2' y='1' width='44' height='2' fill='%235a4030'/><rect x='1' y='1' width='2' height='3' fill='%23e8d8b8'/><rect x='45' y='1' width='2' height='3' fill='%23e8d8b8'/><rect x='3' y='3' width='11' height='32' fill='%23eef2f8'/><rect x='4' y='3' width='1' height='32' fill='%23ffffff'/><rect x='7' y='3' width='1' height='32' fill='%23ffffff'/><rect x='10' y='3' width='1' height='32' fill='%23ffffff'/><rect x='6' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='9' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='12' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='3' y='3' width='11' height='1' fill='%23d3dde9'/><rect x='34' y='3' width='11' height='32' fill='%23eef2f8'/><rect x='35' y='3' width='1' height='32' fill='%23ffffff'/><rect x='38' y='3' width='1' height='32' fill='%23ffffff'/><rect x='41' y='3' width='1' height='32' fill='%23ffffff'/><rect x='36' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='39' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='44' y='3' width='1' height='32' fill='%23d3dde9'/><rect x='34' y='3' width='11' height='1' fill='%23d3dde9'/></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-sakura{width:104em;height:69em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 48' shape-rendering='crispEdges'><g fill='%23b56b88'><rect x='8' y='14' width='14' height='8'/><rect x='50' y='14' width='14' height='8'/><rect x='14' y='8' width='44' height='8'/><rect x='6' y='16' width='60' height='8'/><rect x='5' y='22' width='26' height='7'/><rect x='41' y='22' width='26' height='7'/><rect x='18' y='5' width='16' height='5'/><rect x='38' y='5' width='16' height='5'/><rect x='10' y='22' width='52' height='4'/><rect x='26' y='26' width='20' height='3'/></g><g fill='%23d98fab'><rect x='20' y='5' width='14' height='4'/><rect x='38' y='5' width='14' height='4'/><rect x='13' y='9' width='15' height='5'/><rect x='44' y='9' width='15' height='5'/><rect x='30' y='8' width='12' height='4'/><rect x='6' y='16' width='15' height='5'/><rect x='51' y='16' width='15' height='5'/><rect x='8' y='14' width='12' height='4'/><rect x='52' y='14' width='12' height='4'/><rect x='22' y='15' width='16' height='4'/><rect x='38' y='15' width='16' height='4'/><rect x='5' y='22' width='15' height='5'/><rect x='52' y='22' width='15' height='5'/><rect x='22' y='22' width='16' height='4'/><rect x='38' y='22' width='16' height='4'/><rect x='13' y='25' width='16' height='4'/><rect x='43' y='25' width='16' height='4'/></g><g fill='%23f0b4cc'><rect x='22' y='5' width='8' height='3'/><rect x='44' y='5' width='8' height='3'/><rect x='16' y='10' width='9' height='3'/><rect x='49' y='10' width='9' height='3'/><rect x='32' y='8' width='10' height='3'/><rect x='8' y='17' width='9' height='3'/><rect x='56' y='17' width='9' height='3'/><rect x='24' y='16' width='10' height='2'/><rect x='40' y='16' width='10' height='2'/><rect x='7' y='23' width='9' height='3'/><rect x='57' y='23' width='8' height='3'/><rect x='15' y='25' width='9' height='2'/><rect x='49' y='25' width='9' height='2'/></g><g fill='%23ffd4e4'><rect x='24' y='5' width='4' height='2'/><rect x='46' y='5' width='4' height='2'/><rect x='18' y='10' width='4' height='2'/><rect x='51' y='10' width='4' height='2'/><rect x='10' y='17' width='4' height='2'/><rect x='34' y='8' width='5' height='2'/></g><g fill='%23a05675'><rect x='30' y='17' width='16' height='2'/><rect x='18' y='19' width='10' height='2'/><rect x='46' y='19' width='10' height='2'/><rect x='24' y='25' width='14' height='2'/><rect x='40' y='25' width='14' height='2'/></g><g fill='%237a4a30'><rect x='33' y='27' width='6' height='14'/><rect x='28' y='29' width='6' height='3'/><rect x='40' y='28' width='6' height='3'/></g><rect x='34' y='27' width='3' height='14' fill='%238f5a3c'/><rect x='38' y='27' width='2' height='14' fill='%235e3a26'/><g fill='%237a4a30'><rect x='30' y='41' width='5' height='2'/><rect x='38' y='41' width='6' height='2'/><rect x='26' y='42' width='6' height='1'/><rect x='42' y='42' width='6' height='1'/></g><g fill='%23d98fab'><rect x='16' y='34' width='2' height='1'/><rect x='54' y='32' width='2' height='1'/><rect x='20' y='38' width='1' height='1'/><rect x='50' y='37' width='1' height='1'/></g></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-willow{width:114em;height:72em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 50' shape-rendering='crispEdges'><g fill='%236a9460'><rect x='6' y='14' width='16' height='8'/><rect x='58' y='14' width='16' height='8'/><rect x='16' y='8' width='48' height='8'/><rect x='5' y='16' width='70' height='6'/><rect x='22' y='5' width='18' height='4'/><rect x='40' y='5' width='18' height='4'/></g><g fill='%2388b478'><rect x='22' y='5' width='16' height='4'/><rect x='42' y='5' width='16' height='4'/><rect x='14' y='9' width='16' height='5'/><rect x='50' y='9' width='16' height='5'/><rect x='32' y='8' width='16' height='4'/><rect x='6' y='15' width='16' height='5'/><rect x='58' y='15' width='16' height='5'/><rect x='24' y='15' width='16' height='4'/><rect x='40' y='15' width='16' height='4'/></g><g fill='%23a8d090'><rect x='24' y='5' width='9' height='3'/><rect x='48' y='5' width='9' height='3'/><rect x='16' y='10' width='10' height='3'/><rect x='56' y='10' width='10' height='3'/><rect x='34' y='8' width='12' height='3'/><rect x='8' y='16' width='10' height='2'/><rect x='62' y='16' width='10' height='2'/></g><g fill='%23c8e8b0'><rect x='26' y='5' width='4' height='2'/><rect x='50' y='5' width='4' height='2'/><rect x='18' y='10' width='4' height='2'/><rect x='58' y='10' width='4' height='2'/></g><g fill='%235a8050'><rect x='7' y='22' width='4' height='14'/><rect x='14' y='21' width='3' height='11'/><rect x='21' y='20' width='3' height='15'/><rect x='28' y='21' width='3' height='10'/><rect x='35' y='20' width='3' height='13'/><rect x='42' y='20' width='3' height='10'/><rect x='49' y='20' width='3' height='15'/><rect x='56' y='21' width='3' height='11'/><rect x='63' y='21' width='3' height='14'/><rect x='70' y='22' width='4' height='13'/><rect x='31' y='22' width='2' height='8'/><rect x='47' y='22' width='2' height='8'/></g><g fill='%2388b478'><rect x='7' y='22' width='3' height='9'/><rect x='21' y='20' width='2' height='9'/><rect x='35' y='20' width='2' height='8'/><rect x='49' y='20' width='2' height='9'/><rect x='63' y='21' width='2' height='9'/><rect x='70' y='22' width='3' height='8'/></g><g fill='%23a8d090'><rect x='8' y='34' width='2' height='2'/><rect x='22' y='33' width='2' height='2'/><rect x='50' y='33' width='2' height='2'/><rect x='71' y='33' width='2' height='2'/></g><g fill='%237a4a30'><rect x='36' y='19' width='7' height='24'/><rect x='31' y='24' width='6' height='3'/><rect x='42' y='23' width='6' height='3'/></g><rect x='37' y='19' width='3' height='24' fill='%238f5a3c'/><rect x='41' y='19' width='2' height='24' fill='%235e3a26'/><g fill='%237a4a30'><rect x='33' y='43' width='5' height='2'/><rect x='41' y='43' width='6' height='2'/><rect x='29' y='44' width='6' height='1'/><rect x='45' y='44' width='6' height='1'/></g></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-maple{width:104em;height:69em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 48' shape-rendering='crispEdges'><g fill='%23bd7838'><rect x='8' y='12' width='14' height='8'/><rect x='50' y='12' width='14' height='8'/><rect x='14' y='7' width='44' height='8'/><rect x='6' y='14' width='60' height='8'/><rect x='5' y='20' width='26' height='7'/><rect x='41' y='20' width='26' height='7'/><rect x='18' y='4' width='16' height='5'/><rect x='38' y='4' width='16' height='5'/><rect x='10' y='22' width='52' height='4'/><rect x='26' y='26' width='20' height='3'/></g><g fill='%23e0993f'><rect x='20' y='4' width='14' height='4'/><rect x='38' y='4' width='14' height='4'/><rect x='13' y='8' width='15' height='5'/><rect x='44' y='8' width='15' height='5'/><rect x='30' y='6' width='12' height='4'/><rect x='6' y='14' width='15' height='5'/><rect x='51' y='14' width='15' height='5'/><rect x='8' y='12' width='12' height='4'/><rect x='52' y='12' width='12' height='4'/><rect x='22' y='14' width='16' height='4'/><rect x='38' y='14' width='16' height='4'/><rect x='5' y='20' width='15' height='5'/><rect x='52' y='20' width='15' height='5'/><rect x='22' y='20' width='16' height='4'/><rect x='38' y='20' width='16' height='4'/><rect x='13' y='24' width='16' height='4'/><rect x='43' y='24' width='16' height='4'/></g><g fill='%23f0c050'><rect x='22' y='4' width='8' height='3'/><rect x='44' y='4' width='8' height='3'/><rect x='16' y='9' width='9' height='3'/><rect x='49' y='9' width='9' height='3'/><rect x='32' y='6' width='10' height='3'/><rect x='8' y='15' width='9' height='3'/><rect x='56' y='15' width='9' height='3'/><rect x='24' y='15' width='10' height='2'/><rect x='40' y='15' width='10' height='2'/><rect x='7' y='21' width='9' height='3'/><rect x='57' y='21' width='8' height='3'/><rect x='15' y='24' width='9' height='2'/><rect x='49' y='24' width='9' height='2'/></g><g fill='%23f8dc88'><rect x='24' y='4' width='4' height='2'/><rect x='46' y='4' width='4' height='2'/><rect x='18' y='9' width='4' height='2'/><rect x='51' y='9' width='4' height='2'/><rect x='34' y='6' width='5' height='2'/></g><g fill='%23a85f28'><rect x='30' y='15' width='16' height='2'/><rect x='18' y='17' width='10' height='2'/><rect x='46' y='17' width='10' height='2'/><rect x='24' y='23' width='14' height='2'/><rect x='40' y='23' width='14' height='2'/></g><g fill='%237a4a30'><rect x='33' y='27' width='6' height='14'/><rect x='28' y='29' width='6' height='3'/><rect x='40' y='28' width='6' height='3'/></g><rect x='34' y='27' width='3' height='14' fill='%238f5a3c'/><rect x='38' y='27' width='2' height='14' fill='%235e3a26'/><g fill='%237a4a30'><rect x='30' y='41' width='5' height='2'/><rect x='38' y='41' width='6' height='2'/><rect x='26' y='42' width='6' height='1'/><rect x='42' y='42' width='6' height='1'/></g><g fill='%23e0993f'><rect x='16' y='34' width='2' height='1'/><rect x='54' y='32' width='2' height='1'/><rect x='20' y='38' width='1' height='1'/></g></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-tree-dream{width:104em;height:69em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 48' shape-rendering='crispEdges'><g fill='%237064a8'><rect x='8' y='13' width='14' height='8'/><rect x='50' y='13' width='14' height='8'/><rect x='14' y='7' width='44' height='8'/><rect x='6' y='15' width='60' height='8'/><rect x='5' y='21' width='26' height='7'/><rect x='41' y='21' width='26' height='7'/><rect x='18' y='4' width='16' height='5'/><rect x='38' y='4' width='16' height='5'/><rect x='10' y='23' width='52' height='4'/><rect x='26' y='27' width='20' height='3'/></g><g fill='%239488d0'><rect x='20' y='4' width='14' height='4'/><rect x='38' y='4' width='14' height='4'/><rect x='13' y='8' width='15' height='5'/><rect x='44' y='8' width='15' height='5'/><rect x='30' y='6' width='12' height='4'/><rect x='6' y='15' width='15' height='5'/><rect x='51' y='15' width='15' height='5'/><rect x='8' y='13' width='12' height='4'/><rect x='52' y='13' width='12' height='4'/><rect x='22' y='15' width='16' height='4'/><rect x='38' y='15' width='16' height='4'/><rect x='5' y='21' width='15' height='5'/><rect x='52' y='21' width='15' height='5'/><rect x='22' y='21' width='16' height='4'/><rect x='38' y='21' width='16' height='4'/><rect x='13' y='25' width='16' height='4'/><rect x='43' y='25' width='16' height='4'/></g><g fill='%23b8acec'><rect x='22' y='4' width='8' height='3'/><rect x='44' y='4' width='8' height='3'/><rect x='16' y='9' width='9' height='3'/><rect x='49' y='9' width='9' height='3'/><rect x='32' y='6' width='10' height='3'/><rect x='8' y='16' width='9' height='3'/><rect x='56' y='16' width='9' height='3'/><rect x='24' y='15' width='10' height='2'/><rect x='40' y='15' width='10' height='2'/><rect x='7' y='22' width='9' height='3'/><rect x='57' y='22' width='8' height='3'/></g><g fill='%23e4dcff'><rect x='24' y='4' width='4' height='2'/><rect x='46' y='4' width='4' height='2'/><rect x='18' y='9' width='4' height='2'/><rect x='34' y='6' width='5' height='2'/></g><g fill='%235a4e90'><rect x='30' y='16' width='16' height='2'/><rect x='18' y='18' width='10' height='2'/><rect x='46' y='18' width='10' height='2'/><rect x='24' y='24' width='14' height='2'/><rect x='40' y='24' width='14' height='2'/></g><g fill='%23a0ece0'><rect x='22' y='10' width='2' height='2'/><rect x='46' y='7' width='2' height='2'/><rect x='14' y='18' width='2' height='2'/><rect x='58' y='17' width='2' height='2'/><rect x='34' y='12' width='2' height='2'/><rect x='28' y='22' width='2' height='2'/><rect x='44' y='21' width='2' height='2'/></g><g fill='%237a4a30'><rect x='33' y='28' width='6' height='13'/><rect x='28' y='30' width='6' height='3'/><rect x='40' y='29' width='6' height='3'/></g><rect x='34' y='28' width='3' height='13' fill='%238f5a3c'/><rect x='38' y='28' width='2' height='13' fill='%235e3a26'/><g fill='%237a4a30'><rect x='30' y='41' width='5' height='2'/><rect x='38' y='41' width='6' height='2'/><rect x='26' y='42' width='6' height='1'/><rect x='42' y='42' width='6' height='1'/></g><g fill='%23a0ece0'><rect x='16' y='34' width='2' height='2'/><rect x='54' y='32' width='2' height='2'/></g></svg>");}
+      .cigh-clean-room-prop.cigh-clean-deco-prop-moon-full{width:28em;height:28em;background-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' shape-rendering='crispEdges'><circle cx='16' cy='16' r='14' fill='%23fff8dc' fill-opacity='.16'/><circle cx='16' cy='16' r='12.5' fill='%23f5dfa0'/><circle cx='16' cy='16' r='10.5' fill='%23ffeaa8'/><circle cx='16' cy='16' r='8.5' fill='%23fff3c7'/><circle cx='12' cy='11' r='3.5' fill='%23fffdf3' fill-opacity='.78'/><circle cx='20' cy='20' r='2' fill='%23f6df9a' fill-opacity='.55'/></svg>");}
+
+      .cigh-clean-deco-editor {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        margin: calc(8px * var(--cigh-ui-font-scale, 1)) 0;
+        border: 1px solid var(--cigh-border-soft);
+        border-radius: calc(8px * var(--cigh-ui-font-scale, 1));
+        background: linear-gradient(180deg, color-mix(in srgb, var(--cigh-bg-2) 96%, transparent), var(--cigh-bg-soft));
+        padding: calc(8px * var(--cigh-ui-font-scale, 1));
+        box-sizing: border-box;
+        box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent);
+      }
+      .cigh-clean-deco-head {
+        display: flex;
+        align-items: center;
+        gap: calc(5px * var(--cigh-ui-font-scale, 1));
+        margin-bottom: calc(7px * var(--cigh-ui-font-scale, 1));
+        min-width: 0;
+      }
+      .cigh-clean-deco-ticket {
+        margin-right: auto;
+        display: inline-flex;
+        align-items: baseline;
+        gap: calc(2px * var(--cigh-ui-font-scale, 1));
+        padding: calc(2px * var(--cigh-ui-font-scale, 1)) calc(8px * var(--cigh-ui-font-scale, 1));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--cigh-accent) 16%, var(--cigh-bg-3));
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 34%, var(--cigh-border-soft));
+        color: var(--cigh-accent);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: calc(11px * var(--cigh-ui-font-scale, 1));
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .cigh-clean-deco-ticket b { font-size: calc(10px * var(--cigh-ui-font-scale, 1)); }
+      .cigh-clean-deco-ticket i { font-style: normal; font-size: calc(8px * var(--cigh-ui-font-scale, 1)); opacity: .75; }
+      .cigh-clean-deco-ticket em {
+        font-style: normal;
+        margin-left: calc(4px * var(--cigh-ui-font-scale, 1));
+        padding-left: calc(4px * var(--cigh-ui-font-scale, 1));
+        border-left: 1px solid color-mix(in srgb, var(--cigh-accent) 32%, transparent);
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
+        color: color-mix(in srgb, var(--cigh-accent) 72%, var(--cigh-text-dim) 28%);
+        opacity: .9;
+      }
+      .cigh-clean-deco-count {
+        flex: 0 0 auto;
+        color: color-mix(in srgb, var(--cigh-accent) 70%, var(--cigh-text) 30%);
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
+        letter-spacing: .02em;
+        white-space: nowrap;
+      }
+      .cigh-clean-deco-mini-btn {
+        flex: 0 0 auto;
+        border: 1px solid var(--cigh-border-soft);
+        border-radius: calc(6px * var(--cigh-ui-font-scale, 1));
+        background: color-mix(in srgb, var(--cigh-fill) 80%, transparent);
+        color: var(--cigh-text-soft);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
+        padding: calc(3px * var(--cigh-ui-font-scale, 1)) calc(8px * var(--cigh-ui-font-scale, 1));
+        cursor: pointer;
+        transition: transform .08s ease, filter .12s ease;
+      }
+      .cigh-clean-deco-mini-btn:active { transform: translateY(1px); }
+      .cigh-clean-deco-mini-btn.ghost { opacity: .82; }
+      .cigh-clean-deco-mini-btn.gacha {
+        color: var(--cigh-bg);
+        font-weight: 700;
+        border-color: color-mix(in srgb, var(--cigh-accent) 60%, #000 10%);
+        background: linear-gradient(180deg, color-mix(in srgb, var(--cigh-accent) 92%, #fff 8%), var(--cigh-accent));
+        box-shadow: 0 1px 0 color-mix(in srgb, var(--cigh-accent) 55%, #000 45%);
+      }
+      .cigh-clean-deco-mini-btn.gacha.off { filter: grayscale(.5); opacity: .55; }
+      .cigh-clean-deco-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: calc(4px * var(--cigh-ui-font-scale, 1));
+        margin-bottom: calc(6px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-deco-tab {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        border: 1px solid var(--cigh-border-soft);
+        border-radius: calc(6px * var(--cigh-ui-font-scale, 1));
+        background: var(--cigh-bg-3);
+        color: var(--cigh-text-soft);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: calc(9.5px * var(--cigh-ui-font-scale, 1));
+        padding: calc(5px * var(--cigh-ui-font-scale, 1)) calc(2px * var(--cigh-ui-font-scale, 1));
+        cursor: pointer;
+      }
+      .cigh-clean-deco-tab-icon { font-size: calc(10px * var(--cigh-ui-font-scale, 1)); line-height: 1; opacity: .85; }
+      .cigh-clean-deco-tab-count {
+        min-width: calc(14px * var(--cigh-ui-font-scale, 1));
+        padding: 0 calc(3px * var(--cigh-ui-font-scale, 1));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--cigh-fill) 70%, transparent);
+        color: var(--cigh-text-faint);
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
+        line-height: 1.5;
+      }
+      .cigh-clean-deco-tab.on {
+        color: var(--cigh-accent);
+        border-color: color-mix(in srgb, var(--cigh-accent) 52%, var(--cigh-border-soft));
+        background: color-mix(in srgb, var(--cigh-accent) 12%, var(--cigh-bg-3));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cigh-accent) 20%, transparent);
+      }
+      .cigh-clean-deco-tab.on .cigh-clean-deco-tab-count {
+        background: color-mix(in srgb, var(--cigh-accent) 24%, transparent);
+        color: var(--cigh-accent);
+      }
+      .cigh-clean-deco-shelf {
+        display: flex;
+        align-items: stretch;
+        gap: calc(5px * var(--cigh-ui-font-scale, 1));
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: calc(1px * var(--cigh-ui-font-scale, 1)) calc(1px * var(--cigh-ui-font-scale, 1)) calc(4px * var(--cigh-ui-font-scale, 1));
+        scrollbar-width: thin;
+        scrollbar-color: var(--cigh-border) transparent;
+      }
+      .cigh-clean-deco-shelf::-webkit-scrollbar { height: calc(4px * var(--cigh-ui-font-scale, 1)); }
+      .cigh-clean-deco-shelf::-webkit-scrollbar-thumb { background: var(--cigh-border); border-radius: 999px; }
+      .cigh-clean-deco-item {
+        position: relative;
+        flex: 0 0 calc(48px * var(--cigh-ui-font-scale, 1));
+        min-height: calc(50px * var(--cigh-ui-font-scale, 1));
+        padding: calc(6px * var(--cigh-ui-font-scale, 1)) calc(3px * var(--cigh-ui-font-scale, 1)) calc(5px * var(--cigh-ui-font-scale, 1));
+        border: 1px solid var(--cigh-border-soft);
+        border-radius: calc(7px * var(--cigh-ui-font-scale, 1));
+        background: var(--cigh-bg-2);
+        color: var(--cigh-text-soft);
+        font-family: "Courier New", Consolas, monospace;
+        cursor: pointer;
+        display: grid;
+        grid-template-rows: 1fr auto;
+        place-items: center;
+        gap: calc(3px * var(--cigh-ui-font-scale, 1));
+        overflow: hidden;
+        transition: transform .08s ease, border-color .12s ease;
+      }
+      .cigh-clean-deco-item:active { transform: translateY(1px) scale(.97); }
+      .cigh-clean-deco-rank-dot {
+        position: absolute;
+        top: calc(4px * var(--cigh-ui-font-scale, 1));
+        left: calc(4px * var(--cigh-ui-font-scale, 1));
+        width: calc(5px * var(--cigh-ui-font-scale, 1));
+        height: calc(5px * var(--cigh-ui-font-scale, 1));
+        border-radius: 999px;
+        background: var(--deco-rank-color, var(--cigh-text-dim));
+        box-shadow: 0 0 5px color-mix(in srgb, var(--deco-rank-color, transparent) 60%, transparent);
+      }
+      .cigh-clean-deco-item.rank-SR { border-color: color-mix(in srgb, var(--deco-rank-color) 40%, var(--cigh-border-soft)); }
+      .cigh-clean-deco-icon {
+        font-size: calc(16px * var(--cigh-ui-font-scale, 1));
+        line-height: 1;
+              }
+      .cigh-clean-deco-name {
+        max-width: calc(44px * var(--cigh-ui-font-scale, 1));
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: clip;
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
+        line-height: 1.15;
+        color: color-mix(in srgb, var(--cigh-text-soft) 78%, var(--cigh-accent) 22%);
+      }
+      .cigh-clean-deco-item-qty {
+        position: absolute;
+        top: calc(3px * var(--cigh-ui-font-scale, 1));
+        right: calc(3px * var(--cigh-ui-font-scale, 1));
+        padding: 0 calc(3px * var(--cigh-ui-font-scale, 1));
+        border-radius: 999px;
+        font-size: calc(7px * var(--cigh-ui-font-scale, 1));
+        line-height: 1.4;
+        color: var(--cigh-accent);
+        background: color-mix(in srgb, #0a0d0b 78%, transparent);
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 30%, var(--cigh-border-soft));
+      }
+      .cigh-clean-deco-item.on {
+        color: var(--cigh-accent);
+        border-color: var(--cigh-accent);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, var(--cigh-accent) 28%, transparent),
+          0 0 7px color-mix(in srgb, var(--cigh-accent) 30%, transparent);
+      }
+      .cigh-clean-deco-on-mark {
+        position: absolute;
+        bottom: 3px;
+        right: 4px;
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
+        color: var(--cigh-accent);
+      }
+      .cigh-clean-deco-empty,
+      .cigh-clean-deco-help { color: var(--cigh-text-dim); font-size: calc(8.5px * var(--cigh-ui-font-scale, 1)); line-height: 1.4; }
+      .cigh-clean-deco-empty {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        min-height: calc(50px * var(--cigh-ui-font-scale, 1));
+        text-align: center;
+      }
+      .cigh-clean-deco-help { margin-top: calc(6px * var(--cigh-ui-font-scale, 1)); }
+
+      /* ── Gacha reveal ── */
+      .cigh-clean-gacha-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        background: rgba(8, 9, 12, .62);
+        backdrop-filter: blur(3px);
+        font-family: "Courier New", Consolas, monospace;
+        animation: cigh-clean-gacha-fade .22s ease;
+      }
+      .cigh-clean-gacha-backdrop.in-panel {
+        position: absolute;
+        inset: 0;
+        z-index: 40;
+        border-radius: inherit;
+        background: rgba(8, 9, 12, .68);
+        backdrop-filter: blur(2px);
+      }
+      .cigh-clean-gacha-backdrop.closing { opacity: 0; transition: opacity .19s ease; }
+      .cigh-clean-gacha-backdrop.in-panel .cigh-clean-gacha-stage {
+        width: min(228px, calc(100% - 18px));
+        height: min(260px, calc(100% - 18px));
+      }
+      .cigh-clean-gacha-backdrop.in-panel .cigh-clean-gacha-rays {
+        width: 260px;
+        height: 260px;
+      }
+      @keyframes cigh-clean-gacha-fade { from { opacity: 0; } to { opacity: 1; } }
+      .cigh-clean-gacha-stage {
+        position: relative;
+        width: min(240px, calc(100vw - 44px));
+        height: 240px;
+        display: grid;
+        place-items: center;
+        text-align: center;
+      }
+      .cigh-clean-gacha-rays {
+        position: absolute;
+        width: 300px;
+        height: 300px;
+        background: repeating-conic-gradient(from 0deg,
+          color-mix(in srgb, var(--gacha-color) 30%, transparent) 0deg 10deg,
+          transparent 10deg 20deg);
+        border-radius: 50%;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .5s ease;
+        animation: cigh-clean-gacha-spin 14s linear infinite;
+        -webkit-mask: radial-gradient(circle, #000 22%, transparent 70%);
+        mask: radial-gradient(circle, #000 22%, transparent 70%);
+      }
+      .cigh-clean-gacha-stage.revealed .cigh-clean-gacha-rays { opacity: .5; }
+      @keyframes cigh-clean-gacha-spin { to { transform: rotate(360deg); } }
+      .cigh-clean-gacha-capsule { position: absolute; width: 60px; height: 60px; z-index: 2; }
+      .cigh-clean-gacha-stage.shake .cigh-clean-gacha-capsule { animation: cigh-clean-gacha-shake .62s ease-in-out; }
+      .cigh-clean-gacha-stage.revealed .cigh-clean-gacha-capsule { display: none; }
+      .cigh-clean-gacha-cap-top,
+      .cigh-clean-gacha-cap-bot {
+        position: absolute;
+        left: 0;
+        width: 60px;
+        height: 30px;
+        box-sizing: border-box;
+        image-rendering: pixelated;
+      }
+      .cigh-clean-gacha-cap-top {
+        top: 0;
+        border-radius: 30px 30px 0 0;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--gacha-color) 88%, #fff 12%), var(--gacha-color));
+        border: 2px solid color-mix(in srgb, var(--gacha-color) 60%, #000 40%);
+        border-bottom: 0;
+      }
+      .cigh-clean-gacha-cap-bot {
+        bottom: 0;
+        border-radius: 0 0 30px 30px;
+        background: #efe7d4;
+        border: 2px solid #b8a884;
+        border-top: 0;
+      }
+      .cigh-clean-gacha-cap-dot {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 10px;
+        height: 10px;
+        margin: -5px 0 0 -5px;
+        border-radius: 999px;
+        background: #fff;
+        border: 2px solid #b8a884;
+        z-index: 3;
+      }
+      .cigh-clean-gacha-reveal {
+        position: absolute;
+        z-index: 3;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        opacity: 0;
+        transform: scale(.4);
+        pointer-events: none;
+      }
+      .cigh-clean-gacha-stage.revealed .cigh-clean-gacha-reveal { animation: cigh-clean-gacha-pop .46s cubic-bezier(.2, 1.5, .4, 1) .1s forwards; }
+      @keyframes cigh-clean-gacha-pop { to { opacity: 1; transform: scale(1); } }
+      .cigh-clean-gacha-rank {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .16em;
+        color: var(--gacha-color);
+      }
+      .cigh-clean-gacha-icon {
+        font-size: 38px;
+        line-height: 1;
+        filter: drop-shadow(0 0 12px color-mix(in srgb, var(--gacha-color) 55%, transparent));
+        animation: cigh-clean-gacha-float 2.2s ease-in-out infinite;
+      }
+      @keyframes cigh-clean-gacha-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+      .cigh-clean-gacha-name { font-size: 13px; font-weight: 700; color: var(--cigh-text); }
+      .cigh-clean-gacha-tag {
+        font-size: 8.5px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        color: var(--cigh-bg);
+        background: var(--gacha-color);
+        padding: 2px 8px;
+        border-radius: 999px;
+      }
+      .cigh-clean-gacha-hint {
+        position: absolute;
+        bottom: 4px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 8.5px;
+        letter-spacing: .04em;
+        color: var(--cigh-text-dim);
+        white-space: nowrap;
+        opacity: 0;
+      }
+      .cigh-clean-gacha-stage.revealed .cigh-clean-gacha-hint { animation: cigh-clean-gacha-fade .4s ease .85s forwards; }
+      @keyframes cigh-clean-gacha-shake {
+        0%, 100% { transform: translateX(0) rotate(0); }
+        20% { transform: translateX(-4px) rotate(-6deg); }
+        40% { transform: translateX(4px) rotate(6deg); }
+        60% { transform: translateX(-3px) rotate(-4deg); }
+        80% { transform: translateX(3px) rotate(4deg); }
       }
       .cigh-clean-pet-img {
         display: block;
@@ -7115,14 +8978,6 @@ RECENT_CONTEXT:
         pointer-events: none;
         user-select: none;
         -webkit-user-drag: none;
-      }
-            .cigh-clean-pet-svg {
-        image-rendering: pixelated;
-      }
-      .cigh-clean-pet-mood {
-        color: var(--cigh-text-soft);
-        font-size: 10px;
-        letter-spacing: .04em;
       }
       .cigh-clean-bpm-card {
         position: relative;
@@ -7224,8 +9079,8 @@ RECENT_CONTEXT:
         68% { transform: scale(1); }
       }
       @keyframes cigh-clean-bpm-soft-pulse {
-        0%, 100% { transform: translateY(0); text-shadow: none; }
-        50% { transform: translateY(-0.5px); text-shadow: 0 0 4px color-mix(in srgb, var(--cigh-bpm-color) 24%, transparent); }
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-0.5px); }
       }
       .cigh-clean-tendency-grid {
         display: grid;
@@ -7286,8 +9141,7 @@ RECENT_CONTEXT:
       .cigh-clean-tendency-emoji {
         font-size: 13px;
         line-height: 1;
-        filter: drop-shadow(0 1px 0 var(--cigh-bg));
-      }
+              }
       .cigh-clean-tendency-name {
         font-size: 8.5px;
         letter-spacing: .02em;
@@ -7299,7 +9153,6 @@ RECENT_CONTEXT:
         font-size: 12px;
         font-weight: 700;
         color: var(--cigh-text);
-        text-shadow: none;
       }
       .cigh-clean-tendency-badge.is-active {
         border-color: var(--cigh-accent);
@@ -7323,7 +9176,11 @@ RECENT_CONTEXT:
       }
       @keyframes cigh-clean-float {
         0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-5px); }
+        50% { transform: translateY(-3px); }
+      }
+      @keyframes cigh-clean-sleep-breathe {
+        0%, 100% { transform: scale(0.985); }
+        50% { transform: scale(1.015); }
       }
       .cigh-clean-mini-empty {
         color: var(--cigh-text-dim);
@@ -7333,54 +9190,305 @@ RECENT_CONTEXT:
       }
 
       .cigh-clean-comment-log-row {
-        display: flex;
-        gap: 6px;
-        align-items: baseline;
-        padding: 3px 0;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        column-gap: 6px;
+        align-items: start;
+        padding: 4px 0 6px;
         border-bottom: 1px solid color-mix(in srgb, var(--cigh-fill) 70%, transparent);
       }
       .cigh-clean-comment-log-time {
         color: var(--cigh-text-dim);
-        font-size: 8.5px;
+        font-size: calc(9.5px * var(--cigh-ui-font-scale, 1));
         flex: 0 0 auto;
         letter-spacing: .04em;
+        line-height: 1.45;
+        white-space: nowrap;
       }
       .cigh-clean-comment-log-text {
         color: var(--cigh-text-soft);
-        font-size: 10px;
-        line-height: 1.4;
+        font-size: inherit;
+        line-height: 1.45;
         word-break: keep-all;
         overflow-wrap: anywhere;
+        min-width: 0;
+      }
+      .cigh-clean-comment-log-line {
+        position: relative;
+        display: block;
+        padding-left: 10px;
+      }
+      .cigh-clean-comment-log-line::before {
+        content: '';
+        position: absolute;
+        left: 1px;
+        top: .68em;
+        width: 3px;
+        height: 3px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--cigh-accent) 60%, var(--cigh-text-dim) 40%);
+        opacity: .82;
+        box-shadow: 0 0 4px color-mix(in srgb, var(--cigh-accent) 28%, transparent);
+      }
+
+      .cigh-clean-info-tools {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 4px;
+        min-height: 18px;
+        margin: -2px 0 5px;
+        padding-right: 1px;
+      }
+      .cigh-clean-user-name-box {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--cigh-text-faint);
+        font-size: 8.5px;
+        letter-spacing: .08em;
+      }
+      .cigh-clean-user-name-box span {
+        flex: 0 0 auto;
+        color: var(--cigh-accent);
+        font-weight: 700;
+      }
+      .cigh-clean-user-name-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 24%, transparent);
+        border-radius: 4px;
+        padding: 2px 5px;
+        background: color-mix(in srgb, var(--cigh-bg-soft) 88%, transparent);
+        color: var(--cigh-text-soft);
+        font-size: 9px;
+        line-height: 1.2;
+        font-family: "Courier New", Consolas, monospace;
+        outline: none;
+      }
+      .cigh-clean-user-name-input:focus {
+        border-color: var(--cigh-accent-soft);
+        color: var(--cigh-text);
+      }
+
+      .cigh-clean-info-reset-btn {
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 38%, transparent);
+        border-radius: 4px;
+        padding: 2px 7px;
+        background: color-mix(in srgb, var(--cigh-bg-soft) 88%, transparent);
+        color: var(--cigh-text-soft);
+        font-size: 8.5px;
+        line-height: 1.2;
+        letter-spacing: .08em;
+        font-family: "Courier New", Consolas, monospace;
+        cursor: pointer;
+        opacity: .78;
+      }
+      .cigh-clean-info-reset-btn:hover {
+        opacity: 1;
+        color: var(--cigh-accent);
+        background: color-mix(in srgb, var(--cigh-accent) 14%, var(--cigh-bg-soft));
+      }
+      .cigh-clean-confirm-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--cigh-accent) 12%, transparent), transparent 52%),
+          rgba(0, 0, 0, .46);
+        backdrop-filter: blur(2px);
+        font-family: "Courier New", Consolas, monospace;
+      }
+      .cigh-clean-confirm-backdrop.in-panel {
+        position: absolute;
+        inset: 0;
+        z-index: 48;
+        border-radius: inherit;
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--cigh-bg) 28%, transparent), color-mix(in srgb, #000 58%, transparent)),
+          radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--cigh-accent) 18%, transparent), transparent 55%);
+        backdrop-filter: blur(1.5px);
+      }
+      .cigh-clean-confirm-box {
+        position: relative;
+        width: min(calc(286px * var(--cigh-ui-font-scale, 1)), calc(100% - 22px));
+        padding: calc(8px * var(--cigh-ui-font-scale, 1));
+        color: var(--cigh-text);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--cigh-bg-2) 96%, #fff 4%), var(--cigh-bg)),
+          repeating-linear-gradient(0deg, transparent 0 7px, color-mix(in srgb, var(--cigh-accent) 5%, transparent) 7px 8px);
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 48%, var(--cigh-border-soft));
+        border-radius: calc(4px * var(--cigh-ui-font-scale, 1));
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff 6%, transparent),
+          inset 0 0 0 2px color-mix(in srgb, #000 24%, transparent),
+          0 10px 0 color-mix(in srgb, #000 34%, transparent),
+          0 20px 48px rgba(0,0,0,.48);
+        box-sizing: border-box;
+      }
+      .cigh-clean-confirm-box.rpg::before,
+      .cigh-clean-confirm-box.rpg::after {
+        content: "";
+        position: absolute;
+        width: calc(5px * var(--cigh-ui-font-scale, 1));
+        height: calc(5px * var(--cigh-ui-font-scale, 1));
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 55%, var(--cigh-border-soft));
+        background: var(--cigh-bg);
+        box-sizing: border-box;
+      }
+      .cigh-clean-confirm-box.rpg::before {
+        left: calc(5px * var(--cigh-ui-font-scale, 1));
+        top: calc(5px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-confirm-box.rpg::after {
+        right: calc(5px * var(--cigh-ui-font-scale, 1));
+        bottom: calc(5px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-confirm-title {
+        display: flex;
+        align-items: center;
+        gap: calc(5px * var(--cigh-ui-font-scale, 1));
+        padding: calc(3px * var(--cigh-ui-font-scale, 1)) calc(8px * var(--cigh-ui-font-scale, 1));
+        margin-bottom: calc(7px * var(--cigh-ui-font-scale, 1));
+        color: var(--cigh-accent);
+        font-size: calc(10px * var(--cigh-ui-font-scale, 1));
+        font-weight: 700;
+        letter-spacing: .12em;
+        background: color-mix(in srgb, var(--cigh-accent) 12%, var(--cigh-bg-3));
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 28%, var(--cigh-border-soft));
+        border-radius: calc(3px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-confirm-title-dot {
+        color: color-mix(in srgb, var(--cigh-accent) 82%, #fff 18%);
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
+        line-height: 1;
+      }
+      .cigh-clean-confirm-panel {
+        padding: calc(10px * var(--cigh-ui-font-scale, 1)) calc(8px * var(--cigh-ui-font-scale, 1));
+        margin-bottom: calc(8px * var(--cigh-ui-font-scale, 1));
+        text-align: center;
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--cigh-bg-soft) 90%, #fff 10%), color-mix(in srgb, var(--cigh-bg-3) 84%, #000 16%));
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 22%, var(--cigh-border-soft));
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 28%, transparent);
+      }
+      .cigh-clean-confirm-text {
+        font-size: calc(12px * var(--cigh-ui-font-scale, 1));
+        font-weight: 700;
+        line-height: 1.45;
+        color: var(--cigh-text);
+        margin-bottom: calc(7px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-confirm-help {
+        color: color-mix(in srgb, var(--cigh-text-soft) 88%, #fff 12%);
+        font-size: calc(9.5px * var(--cigh-ui-font-scale, 1));
+        line-height: 1.58;
+        margin: 0;
+      }
+      .cigh-clean-confirm-help.sub {
+        margin-top: calc(6px * var(--cigh-ui-font-scale, 1));
+        color: color-mix(in srgb, var(--cigh-text-soft) 70%, var(--cigh-accent) 30%);
+      }
+      .cigh-clean-confirm-actions {
+        display: flex;
+        justify-content: stretch;
+        gap: calc(6px * var(--cigh-ui-font-scale, 1));
+      }
+      .cigh-clean-confirm-btn {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: calc(4px * var(--cigh-ui-font-scale, 1));
+        border: 1px solid var(--cigh-border-soft);
+        border-radius: calc(3px * var(--cigh-ui-font-scale, 1));
+        padding: calc(6px * var(--cigh-ui-font-scale, 1)) calc(10px * var(--cigh-ui-font-scale, 1));
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--cigh-bg-3) 92%, #fff 8%), var(--cigh-bg-soft));
+        color: var(--cigh-text-soft);
+        font-family: "Courier New", Consolas, monospace;
+        font-size: calc(10px * var(--cigh-ui-font-scale, 1));
+        font-weight: 700;
+        letter-spacing: .08em;
+        cursor: pointer;
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent),
+          0 2px 0 color-mix(in srgb, #000 34%, transparent);
+      }
+      .cigh-clean-confirm-btn span {
+        position: relative;
+        z-index: 1;
+      }
+      .cigh-clean-confirm-btn:active {
+        transform: translateY(1px);
+        box-shadow: inset 0 1px 0 color-mix(in srgb, #000 20%, transparent);
+      }
+      .cigh-clean-confirm-btn.yes {
+        color: #fff6e3;
+        text-shadow: 0 1px 0 rgba(0,0,0,.28);
+        border-color: color-mix(in srgb, var(--cigh-danger) 78%, #000 22%);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, #ff9f7a 24%, var(--cigh-danger) 76%), color-mix(in srgb, var(--cigh-danger) 88%, #000 12%));
+      }
+      .cigh-clean-confirm-btn.yes::before {
+        content: "◆";
+        color: #ffe1b0;
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
+        line-height: 1;
+      }
+      .cigh-clean-confirm-btn.no {
+        color: var(--cigh-text);
+        border-color: color-mix(in srgb, var(--cigh-accent) 34%, var(--cigh-border-soft));
+      }
+      .cigh-clean-confirm-btn.no::before {
+        content: "›";
+        color: var(--cigh-accent);
       }
 
       .cigh-clean-foot {
-        height: 18px;
         min-height: 18px;
+        height: auto;
+        flex: 0 0 auto;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0 8px 0 9px;
+        gap: 6px;
+        padding: 3px 8px 3px 9px;
         background: var(--cigh-bg-soft);
         border-top: 1px solid var(--cigh-fill);
+        box-sizing: border-box;
       }
       .cigh-clean-count {
         flex: 0 0 auto;
         color: var(--cigh-text-dim);
         font-size: 8.5px;
         letter-spacing: .04em;
-        margin-left: 6px;
+        margin-left: 0;
       }
       .cigh-clean-ft {
+        flex: 1 1 auto;
+        min-width: 0;
         color: color-mix(in srgb, var(--cigh-text-soft) 72%, var(--cigh-accent) 28%);
         font-size: 9px;
         letter-spacing: .07em;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
         display: block;
         max-width: 100%;
         padding-left: 1px;
         box-sizing: border-box;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+        word-break: keep-all;
       }
 
       #${POPUP_ID} {
@@ -7390,8 +9498,8 @@ RECENT_CONTEXT:
         z-index: 2147483646;
         width: 218px;
         min-height: 20px;
-        max-height: 220px;
-        overflow: hidden;
+        max-height: none;
+        overflow: visible;
         display: flex;
         flex-direction: column;
         justify-content: flex-end;
@@ -7417,13 +9525,14 @@ RECENT_CONTEXT:
       }
       .cigh-clean-popup-line {
         min-height: 1.35em;
-        max-height: 3.2em;
-        overflow: hidden;
+        max-height: none;
+        overflow: visible;
         opacity: 1;
         transform: translateY(0);
         transition: opacity .26s ease, transform .26s ease, max-height .26s ease;
         word-break: keep-all;
         overflow-wrap: anywhere;
+        white-space: normal;
       }
       .cigh-clean-popup-line.entering {
         opacity: 0;
@@ -7433,6 +9542,7 @@ RECENT_CONTEXT:
         opacity: 0;
         transform: translateY(-10px);
         max-height: 0;
+        overflow: hidden;
       }
 
       #${COMMENT_POPUP_ID} {
@@ -7479,7 +9589,7 @@ RECENT_CONTEXT:
         left: 8px;
         right: 8px;
         top: 34px;
-        z-index: 3;
+        z-index: 120;
         max-height: calc(100% - 44px);
         overflow-y: auto;
         padding: 9px;
@@ -7593,66 +9703,6 @@ RECENT_CONTEXT:
       .cigh-clean-checkrow input {
         accent-color: var(--cigh-accent);
       }
-      .cigh-acc-slot-row { display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:4px; }
-      .cigh-acc-slot { border:1px solid var(--cigh-border-soft);background:var(--cigh-fill);color:var(--cigh-text-soft);font:inherit;font-size:9.5px;padding:2px 8px;border-radius:99px;cursor:pointer; }
-      .cigh-acc-slot:hover { color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
-      .cigh-acc-slot.active { background:var(--cigh-accent-softer);color:var(--cigh-accent);border-color:var(--cigh-accent-soft); }
-      .cigh-acc-hint { font-size:9px;color:var(--cigh-text-faint);margin-left:2px;flex:1; }
-      .cigh-clean-settings-save-bar { position:sticky;bottom:0;display:flex;gap:5px;padding:9px 0 6px;background:var(--cigh-bg);border-top:1px solid var(--cigh-border-soft);margin-top:12px;z-index:2; }
-      #${MASCOT_ID}.spin .cigh-clean-mascot-body { animation:cigh-mascot-spin 0.52s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
-      #${MASCOT_ID}.bounce .cigh-clean-mascot-body { animation:cigh-mascot-bounce 0.42s ease; }
-      #${MASCOT_ID}.tilt .cigh-clean-mascot-body { animation:cigh-mascot-tilt 0.6s ease-in-out;transform-origin:center bottom; }
-      #${MASCOT_ID}.nod .cigh-clean-mascot-body { animation:cigh-mascot-nod 0.7s ease-in-out;transform-origin:center bottom; }
-      #${MASCOT_ID}.wiggle .cigh-clean-mascot-body { animation:cigh-mascot-wiggle 0.5s ease; }
-      #${MASCOT_ID}.tada .cigh-clean-mascot-body { animation:cigh-mascot-tada 0.7s ease;transform-origin:center bottom; }
-      #${MASCOT_ID}.analyzing .cigh-clean-mascot-body { animation:cigh-mascot-analyzing 0.9s ease-in-out infinite;transform-origin:center bottom; }
-      #${MASCOT_ID}.done-pop .cigh-clean-mascot-body { animation:cigh-mascot-done-pop 0.6s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
-      #${MASCOT_ID}.grabbed .cigh-clean-mascot-body { animation:cigh-mascot-grabbed 0.38s cubic-bezier(.34,1.56,.64,1);transform-origin:center bottom; }
-      #${MASCOT_ID}.carried .cigh-clean-mascot-body { animation:cigh-mascot-carried 0.5s ease-in-out; }
-      #${MASCOT_ID}.landed .cigh-clean-mascot-body { animation:cigh-mascot-landed 0.55s cubic-bezier(.36,.07,.19,.97); }
-      @keyframes cigh-mascot-spin { 0%{transform:rotate(0deg) scale(1)}30%{transform:rotate(180deg) scale(0.85)}70%{transform:rotate(320deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)} }
-      @keyframes cigh-mascot-bounce { 0%,100%{transform:translateY(0) scale(1,1)}30%{transform:translateY(-18px) scale(0.90,1.14)}55%{transform:translateY(0) scale(1.13,0.88)}75%{transform:translateY(-7px) scale(0.95,1.06)} }
-      /* ── 액세서리별 bounce 변형 ── */
-      /* head: 왕관 — 높이 솟구치고 착지 쾅 */
-      #${MASCOT_ID}.bounce-crown .cigh-clean-mascot-body { animation:cigh-mascot-bounce-crown 0.50s ease;transform-origin:center bottom; }
-      @keyframes cigh-mascot-bounce-crown { 0%,100%{transform:translateY(0) scale(1,1)}28%{transform:translateY(-30px) scale(0.88,1.16)}52%{transform:translateY(0) scale(1.16,0.84)}72%{transform:translateY(-10px) scale(0.94,1.08)} }
-      /* head: 별 — 높이 뛰며 회전 흔들림 */
-      #${MASCOT_ID}.bounce-star .cigh-clean-mascot-body { animation:cigh-mascot-bounce-star 0.52s ease;transform-origin:center bottom; }
-      @keyframes cigh-mascot-bounce-star { 0%,100%{transform:translateY(0) scale(1) rotate(0deg)}25%{transform:translateY(-26px) scale(0.91,1.12) rotate(-6deg)}50%{transform:translateY(0) scale(1.14,0.86) rotate(4deg)}72%{transform:translateY(-8px) scale(0.96,1.06) rotate(-2deg)} }
-      /* head: 리본 — 기울며 귀엽게 */
-      #${MASCOT_ID}.bounce-ribbon .cigh-clean-mascot-body { animation:cigh-mascot-bounce-ribbon 0.44s ease;transform-origin:center bottom; }
-      @keyframes cigh-mascot-bounce-ribbon { 0%,100%{transform:translateY(0) rotate(0deg)}30%{transform:translateY(-16px) rotate(-8deg)}55%{transform:translateY(0) scale(1.10,0.91) rotate(5deg)}75%{transform:translateY(-6px) rotate(-2deg)} }
-      /* head: 꽃 — 가볍게 여러 번 통통 */
-      #${MASCOT_ID}.bounce-flower .cigh-clean-mascot-body { animation:cigh-mascot-bounce-flower 0.46s ease; }
-      @keyframes cigh-mascot-bounce-flower { 0%,100%{transform:translateY(0) scale(1)}28%{transform:translateY(-20px) scale(0.92,1.10)}52%{transform:translateY(0) scale(1.12,0.90)}70%{transform:translateY(-9px) scale(0.96,1.05)}85%{transform:translateY(0) scale(1.05,0.96)} }
-      /* head: 뿔 — 위로 찌르듯 솟구침 */
-      #${MASCOT_ID}.bounce-horn .cigh-clean-mascot-body { animation:cigh-mascot-bounce-horn 0.48s cubic-bezier(.36,.07,.19,.97);transform-origin:center bottom; }
-      @keyframes cigh-mascot-bounce-horn { 0%,100%{transform:translateY(0) scale(1,1)}20%{transform:translateY(-28px) scale(0.86,1.18)}45%{transform:translateY(-2px) scale(1.06,0.94)}65%{transform:translateY(-11px) scale(0.92,1.10)}82%{transform:translateY(0) scale(1.07,0.93)} }
-      /* custom: 커스텀 픽셀 — 활기차게 spin+bounce 합성 */20%{transform:translateY(-16px) scale(0.91,1.12) rotate(-6deg)}45%{transform:translateY(0) scale(1.12,0.88) rotate(4deg)}65%{transform:translateY(-8px) scale(0.95,1.06) rotate(-2deg)}82%{transform:translateY(0) scale(1.04,0.97)}100%{transform:translateY(0) scale(1) rotate(0deg)} }
-      @keyframes cigh-mascot-tilt { 0%,100%{transform:rotate(0deg)}25%{transform:rotate(-14deg)}75%{transform:rotate(10deg)} }
-      @keyframes cigh-mascot-nod { 0%,100%{transform:scaleY(1) translateY(0)}20%{transform:scaleY(0.88) translateY(4px)}45%{transform:scaleY(1.06) translateY(-3px)}65%{transform:scaleY(0.95) translateY(2px)} }
-      @keyframes cigh-mascot-wiggle { 0%,100%{transform:translateX(0)}20%{transform:translateX(-5px) rotate(-4deg)}40%{transform:translateX(5px) rotate(4deg)}60%{transform:translateX(-3px) rotate(-2deg)}80%{transform:translateX(3px) rotate(2deg)} }
-      @keyframes cigh-mascot-tada { 0%{transform:scale(1) rotate(0deg)}10%{transform:scale(0.9) rotate(-4deg)}30%{transform:scale(1.1) rotate(3deg)}50%{transform:scale(1.1) rotate(-3deg)}70%{transform:scale(1.1) rotate(3deg)}90%{transform:scale(1.05) rotate(-1deg)}100%{transform:scale(1) rotate(0deg)} }
-      @keyframes cigh-mascot-analyzing { 0%,100%{transform:translateY(0) scale(1)}33%{transform:translateY(-6px) scale(1.04,0.96)}66%{transform:translateY(0) scale(0.96,1.04)} }
-      @keyframes cigh-mascot-done-pop { 0%{transform:scale(1)}25%{transform:scale(1.22) rotate(-3deg)}50%{transform:scale(0.9) rotate(2deg)}75%{transform:scale(1.1) rotate(-1deg)}100%{transform:scale(1) rotate(0deg)} }
-      @keyframes cigh-mascot-grabbed {
-        0%   { transform: scale(1,1) translateY(0); }
-        40%  { transform: scale(1.15,0.88) translateY(-8px) rotate(-6deg); }
-        70%  { transform: scale(0.92,1.1) translateY(-4px) rotate(3deg); }
-        100% { transform: scale(1,1) translateY(0) rotate(0deg); }
-      }
-      @keyframes cigh-mascot-carried {
-        0%,100% { transform: rotate(0deg) translateY(0); }
-        25%     { transform: rotate(-8deg) translateY(-3px); }
-        75%     { transform: rotate(6deg) translateY(-2px); }
-      }
-      @keyframes cigh-mascot-landed {
-        0%   { transform: scale(1.1,0.88) translateY(4px); }
-        30%  { transform: scale(0.9,1.14) translateY(-6px); }
-        55%  { transform: scale(1.06,0.94) translateY(2px); }
-        75%  { transform: scale(0.97,1.04) translateY(-2px); }
-        100% { transform: scale(1,1) translateY(0); }
-      }
       .cigh-clean-settings-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -7705,9 +9755,11 @@ RECENT_CONTEXT:
       }
       .cigh-clean-usage-model-name {
         min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
         color: var(--cigh-text);
       }
       .cigh-clean-usage-model-row b {
@@ -7902,12 +9954,15 @@ RECENT_CONTEXT:
       #${PANEL_ID}[data-cigh-font="medium"] .cigh-clean-ico { width: 17px !important; }
 
       #${PANEL_ID}[data-cigh-font="medium"] .cigh-clean-foot {
-        height: 21px !important;
+        height: auto !important;
         min-height: 21px !important;
-        padding: 0 8px !important;
+        padding: 3px 8px !important;
       }
 
-      #${PANEL_ID}[data-cigh-font="medium"] .cigh-clean-ft { font-size: 9.5px !important; }
+      #${PANEL_ID}[data-cigh-font="medium"] .cigh-clean-ft {
+        font-size: 9.5px !important;
+        line-height: 1.35 !important;
+      }
 
       #${POPUP_ID}[data-cigh-font="medium"],
       #${COMMENT_POPUP_ID}[data-cigh-font="medium"] {
@@ -8038,12 +10093,15 @@ RECENT_CONTEXT:
       #${PANEL_ID}[data-cigh-font="large"] .cigh-clean-ico { width: 21px !important; }
 
       #${PANEL_ID}[data-cigh-font="large"] .cigh-clean-foot {
-        height: 27px !important;
+        height: auto !important;
         min-height: 27px !important;
-        padding: 0 11px !important;
+        padding: 4px 11px !important;
       }
 
-      #${PANEL_ID}[data-cigh-font="large"] .cigh-clean-ft { font-size: 12px !important; }
+      #${PANEL_ID}[data-cigh-font="large"] .cigh-clean-ft {
+        font-size: 12px !important;
+        line-height: 1.35 !important;
+      }
 
       #${POPUP_ID}[data-cigh-font="large"],
       #${COMMENT_POPUP_ID}[data-cigh-font="large"] {
@@ -8104,14 +10162,38 @@ RECENT_CONTEXT:
         flex-direction: column;
         align-items: center;
         width: max-content;
+        max-width: calc(100vw - 12px);
         cursor: grab;
         touch-action: none;
         user-select: none;
       }
       #${MASCOT_ID}.grab { cursor: grabbing; }
+      #${MASCOT_ID}.grabbed .cigh-clean-mascot-body { animation:cigh-mascot-grabbed 0.38s cubic-bezier(.34,1.56,.64,1);transform-origin:center bottom; }
+      #${MASCOT_ID}.carried .cigh-clean-mascot-body { animation:cigh-mascot-carried 0.5s ease-in-out; }
+      #${MASCOT_ID}.landed .cigh-clean-mascot-body { animation:cigh-mascot-landed 0.55s cubic-bezier(.36,.07,.19,.97); }
+      @keyframes cigh-mascot-grabbed {
+        0%   { transform: scale(1,1) translateY(0); }
+        40%  { transform: scale(1.15,0.88) translateY(-8px) rotate(-6deg); }
+        70%  { transform: scale(0.92,1.1) translateY(-4px) rotate(3deg); }
+        100% { transform: scale(1,1) translateY(0) rotate(0deg); }
+      }
+      @keyframes cigh-mascot-carried {
+        0%,100% { transform: rotate(0deg) translateY(0); }
+        25%     { transform: rotate(-8deg) translateY(-3px); }
+        75%     { transform: rotate(6deg) translateY(-2px); }
+      }
+      @keyframes cigh-mascot-landed {
+        0%   { transform: scale(1.1,0.88) translateY(4px); }
+        30%  { transform: scale(0.9,1.14) translateY(-6px); }
+        55%  { transform: scale(1.06,0.94) translateY(2px); }
+        75%  { transform: scale(0.97,1.04) translateY(-2px); }
+        100% { transform: scale(1,1) translateY(0); }
+      }
       #${MASCOT_ID}.poke { animation: cigh-clean-mascot-jump 0.42s ease; }
-      #${MASCOT_ID}.cigh-clean-mascot-happy .cigh-clean-pet-svg {
-        filter: none;
+      #${MASCOT_ID}.egg-poke .cigh-clean-mascot-body { animation: cigh-clean-egg-wobble 0.42s ease; }
+      #${MASCOT_ID}.cigh-clean-mascot-happy .cigh-clean-pet-svg,
+      #${MASCOT_ID}.cigh-clean-mascot-happy .cigh-clean-pet-img-wrap {
+        filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 8px var(--cigh-accent-soft));
       }
       #${MASCOT_ID}.cigh-clean-mascot-scared .cigh-clean-mascot-body {
         animation: cigh-clean-mascot-shiver 0.12s linear infinite;
@@ -8141,7 +10223,6 @@ RECENT_CONTEXT:
         animation: cigh-clean-sleep-breathe 2.2s ease-in-out infinite;
         transform-origin: center bottom;
       }
-
       .cigh-clean-mascot-speech {
         display: none;
         position: absolute;
@@ -8149,7 +10230,9 @@ RECENT_CONTEXT:
         bottom: calc(100% + 4px);
         transform: translateX(-50%);
         z-index: 4;
-        max-width: 160px;
+        width: max-content;
+        min-width: 56px;
+        max-width: min(240px, calc(100vw - 24px));
         background: transparent;
         border: 0;
         border-radius: 0;
@@ -8159,11 +10242,10 @@ RECENT_CONTEXT:
         font-weight: 700;
         line-height: 1.25;
         color: var(--cigh-text);
-        white-space: nowrap;
+        white-space: normal;
+        overflow-wrap: break-word;
+        word-break: keep-all;
         text-align: center;
-        text-shadow:
-          -1px 0 var(--cigh-bg), 1px 0 var(--cigh-bg),
-          0 -1px var(--cigh-bg), 0 1px var(--cigh-bg);
         paint-order: stroke fill;
         -webkit-text-stroke: 0.35px var(--cigh-bg);
         box-shadow: none;
@@ -8203,7 +10285,6 @@ RECENT_CONTEXT:
         opacity: 0;
         transform: translate(-50%, -50%);
         animation: cigh-clean-mascot-float-dot var(--dur, 900ms) ease-out forwards;
-        text-shadow: 0 1px 2px rgba(0,0,0,.28);
       }
       .cigh-clean-mascot-fx-dot.heart {
         width: 8px;
@@ -8214,12 +10295,22 @@ RECENT_CONTEXT:
       }
       .cigh-clean-mascot-fx-dot.heart:not(:empty) { background: transparent !important; }
       .cigh-clean-mascot-fx-dot.spark,
-      .cigh-clean-mascot-fx-dot.flower {
+      .cigh-clean-mascot-fx-dot.flower,
+      .cigh-clean-mascot-fx-dot.zzz {
         width: auto;
         height: auto;
         background: transparent !important;
         color: var(--cigh-accent);
         font-size: 11px;
+      }
+      .cigh-clean-mascot-fx-dot.zzz {
+        color: #86c8ff;
+        font-family: ui-rounded, "Apple SD Gothic Neo", "Segoe UI Rounded", system-ui, sans-serif;
+        font-size: 10px;
+        font-weight: 800;
+        font-style: italic;
+        letter-spacing: .015em;
+        transform: translate(-50%, -50%) rotate(-8deg);
       }
       .cigh-clean-mascot-fx-dot.sweat,
       .cigh-clean-mascot-fx-dot.tear {
@@ -8248,6 +10339,12 @@ RECENT_CONTEXT:
         0%, 100% { transform: translateY(0); }
         40% { transform: translateY(-9px); }
       }
+      @keyframes cigh-clean-egg-wobble {
+        0%, 100% { transform: rotate(0deg) scale(1); }
+        25% { transform: rotate(-5deg) scale(0.995); }
+        50% { transform: rotate(4deg) scale(1.005); }
+        75% { transform: rotate(-3deg) scale(0.998); }
+      }
       @keyframes cigh-clean-mascot-shiver {
         0%, 100% { left: 0; }
         25% { left: -1.5px; }
@@ -8264,13 +10361,12 @@ RECENT_CONTEXT:
         100% { opacity: 0; }
       }
 
-
-      /* ── 업적(ACHV) 카드 ── */
+      /* ── Achievements / Titles (무테두리 + 셔머) ── */
       .cigh-clean-achv-grid {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
-        margin-top: 2px;
+        gap: calc(6px * var(--cigh-ui-font-scale, 1));
+        margin-top: calc(2px * var(--cigh-ui-font-scale, 1));
       }
       .cigh-clean-achv-card {
         position: relative;
@@ -8278,9 +10374,9 @@ RECENT_CONTEXT:
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 2px;
-        padding: 8px 4px 7px;
-        min-height: 66px;
+        gap: calc(2px * var(--cigh-ui-font-scale, 1));
+        padding: calc(8px * var(--cigh-ui-font-scale, 1)) calc(4px * var(--cigh-ui-font-scale, 1)) calc(7px * var(--cigh-ui-font-scale, 1));
+        min-height: calc(66px * var(--cigh-ui-font-scale, 1));
         border: 0;
         border-radius: 6px;
         background: var(--cigh-bg-2);
@@ -8295,16 +10391,16 @@ RECENT_CONTEXT:
       .cigh-clean-achv-card.secret { filter: grayscale(.4); }
       .cigh-clean-achv-rank {
         font-family: "Courier New", Consolas, monospace;
-        font-size: 8px;
+        font-size: calc(8px * var(--cigh-ui-font-scale, 1));
         font-weight: 700;
         letter-spacing: .08em;
         color: var(--achv-rank-color, var(--cigh-text-faint));
       }
-      .cigh-clean-achv-icon { font-size: 18px; line-height: 1.1; }
+      .cigh-clean-achv-icon { font-size: calc(18px * var(--cigh-ui-font-scale, 1)); line-height: 1.1; }
       .cigh-clean-achv-card.locked .cigh-clean-achv-icon,
       .cigh-clean-achv-card.secret .cigh-clean-achv-icon { filter: grayscale(1); opacity: .55; }
       .cigh-clean-achv-name {
-        font-size: 9px;
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
         line-height: 1.25;
         color: var(--cigh-text);
         word-break: keep-all;
@@ -8313,23 +10409,27 @@ RECENT_CONTEXT:
       .cigh-clean-achv-card.secret .cigh-clean-achv-name { color: var(--cigh-text-faint); }
       .cigh-clean-achv-prog {
         font-family: "Courier New", Consolas, monospace;
-        font-size: 8.5px;
+        font-size: calc(8.5px * var(--cigh-ui-font-scale, 1));
         color: var(--cigh-text-dim);
       }
       .cigh-clean-achv-done {
-        font-size: 8.5px;
+        font-size: calc(8.5px * var(--cigh-ui-font-scale, 1));
         letter-spacing: .08em;
         color: var(--cigh-good);
       }
       .cigh-clean-achv-card.equipped {
-        box-shadow: inset 0 0 0 1px var(--cigh-accent), 0 0 8px var(--cigh-accent-soft);
+        box-shadow:
+          inset 0 0 0 1px var(--cigh-accent),
+          0 0 8px var(--cigh-accent-soft);
       }
       .cigh-clean-achv-card.unlocked { cursor: pointer; }
       .cigh-clean-achv-card.unlocked:hover {
         box-shadow: inset 0 0 0 1px var(--cigh-accent-soft);
       }
       .cigh-clean-achv-card.unlocked.equipped:hover {
-        box-shadow: inset 0 0 0 1px var(--cigh-accent), 0 0 10px var(--cigh-accent-soft);
+        box-shadow:
+          inset 0 0 0 1px var(--cigh-accent),
+          0 0 10px var(--cigh-accent-soft);
       }
       .cigh-clean-achv-shimmer {
         position: absolute;
@@ -8339,16 +10439,19 @@ RECENT_CONTEXT:
         opacity: 0;
         z-index: 1;
       }
+      .cigh-clean-achv-card.locked .cigh-clean-achv-shimmer,
+      .cigh-clean-achv-card.secret .cigh-clean-achv-shimmer { display: none; }
       .cigh-clean-achv-card.unlocked .cigh-clean-achv-shimmer { opacity: 1; }
       .cigh-clean-achv-shimmer::before {
         content: '';
         position: absolute;
         top: -20%;
         bottom: -20%;
-        left: -65%;
+        left: 0;
         width: 45%;
         background: linear-gradient(105deg, transparent 0%, var(--achv-shimmer-color, rgba(255,255,255,.1)) 50%, transparent 100%);
-        transform: skewX(-16deg);
+        transform: translateX(-150%) skewX(-16deg);
+        will-change: transform;
         animation: cigh-clean-achv-shimmer 3.8s ease-in-out infinite;
       }
       .cigh-clean-achv-card.rank-N   { --achv-shimmer-color: rgba(255,255,255,.10); }
@@ -8361,8 +10464,55 @@ RECENT_CONTEXT:
       .cigh-clean-achv-prog,
       .cigh-clean-achv-done { position: relative; z-index: 2; }
       @keyframes cigh-clean-achv-shimmer {
-        0% { left: -65%; }
-        55%, 100% { left: 115%; }
+        0% { transform: translateX(-150%) skewX(-16deg); }
+        55%, 100% { transform: translateX(260%) skewX(-16deg); }
+      }
+      /* PET 탭: 마이룸 아래 칭호·이름 스트립 */
+      .cigh-clean-pet-id {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin: 6px 0 2px;
+        font-family: "Courier New", Consolas, monospace;
+      }
+      .cigh-clean-pet-title {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        min-height: calc(16px * var(--cigh-ui-font-scale, 1));
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
+        line-height: 1;
+        font-weight: 700;
+        letter-spacing: .02em;
+        color: var(--cigh-accent);
+        background: color-mix(in srgb, var(--cigh-accent) 14%, var(--cigh-bg-3));
+        border: 1px solid color-mix(in srgb, var(--cigh-accent) 34%, var(--cigh-border-soft));
+        white-space: nowrap;
+      }
+      .cigh-clean-pet-name {
+        display: inline-flex;
+        align-items: center;
+        min-height: calc(16px * var(--cigh-ui-font-scale, 1));
+        font-size: calc(12px * var(--cigh-ui-font-scale, 1));
+        line-height: 1;
+        font-weight: 700;
+        color: var(--cigh-text);
+      }
+      .cigh-clean-exp-lv {
+        display: inline-block;
+        margin-right: 6px;
+        padding: 0 6px;
+        border-radius: 4px;
+        font-family: "Courier New", Consolas, monospace;
+        font-size: calc(9px * var(--cigh-ui-font-scale, 1));
+        font-weight: 700;
+        color: var(--cigh-bg);
+        background: var(--cigh-accent);
+        vertical-align: middle;
       }
 
       @media (max-width: 520px) {
